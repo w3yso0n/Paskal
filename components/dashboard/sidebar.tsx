@@ -38,11 +38,22 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
         className={cn(
           "border-b border-sidebar-border bg-sidebar-accent/20",
           collapsed ? "h-14" : "h-28",
-          !collapsed && "flex items-center justify-center"
+          "flex items-center justify-center"
         )}
       >
-        {!collapsed && (
-          <Link href="/" className="block" aria-label="Ir a Inicio">
+        <Link href="/" className="block" aria-label="Ir a Inicio">
+          {collapsed ? (
+            <div className="rounded-xl bg-white px-2 py-2 shadow-sm ring-1 ring-black/10">
+              <Image
+                src="/images/Logo_Simple.png"
+                alt="Paskal"
+                width={44}
+                height={44}
+                priority
+                className="h-9 w-9 object-contain"
+              />
+            </div>
+          ) : (
             <div className="rounded-xl bg-white/90 px-4 py-3 shadow-sm ring-1 ring-black/5">
               <Image
                 src="/images/Logo.png"
@@ -53,8 +64,8 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
                 className="h-16 w-[200px] object-contain"
               />
             </div>
-          </Link>
-        )}
+          )}
+        </Link>
       </div>
 
       {/* Navigation */}
