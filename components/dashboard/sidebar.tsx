@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import Image from "next/image"
 import { usePathname } from "next/navigation"
 import { Home, Factory, Monitor, BarChart3, Users, ChevronLeft, ChevronRight, User, Bell, Target } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -33,17 +34,27 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
       )}
     >
       {/* Logo */}
-      <div className="flex h-24 items-center justify-center border-b border-sidebar-border bg-sidebar-accent/20">
-        <div className="flex items-center gap-2">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-sidebar-foreground/10">
-            <svg viewBox="0 0 24 24" className="h-6 w-6 text-sidebar-foreground" fill="currentColor">
-              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-            </svg>
-          </div>
-          {!collapsed && (
-            <span className="text-xl font-bold text-sidebar-foreground">Paskal</span>
-          )}
-        </div>
+      <div
+        className={cn(
+          "border-b border-sidebar-border bg-sidebar-accent/20",
+          collapsed ? "h-14" : "h-28",
+          !collapsed && "flex items-center justify-center"
+        )}
+      >
+        {!collapsed && (
+          <Link href="/" className="block" aria-label="Ir a Inicio">
+            <div className="rounded-xl bg-white/90 px-4 py-3 shadow-sm ring-1 ring-black/5">
+              <Image
+                src="/images/Logo.png"
+                alt="Paskal"
+                width={320}
+                height={110}
+                priority
+                className="h-16 w-[200px] object-contain"
+              />
+            </div>
+          </Link>
+        )}
       </div>
 
       {/* Navigation */}

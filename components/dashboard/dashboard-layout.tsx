@@ -2,6 +2,7 @@
 
 import React from "react"
 import Link from "next/link"
+import Image from "next/image"
 import { usePathname } from "next/navigation"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
@@ -30,15 +31,24 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
 
       <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
         <SheetContent side="left" className="w-72 p-0">
-          <div className="flex h-24 items-center justify-center border-b border-border bg-muted/20">
-            <div className="flex items-center gap-2">
-              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-foreground/10">
-                <svg viewBox="0 0 24 24" className="h-6 w-6 text-foreground" fill="currentColor">
-                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-                </svg>
+          <div className="flex h-28 items-center justify-center border-b border-border bg-muted/20">
+            <Link
+              href="/"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block"
+              aria-label="Ir a Inicio"
+            >
+              <div className="rounded-xl bg-white/80 px-4 py-3 shadow-sm ring-1 ring-black/5">
+                <Image
+                  src="/images/Logo.png"
+                  alt="Paskal"
+                  width={340}
+                  height={120}
+                  priority
+                  className="h-16 w-[220px] object-contain"
+                />
               </div>
-              <span className="text-xl font-bold text-foreground">Paskal</span>
-            </div>
+            </Link>
           </div>
 
           <nav className="space-y-1 px-2 py-4">
