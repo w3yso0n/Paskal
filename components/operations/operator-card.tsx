@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils"
-import { Crown } from "lucide-react"
+import { Crown, Trophy } from "lucide-react"
 import type { Operator } from "@/lib/mock-data"
 
 interface OperatorCardProps {
@@ -9,51 +9,95 @@ interface OperatorCardProps {
 }
 
 export function OperatorCard({ operator, rank, highlighted = false }: OperatorCardProps) {
-  const isLeader = operator.isLeader
+  const isLeader = rank === 1
   const isTopThree = rank <= 3
+
+  const podiumTheme =
+    rank === 1
+      ? {
+          container: "border-amber-300 bg-gradient-to-b from-amber-50 to-white",
+          glow: "shadow-md shadow-amber-200/50",
+          badge: "bg-amber-500 text-white",
+          avatar: "bg-amber-500",
+          text: "text-amber-900",
+          accent: "text-amber-800",
+          bar: "bg-amber-500",
+          crown: "text-amber-500 fill-amber-500",
+          label: "Oro",
+        }
+      : rank === 2
+        ? {
+            container: "border-slate-300 bg-gradient-to-b from-slate-50 to-white",
+            glow: "shadow-md shadow-slate-200/60",
+            badge: "bg-slate-500 text-white",
+            avatar: "bg-slate-500",
+            text: "text-slate-900",
+            accent: "text-slate-800",
+            bar: "bg-slate-500",
+            crown: "text-slate-500 fill-slate-500",
+            label: "Plata",
+          }
+        : {
+            container: "border-orange-300 bg-gradient-to-b from-orange-50 to-white",
+            glow: "shadow-md shadow-orange-200/55",
+            badge: "bg-orange-600 text-white",
+            avatar: "bg-orange-600",
+            text: "text-orange-900",
+            accent: "text-orange-800",
+            bar: "bg-orange-600",
+            crown: "text-orange-600 fill-orange-600",
+            label: "Bronce",
+          }
 
   if (isTopThree) {
     return (
       <div
         className={cn(
-          "relative flex flex-col items-center rounded-xl border p-4",
-          isLeader
-            ? "border-orange-200 bg-orange-50"
-            : "border-border bg-card"
+          "group relative flex w-full max-w-[260px] flex-col items-center overflow-hidden rounded-2xl border p-5 transition-transform duration-200 hover:scale-[1.01]",
+          podiumTheme.container,
+          podiumTheme.glow
         )}
       >
-        {/* Crown for leader */}
-        {isLeader && (
-          <Crown className="absolute -top-3 left-1/2 h-6 w-6 -translate-x-1/2 text-orange-500 fill-orange-500" />
-        )}
+        {/* Subtle shine */}
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/45 via-white/10 to-transparent" />
         
         {/* Rank badge */}
         <div
           className={cn(
-            "absolute -top-2 -right-2 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold",
-            rank === 1 ? "bg-orange-500 text-white" : "bg-primary text-primary-foreground"
+            "absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold shadow-sm",
+            podiumTheme.badge
           )}
         >
           {rank}
         </div>
 
+        {/* Medal label */}
+        <div className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-full border border-white/60 bg-white/80 px-2 py-1 text-[11px] font-semibold text-foreground shadow-sm">
+          {isLeader ? (
+            <Trophy className={cn("h-3.5 w-3.5", "motion-safe:animate-pulse", podiumTheme.crown)} />
+          ) : (
+            <Crown className={cn("h-3.5 w-3.5", podiumTheme.crown)} />
+          )}
+          <span>{podiumTheme.label}</span>
+        </div>
+
         {/* Avatar */}
         <div
           className={cn(
-            "flex h-14 w-14 items-center justify-center rounded-full text-lg font-bold text-white",
-            isLeader ? "bg-orange-500" : "bg-primary"
+            "mt-8 flex h-14 w-14 items-center justify-center rounded-full text-lg font-bold text-white shadow-sm",
+            podiumTheme.avatar
           )}
         >
           {operator.initials}
         </div>
 
         {/* Name */}
-        <span className={cn("mt-2 font-semibold text-card-foreground", isLeader && "text-orange-700")}>
+        <span className={cn("mt-3 text-base font-semibold", podiumTheme.text)}>
           {operator.name}
         </span>
-        {isLeader && (
-          <span className="text-xs text-orange-600 font-medium">Líder</span>
-        )}
+        <span className={cn("text-xs font-medium", podiumTheme.accent)}>
+          #{rank} • {isLeader ? "Líder" : "Top 3"}
+        </span>
 
         {/* Machine and SKU */}
         <div className="mt-2 flex items-center gap-2">
@@ -66,14 +110,23 @@ export function OperatorCard({ operator, rank, highlighted = false }: OperatorCa
         </div>
 
         {/* Units */}
-        <span className="mt-3 text-2xl font-bold text-card-foreground">{operator.units}</span>
+        <span className="mt-4 text-3xl font-bold text-card-foreground">{operator.units}</span>
+        <span className="text-xs text-muted-foreground">unidades</span>
 
-        {/* Progress bar */}
-        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
-          <div
-            className={cn("h-full rounded-full", isLeader ? "bg-orange-500" : "bg-primary")}
-            style={{ width: `${Math.min(operator.percentage, 100)}%` }}
-          />
+        {/* Bonus progress */}
+        <div className="mt-4 w-full">
+          <div className="mb-1 flex items-center justify-between text-xs">
+            <span className="text-muted-foreground">Bono</span>
+            <span className="font-semibold text-foreground">{Math.min(operator.percentage, 100)}%</span>
+          </div>
+
+          {/* Progress bar */}
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-black/5">
+            <div
+              className={cn("h-full rounded-full", podiumTheme.bar)}
+              style={{ width: `${Math.min(operator.percentage, 100)}%` }}
+            />
+          </div>
         </div>
       </div>
     )

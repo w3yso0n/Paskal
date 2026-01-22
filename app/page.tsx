@@ -25,6 +25,18 @@ const machineColors = [
   "#8b5cf6", // purple
   "#06b6d4", // cyan
   "#84cc16", // lime
+  "#ef4444", // red
+  "#14b8a6", // teal
+  "#a855f7", // violet
+  "#f59e0b", // amber
+  "#0ea5e9", // sky
+  "#10b981", // emerald
+  "#e11d48", // rose
+  "#6366f1", // indigo
+  "#22d3ee", // cyan 2
+  "#fb7185", // pink 2
+  "#65a30d", // lime 2
+  "#c026d3", // fuchsia
 ]
 
 export default function HomePage() {

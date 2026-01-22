@@ -2,31 +2,34 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Home, Factory, Monitor, BarChart3, Users, ChevronLeft, ChevronRight, User, Clock, Bell, GitCompare, Target } from "lucide-react"
+import { Home, Factory, Monitor, BarChart3, Users, ChevronLeft, ChevronRight, User, Bell, Target } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useState } from "react"
 
-const menuItems = [
+export const menuItems = [
   { icon: Home, label: "Inicio", href: "/" },
   { icon: Factory, label: "Piso de producción", href: "/piso-produccion" },
   { icon: Monitor, label: "Tablero Operativo", href: "/tablero-operativo" },
   { icon: BarChart3, label: "Métricas", href: "/metricas" },
-  { icon: GitCompare, label: "Comparativa", href: "/comparativa" },
   { icon: Target, label: "Metas", href: "/metas" },
-  { icon: Clock, label: "Gestión de Turnos", href: "/turnos" },
   { icon: Users, label: "Gestión de empleados", href: "/empleados" },
   { icon: Bell, label: "Alertas", href: "/alertas" },
 ]
 
-export function Sidebar() {
+interface SidebarProps {
+  collapsed?: boolean
+  onCollapsedChange?: (collapsed: boolean) => void
+  className?: string
+}
+
+export function Sidebar({ collapsed = false, onCollapsedChange, className }: SidebarProps) {
   const pathname = usePathname()
-  const [collapsed, setCollapsed] = useState(false)
 
   return (
     <aside
       className={cn(
         "fixed left-0 top-0 z-40 h-screen bg-sidebar text-sidebar-foreground transition-all duration-300 flex flex-col",
-        collapsed ? "w-16" : "w-56"
+        collapsed ? "w-16" : "w-56",
+        className
       )}
     >
       {/* Logo */}
@@ -78,17 +81,19 @@ export function Sidebar() {
       </div>
 
       {/* Collapse Button */}
-      <button
-        onClick={() => setCollapsed(!collapsed)}
-        className="absolute -right-3 top-28 flex h-6 w-6 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-sm hover:bg-muted"
-        aria-label={collapsed ? "Expandir sidebar" : "Colapsar sidebar"}
-      >
-        {collapsed ? (
-          <ChevronRight className="h-4 w-4" />
-        ) : (
-          <ChevronLeft className="h-4 w-4" />
-        )}
-      </button>
+      {onCollapsedChange && (
+        <button
+          onClick={() => onCollapsedChange(!collapsed)}
+          className="absolute -right-3 top-28 hidden h-6 w-6 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-sm hover:bg-muted md:flex"
+          aria-label={collapsed ? "Expandir sidebar" : "Colapsar sidebar"}
+        >
+          {collapsed ? (
+            <ChevronRight className="h-4 w-4" />
+          ) : (
+            <ChevronLeft className="h-4 w-4" />
+          )}
+        </button>
+      )}
     </aside>
   )
 }

@@ -16,6 +16,7 @@ interface MachineCardProps {
   status: MachineStatus
   code?: string
   operator?: string
+  packer?: string
   production?: number
   onClick?: () => void
   isSelected?: boolean
@@ -45,6 +46,7 @@ export function MachineCard({
   status, 
   code,
   operator,
+  packer,
   production,
   onClick,
   isSelected 
@@ -76,13 +78,16 @@ export function MachineCard({
                 isSelected && statusBorderColors[status],
                 isSelected && "border-2"
               )}>
-                <Image
-                  src="/images/machine.png"
-                  alt={`Máquina ${name}`}
-                  width={100}
-                  height={60}
-                  className="object-contain"
-                />
+                <div className="relative h-16 w-32">
+                  <Image
+                    src="/images/machine.png"
+                    alt={`Máquina ${name}`}
+                    fill
+                    sizes="128px"
+                    className="object-contain"
+                    priority={false}
+                  />
+                </div>
               </div>
               {/* Machine label */}
               <span className="mt-1 rounded bg-gray-700 px-2 py-0.5 text-xs font-medium text-white">
@@ -121,7 +126,7 @@ export function MachineCard({
               </div>
               {code && (
                 <div className="flex justify-between gap-4">
-                  <span>Código:</span>
+                  <span>SKU:</span>
                   <span className="font-medium text-card-foreground">{code}</span>
                 </div>
               )}
@@ -129,6 +134,12 @@ export function MachineCard({
                 <div className="flex justify-between gap-4">
                   <span>Operador:</span>
                   <span className="font-medium text-card-foreground">{operator}</span>
+                </div>
+              )}
+              {packer && (
+                <div className="flex justify-between gap-4">
+                  <span>Empacador:</span>
+                  <span className="font-medium text-card-foreground">{packer}</span>
                 </div>
               )}
               {production !== undefined && (
@@ -139,7 +150,7 @@ export function MachineCard({
               )}
             </div>
             <p className="text-xs text-muted-foreground pt-1 border-t border-border">
-              Click para asignar código
+              Click para asignar SKU y personal
             </p>
           </div>
         </TooltipContent>

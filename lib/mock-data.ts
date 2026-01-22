@@ -18,17 +18,17 @@ export const hourlyProductionData = [
 export const machineProductionData = Array.from({ length: 20 }, (_, i) => {
   const hour = 8 + Math.floor(i / 2)
   const minute = (i % 2) * 30
-  return {
+  const row: Record<string, string | number> = {
     time: `${hour}:${minute.toString().padStart(2, "0")}`,
-    "Máquina 1": 280 + Math.random() * 120,
-    "Máquina 2": 300 + Math.random() * 100,
-    "Máquina 3": 250 + Math.random() * 150,
-    "Máquina 6": 320 + Math.random() * 80,
-    "Máquina 7": 270 + Math.random() * 100,
-    "Máquina 9": 310 + Math.random() * 90,
-    "Máquina 10": 290 + Math.random() * 110,
-    "Máquina 11": 200 + Math.random() * 180,
   }
+
+  for (let machine = 1; machine <= 20; machine++) {
+    const base = 220 + machine * 8
+    const variance = 120 + (machine % 5) * 20
+    row[`Máquina ${machine}`] = Math.round(base + Math.random() * variance)
+  }
+
+  return row
 })
 
 // Event distribution data
@@ -142,46 +142,6 @@ export const employees: Employee[] = [
   { id: "5", name: "Roberto Sánchez", role: "Operador", nfcId: "NFC-005" },
 ]
 
-// Shifts management
-export type ShiftType = "morning" | "afternoon" | "night"
-
-export interface Shift {
-  id: string
-  name: string
-  type: ShiftType
-  startTime: string
-  endTime: string
-  color: string
-}
-
-export const shifts: Shift[] = [
-  { id: "s1", name: "Turno Mañana", type: "morning", startTime: "06:00", endTime: "14:00", color: "#f59e0b" },
-  { id: "s2", name: "Turno Tarde", type: "afternoon", startTime: "14:00", endTime: "22:00", color: "#3b82f6" },
-  { id: "s3", name: "Turno Noche", type: "night", startTime: "22:00", endTime: "06:00", color: "#6366f1" },
-]
-
-export interface ShiftAssignment {
-  id: string
-  employeeId: string
-  employeeName: string
-  shiftId: string
-  shiftName: string
-  machineId: string
-  machineName: string
-  date: string
-  status: "scheduled" | "in-progress" | "completed" | "absent"
-}
-
-export const shiftAssignments: ShiftAssignment[] = [
-  { id: "sa1", employeeId: "1", employeeName: "Juan Pérez", shiftId: "s1", shiftName: "Turno Mañana", machineId: "m1", machineName: "M1", date: "2026-01-20", status: "in-progress" },
-  { id: "sa2", employeeId: "2", employeeName: "María García", shiftId: "s1", shiftName: "Turno Mañana", machineId: "m2", machineName: "M2", date: "2026-01-20", status: "in-progress" },
-  { id: "sa3", employeeId: "3", employeeName: "Carlos López", shiftId: "s2", shiftName: "Turno Tarde", machineId: "m3", machineName: "M3", date: "2026-01-20", status: "scheduled" },
-  { id: "sa4", employeeId: "4", employeeName: "Ana Martínez", shiftId: "s2", shiftName: "Turno Tarde", machineId: "m4", machineName: "M4", date: "2026-01-20", status: "scheduled" },
-  { id: "sa5", employeeId: "5", employeeName: "Roberto Sánchez", shiftId: "s3", shiftName: "Turno Noche", machineId: "m5", machineName: "M5", date: "2026-01-20", status: "scheduled" },
-  { id: "sa6", employeeId: "1", employeeName: "Juan Pérez", shiftId: "s1", shiftName: "Turno Mañana", machineId: "m1", machineName: "M1", date: "2026-01-21", status: "scheduled" },
-  { id: "sa7", employeeId: "3", employeeName: "Carlos López", shiftId: "s1", shiftName: "Turno Mañana", machineId: "m6", machineName: "M6", date: "2026-01-21", status: "scheduled" },
-]
-
 // Alerts and Notifications
 export type AlertType = "warning" | "error" | "info" | "success"
 export type AlertCategory = "machine" | "production" | "maintenance" | "employee" | "system"
@@ -200,36 +160,7 @@ export interface Alert {
 }
 
 // Performance comparison data
-export interface MachinePerformance {
-  machineId: string
-  machineName: string
-  efficiency: number
-  production: number
-  downtime: number
-  quality: number
-  oee: number
-}
-
-export const machinePerformanceData: MachinePerformance[] = [
-  { machineId: "m1", machineName: "M1", efficiency: 95, production: 2850, downtime: 0.5, quality: 99.2, oee: 87.5 },
-  { machineId: "m2", machineName: "M2", efficiency: 92, production: 2650, downtime: 1.2, quality: 98.5, oee: 84.2 },
-  { machineId: "m3", machineName: "M3", efficiency: 88, production: 2400, downtime: 2.1, quality: 97.8, oee: 79.8 },
-  { machineId: "m4", machineName: "M4", efficiency: 91, production: 2700, downtime: 0.8, quality: 99.0, oee: 85.1 },
-  { machineId: "m5", machineName: "M5", efficiency: 94, production: 2780, downtime: 0.6, quality: 98.9, oee: 86.3 },
-  { machineId: "m6", machineName: "M6", efficiency: 89, production: 2550, downtime: 1.5, quality: 98.2, oee: 81.5 },
-  { machineId: "m7", machineName: "M7", efficiency: 93, production: 2720, downtime: 0.9, quality: 99.1, oee: 85.8 },
-  { machineId: "m8", machineName: "M8", efficiency: 85, production: 2200, downtime: 2.8, quality: 97.5, oee: 76.2 },
-]
-
-export const weeklyComparisonData = [
-  { day: "Lun", M1: 420, M2: 380, M3: 350, M4: 400, M5: 410 },
-  { day: "Mar", M1: 450, M2: 420, M3: 380, M4: 430, M5: 440 },
-  { day: "Mié", M1: 430, M2: 400, M3: 390, M4: 410, M5: 425 },
-  { day: "Jue", M1: 460, M2: 430, M3: 360, M4: 440, M5: 450 },
-  { day: "Vie", M1: 440, M2: 410, M3: 370, M4: 420, M5: 435 },
-  { day: "Sáb", M1: 380, M2: 350, M3: 320, M4: 370, M5: 385 },
-  { day: "Dom", M1: 350, M2: 320, M3: 290, M4: 340, M5: 355 },
-]
+// Performance comparison data (moved into Métricas)
 
 export const monthlyTrendData = [
   { month: "Ene", actual: 85000, target: 90000 },
@@ -401,17 +332,6 @@ export const alerts: Alert[] = [
   },
   {
     id: "a4",
-    type: "warning",
-    category: "employee",
-    title: "Cambio de Turno Pendiente",
-    message: "El operador del turno tarde aún no se ha registrado en M7.",
-    timestamp: new Date(Date.now() - 45 * 60 * 1000),
-    isRead: false,
-    employeeId: "3",
-    actionRequired: true,
-  },
-  {
-    id: "a5",
     type: "success",
     category: "production",
     title: "Meta Diaria Alcanzada",
@@ -421,7 +341,7 @@ export const alerts: Alert[] = [
     actionRequired: false,
   },
   {
-    id: "a6",
+    id: "a5",
     type: "error",
     category: "machine",
     title: "Error en Sensor M14",
@@ -432,7 +352,7 @@ export const alerts: Alert[] = [
     actionRequired: true,
   },
   {
-    id: "a7",
+    id: "a6",
     type: "info",
     category: "system",
     title: "Actualización del Sistema",
@@ -442,7 +362,7 @@ export const alerts: Alert[] = [
     actionRequired: false,
   },
   {
-    id: "a8",
+    id: "a7",
     type: "warning",
     category: "maintenance",
     title: "Cambio de SKU Requerido",

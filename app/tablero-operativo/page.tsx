@@ -29,9 +29,9 @@ export default function OperationsBoardPage() {
         </div>
 
         {/* Top 3 Podium */}
-        <div className="flex justify-center gap-4">
+        <div className="flex flex-col items-center justify-center gap-4 sm:flex-row sm:items-end sm:gap-4">
           {/* 2nd place */}
-          <div className="mt-8">
+          <div className="sm:mt-8">
             <OperatorCard operator={topThree[1]} rank={2} />
           </div>
           {/* 1st place (leader) */}
@@ -39,7 +39,7 @@ export default function OperationsBoardPage() {
             <OperatorCard operator={topThree[0]} rank={1} />
           </div>
           {/* 3rd place */}
-          <div className="mt-8">
+          <div className="sm:mt-8">
             <OperatorCard operator={topThree[2]} rank={3} />
           </div>
         </div>

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useCallback } from "react"
-import { ChevronDown, PanelLeftClose } from "lucide-react"
+import { ChevronDown, Menu } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,12 +10,14 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { AlertsDropdown } from "@/components/notifications/alerts-dropdown"
 import { alerts as initialAlerts } from "@/lib/mock-data"
+import { Button } from "@/components/ui/button"
 
 interface HeaderProps {
   breadcrumbs?: { label: string; href?: string }[]
+  onOpenMobileMenu?: () => void
 }
 
-export function Header({ breadcrumbs }: HeaderProps) {
+export function Header({ breadcrumbs, onOpenMobileMenu }: HeaderProps) {
   const [alerts, setAlerts] = useState(initialAlerts)
 
   const handleMarkAsRead = useCallback((id: string) => {
@@ -31,17 +33,32 @@ export function Header({ breadcrumbs }: HeaderProps) {
   }, [])
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background px-6">
+    <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background px-4 sm:px-6">
       <div className="flex items-center gap-4">
-        <button className="text-muted-foreground hover:text-foreground">
-          <PanelLeftClose className="h-5 w-5" />
-        </button>
+        {onOpenMobileMenu && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="md:hidden"
+            onClick={onOpenMobileMenu}
+            aria-label="Abrir menú"
+          >
+            <Menu className="h-5 w-5" />
+          </Button>
+        )}
         {breadcrumbs && (
-          <nav className="flex items-center gap-2 text-sm">
+          <nav className="flex min-w-0 items-center gap-2 text-sm">
             {breadcrumbs.map((crumb, index) => (
               <span key={index} className="flex items-center gap-2">
                 {index > 0 && <span className="text-muted-foreground">/</span>}
-                <span className={index === breadcrumbs.length - 1 ? "text-foreground" : "text-muted-foreground"}>
+                <span
+                  className={
+                    index === breadcrumbs.length - 1
+                      ? "max-w-[45vw] truncate text-foreground sm:max-w-none"
+                      : "max-w-[45vw] truncate text-muted-foreground sm:max-w-none"
+                  }
+                  title={crumb.label}
+                >
                   {crumb.label}
                 </span>
               </span>

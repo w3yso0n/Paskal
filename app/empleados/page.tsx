@@ -122,7 +122,8 @@ export default function EmployeesPage() {
 
         {/* Employee Table */}
         <div className="rounded-xl border border-border bg-card">
-          <table className="w-full">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px]">
             <thead>
               <tr className="border-b border-border text-left text-sm text-muted-foreground">
                 <th className="px-6 py-4 font-medium">Nombre</th>
@@ -163,7 +164,8 @@ export default function EmployeesPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </div>
         </div>
 
         {/* Summary Footer */}
