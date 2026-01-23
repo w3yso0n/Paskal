@@ -74,11 +74,11 @@ export function MachineCard({
             {/* Machine image */}
             <div className="flex flex-col items-center">
               <div className={cn(
-                "rounded-lg p-1 transition-colors",
+                "rounded-lg transition-colors",
                 isSelected && statusBorderColors[status],
                 isSelected && "border-2"
               )}>
-                <div className="relative h-16 w-32">
+                <div className="relative h-14 w-32">
                   <Image
                     src="/images/machine.png"
                     alt={`Máquina ${name}`}

@@ -6,11 +6,13 @@ interface OperatorCardProps {
   operator: Operator
   rank: number
   highlighted?: boolean
+  density?: "normal" | "compact"
 }
 
-export function OperatorCard({ operator, rank, highlighted = false }: OperatorCardProps) {
+export function OperatorCard({ operator, rank, highlighted = false, density = "normal" }: OperatorCardProps) {
   const isLeader = rank === 1
   const isTopThree = rank <= 3
+  const compact = density === "compact"
 
   const podiumTheme =
     rank === 1
@@ -53,7 +55,10 @@ export function OperatorCard({ operator, rank, highlighted = false }: OperatorCa
     return (
       <div
         className={cn(
-          "group relative flex w-full max-w-[260px] flex-col items-center overflow-hidden rounded-2xl border p-5 transition-transform duration-200 hover:scale-[1.01]",
+          "group relative flex w-full flex-col items-center overflow-hidden border",
+          compact
+            ? "max-w-[250px] rounded-xl p-3"
+            : "max-w-[270px] rounded-2xl p-5 transition-transform duration-200 hover:scale-[1.01]",
           podiumTheme.container,
           podiumTheme.glow
         )}
@@ -64,7 +69,8 @@ export function OperatorCard({ operator, rank, highlighted = false }: OperatorCa
         {/* Rank badge */}
         <div
           className={cn(
-            "absolute right-3 top-3 flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold shadow-sm",
+            "absolute flex items-center justify-center rounded-full text-xs font-bold shadow-sm",
+            compact ? "right-2 top-2 h-6 w-6" : "right-3 top-3 h-7 w-7",
             podiumTheme.badge
           )}
         >
@@ -72,7 +78,12 @@ export function OperatorCard({ operator, rank, highlighted = false }: OperatorCa
         </div>
 
         {/* Medal label */}
-        <div className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-full border border-white/60 bg-white/80 px-2 py-1 text-[11px] font-semibold text-foreground shadow-sm">
+        <div
+          className={cn(
+            "absolute left-3 top-3 inline-flex items-center gap-1 rounded-full border border-white/60 bg-white/80 text-[11px] font-semibold text-foreground shadow-sm",
+            compact ? "left-2 top-2 px-1.5 py-0.5" : "px-2 py-1"
+          )}
+        >
           {isLeader ? (
             <Trophy className={cn("h-3.5 w-3.5", "motion-safe:animate-pulse", podiumTheme.crown)} />
           ) : (
@@ -84,7 +95,8 @@ export function OperatorCard({ operator, rank, highlighted = false }: OperatorCa
         {/* Avatar */}
         <div
           className={cn(
-            "mt-8 flex h-14 w-14 items-center justify-center rounded-full text-lg font-bold text-white shadow-sm",
+            "flex items-center justify-center rounded-full font-bold text-white shadow-sm",
+            compact ? "mt-5 h-11 w-11 text-base" : "mt-8 h-14 w-14 text-lg",
             podiumTheme.avatar
           )}
         >
@@ -92,7 +104,7 @@ export function OperatorCard({ operator, rank, highlighted = false }: OperatorCa
         </div>
 
         {/* Name */}
-        <span className={cn("mt-3 text-base font-semibold", podiumTheme.text)}>
+        <span className={cn(compact ? " text-sm font-semibold" : "mt-3 text-base font-semibold", podiumTheme.text)}>
           {operator.name}
         </span>
         <span className={cn("text-xs font-medium", podiumTheme.accent)}>
@@ -100,28 +112,30 @@ export function OperatorCard({ operator, rank, highlighted = false }: OperatorCa
         </span>
 
         {/* Machine and SKU */}
-        <div className="mt-2 flex items-center gap-2">
+        <div className={cn(compact ? " flex items-center gap-1.5" : " flex items-center gap-2")}>
           <span className="rounded bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
             {operator.machine}
           </span>
-          <span className="rounded bg-cyan-100 px-2 py-0.5 text-xs font-medium text-cyan-700">
+          <span className="rounded bg-cyan-100 px-2  text-xs font-medium text-cyan-700">
             {operator.sku}
           </span>
         </div>
 
         {/* Units */}
-        <span className="mt-4 text-3xl font-bold text-card-foreground">{operator.units}</span>
+        <span className={cn(compact ? "text-2m font-bold text-card-foreground" : "mt-4 text-3xl font-bold text-card-foreground")}>
+          {operator.units}
+        </span>
         <span className="text-xs text-muted-foreground">unidades</span>
 
         {/* Bonus progress */}
-        <div className="mt-4 w-full">
+        <div className={cn(compact ? " w-full" : "mt-4 w-full")}>
           <div className="mb-1 flex items-center justify-between text-xs">
             <span className="text-muted-foreground">Bono</span>
             <span className="font-semibold text-foreground">{Math.min(operator.percentage, 100)}%</span>
           </div>
 
           {/* Progress bar */}
-          <div className="h-2.5 w-full overflow-hidden rounded-full bg-black/5">
+          <div className={cn(compact ? "h-2 w-full overflow-hidden rounded-full bg-black/5" : "h-2.5 w-full overflow-hidden rounded-full bg-black/5")}>
             <div
               className={cn("h-full rounded-full", podiumTheme.bar)}
               style={{ width: `${Math.min(operator.percentage, 100)}%` }}
@@ -138,44 +152,59 @@ export function OperatorCard({ operator, rank, highlighted = false }: OperatorCa
 interface OperatorRowProps {
   operator: Operator
   rank: number
+  density?: "normal" | "compact"
 }
 
-export function OperatorRow({ operator, rank }: OperatorRowProps) {
+export function OperatorRow({ operator, rank, density = "normal" }: OperatorRowProps) {
+  const compact = density === "compact"
   return (
-    <div className="flex items-center gap-3 py-2">
+    <div className={cn("flex items-center", compact ? "gap-2 py-1" : "gap-3 py-2")}>
       {/* Rank */}
-      <span className="w-6 text-sm font-medium text-muted-foreground">{rank}</span>
+      <span className={cn(compact ? "w-5 text-[11px] font-medium text-muted-foreground" : "w-6 text-sm font-medium text-muted-foreground")}>
+        {rank}
+      </span>
 
       {/* Avatar */}
-      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200 text-xs font-bold text-gray-600">
+      <div
+        className={cn(
+          "flex items-center justify-center rounded-full bg-gray-200 font-bold text-gray-600",
+          compact ? "h-7 w-7 text-[11px]" : "h-8 w-8 text-xs"
+        )}
+      >
         {operator.initials}
       </div>
 
       {/* Name */}
-      <span className="flex-1 text-sm font-medium text-foreground">{operator.name}</span>
+      <span className={cn("flex-1 font-medium text-foreground", compact ? "text-[12px]" : "text-sm")}>
+        {operator.name}
+      </span>
 
       {/* Machine and SKU */}
       <div className="flex items-center gap-2">
-        <span className="rounded bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+        <span className={cn("rounded bg-primary/10 font-medium text-primary", compact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-0.5 text-xs")}>
           {operator.machine}
         </span>
-        <span className="rounded bg-cyan-100 px-2 py-0.5 text-xs font-medium text-cyan-700">
+        <span className={cn("rounded bg-cyan-100 font-medium text-cyan-700", compact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-0.5 text-xs")}>
           {operator.sku}
         </span>
       </div>
 
       {/* Units */}
-      <span className="w-12 text-right text-sm font-bold text-foreground">{operator.units}</span>
+      <span className={cn("text-right font-bold text-foreground", compact ? "w-10 text-[12px]" : "w-12 text-sm")}>
+        {operator.units}
+      </span>
 
       {/* Progress */}
-      <div className="flex w-20 items-center gap-2">
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-200">
+      <div className={cn("flex items-center gap-2", compact ? "w-16" : "w-20")}>
+        <div className={cn("flex-1 overflow-hidden rounded-full bg-gray-200", compact ? "h-1.5" : "h-1.5")}>
           <div
             className="h-full rounded-full bg-primary"
             style={{ width: `${Math.min(operator.percentage, 100)}%` }}
           />
         </div>
-        <span className="text-xs text-muted-foreground">{operator.percentage}%</span>
+        <span className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")}>
+          {operator.percentage}%
+        </span>
       </div>
     </div>
   )

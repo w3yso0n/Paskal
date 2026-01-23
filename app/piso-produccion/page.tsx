@@ -135,9 +135,9 @@ export default function ProductionFloorPage() {
   const renderDiagram = (viewportClassName: string) => {
     return (
       <div className={cn("overflow-auto", viewportClassName)}>
-        <div className="mx-auto flex min-h-full min-w-[900px] items-end justify-center gap-12">
+        <div className="mx-auto flex min-h-full min-w-[900px] items-end justify-center gap-14">
           {columns.map((column, colIndex) => (
-            <div key={colIndex} className="flex min-h-full flex-col justify-end gap-10">
+            <div key={colIndex} className="flex min-h-full flex-col justify-end ">
               {column
                 .sort((a, b) => a.position.row - b.position.row)
                 .map((machine) => (
@@ -211,7 +211,7 @@ export default function ProductionFloorPage() {
 
         {/* Plant Diagram */}
         <div className="rounded-xl border border-border bg-card p-8">
-          <div className="mb-6 flex items-center justify-between">
+          <div className="mb-2 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-card-foreground">Diagrama de la Planta</h2>
             <div className="flex items-center gap-3">
               <span className="text-sm text-muted-foreground">
@@ -229,7 +229,7 @@ export default function ProductionFloorPage() {
             </div>
           </div>
 
-          {renderDiagram("h-[560px] pt-10")}
+          {renderDiagram("h-[610px] pt-1")}
 
           {/* Legend */}
           <div className="mt-8 flex flex-wrap items-center justify-center gap-6 border-t border-border pt-6">
@@ -357,9 +357,12 @@ export default function ProductionFloorPage() {
 
       {/* Fullscreen Diagram */}
       <Dialog open={isDiagramFullscreen} onOpenChange={setIsDiagramFullscreen}>
-        <DialogContent className="sm:max-w-[calc(100%-2rem)] w-[calc(100%-2rem)] h-[calc(100vh-2rem)] max-w-[calc(100%-2rem)] flex flex-col overflow-hidden">
-          <DialogHeader>
-            <DialogTitle className="flex items-center justify-between gap-3">
+        <DialogContent
+          showCloseButton={false}
+          className="sm:max-w-[calc(100%-2rem)] w-[calc(100%-2rem)] h-[calc(100vh-2rem)] max-w-[calc(100%-2rem)] flex flex-col overflow-hidden p-0 gap-0"
+        >
+          <DialogHeader className="gap-1 border-b border-border px-4 py-2">
+            <DialogTitle className="flex items-center justify-between gap-2 text-base sm:text-lg">
               <span>Diagrama de la Planta</span>
               <Button
                 variant="outline"
@@ -371,13 +374,13 @@ export default function ProductionFloorPage() {
                 Salir
               </Button>
             </DialogTitle>
-            <DialogDescription>
+            <DialogDescription className="text-xs sm:text-sm">
               Click en una máquina para asignar SKU y personal.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex-1 min-h-0 overflow-hidden">
-            {renderDiagram("h-full pt-6")}
+          <div className="flex-1 min-h-0 overflow-hidden p-4">
+            {renderDiagram("h-full ")}
           </div>
         </DialogContent>
       </Dialog>

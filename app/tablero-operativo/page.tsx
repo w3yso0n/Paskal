@@ -21,56 +21,55 @@ export default function OperationsBoardPage() {
         { label: "Tablero Operativo" }
       ]}
     >
-      <div className="space-y-6">
+      <div className="space-y-3">
         {/* Header */}
-        <div className="flex items-center gap-3">
-          <Trophy className="h-6 w-6 text-yellow-500" />
-          <h1 className="text-2xl font-bold text-foreground">Tablero Operativo en Vivo</h1>
+        <div className="flex items-center gap-2">
+          <Trophy className="h-5 w-5 text-yellow-500" />
+          <h1 className="text-xl font-bold text-foreground sm:text-2xl">Tablero Operativo en Vivo</h1>
         </div>
 
         {/* Top 3 Podium */}
-        <div className="flex flex-col items-center justify-center gap-4 sm:flex-row sm:items-end sm:gap-4">
-          {/* 2nd place */}
-          <div className="sm:mt-8">
-            <OperatorCard operator={topThree[1]} rank={2} />
+        <div className="grid grid-cols-1 items-end justify-items-center gap-3 sm:grid-cols-3 sm:gap-3">
+          <div className="sm:translate-y-4">
+            <OperatorCard operator={topThree[1]} rank={2} density="compact" />
           </div>
-          {/* 1st place (leader) */}
           <div>
-            <OperatorCard operator={topThree[0]} rank={1} />
+            <OperatorCard operator={topThree[0]} rank={1} density="compact" />
           </div>
-          {/* 3rd place */}
-          <div className="sm:mt-8">
-            <OperatorCard operator={topThree[2]} rank={3} />
+          <div className="sm:translate-y-4">
+            <OperatorCard operator={topThree[2]} rank={3} density="compact" />
           </div>
         </div>
 
         {/* Operator Rankings Table */}
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid gap-3 lg:grid-cols-2">
           {/* Left Column */}
-          <div className="rounded-xl border border-border bg-card p-4">
+          <div className="rounded-xl border border-border bg-card p-3">
             {leftColumn.map((operator, index) => (
               <OperatorRow
                 key={operator.id}
                 operator={operator}
                 rank={4 + index * 2}
+                density="compact"
               />
             ))}
           </div>
 
           {/* Right Column */}
-          <div className="rounded-xl border border-border bg-card p-4">
+          <div className="rounded-xl border border-border bg-card p-3">
             {rightColumn.map((operator, index) => (
               <OperatorRow
                 key={operator.id}
                 operator={operator}
                 rank={5 + index * 2}
+                density="compact"
               />
             ))}
           </div>
         </div>
 
         {/* Footer info */}
-        <div className="text-center text-sm text-muted-foreground">
+        <div className="text-center text-xs text-muted-foreground">
           Actualización automática • Meta bono: 400 uds
         </div>
       </div>
