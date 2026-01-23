@@ -29,20 +29,25 @@ export default function OperationsBoardPage() {
         </div>
 
         {/* Top 3 Podium */}
-        <div className="grid grid-cols-1 items-end justify-items-center gap-3 sm:grid-cols-3 sm:gap-3">
-          <div className="sm:translate-y-4">
-            <OperatorCard operator={topThree[1]} rank={2} density="compact" />
-          </div>
-          <div>
-            <OperatorCard operator={topThree[0]} rank={1} density="compact" />
-          </div>
-          <div className="sm:translate-y-4">
-            <OperatorCard operator={topThree[2]} rank={3} density="compact" />
-          </div>
-        </div>
+        <div className="flex items-end justify-center">
+  <div className="grid grid-flow-col auto-cols-max items-end gap-2">
+    <div className="translate-y-4">
+      <OperatorCard operator={topThree[1]} rank={2} density="compact" />
+    </div>
+
+    <div>
+      <OperatorCard operator={topThree[0]} rank={1} density="compact" />
+    </div>
+
+    <div className="translate-y-4">
+      <OperatorCard operator={topThree[2]} rank={3} density="compact" />
+    </div>
+  </div>
+</div>
+
 
         {/* Operator Rankings Table */}
-        <div className="grid gap-3 lg:grid-cols-2">
+        <div className="grid gap-0 lg:grid-cols-2">
           {/* Left Column */}
           <div className="rounded-xl border border-border bg-card p-3">
             {leftColumn.map((operator, index) => (
