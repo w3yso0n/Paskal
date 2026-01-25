@@ -3,7 +3,7 @@
 import Link from "next/link"
 import Image from "next/image"
 import { usePathname } from "next/navigation"
-import { Home, Factory, Monitor, BarChart3, Users, ChevronLeft, ChevronRight, User, Bell, Target } from "lucide-react"
+import { Home, Factory, Monitor, BarChart3, Users, ChevronLeft, ChevronRight, User, Bell, Target, Clock } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export const menuItems = [
@@ -13,6 +13,7 @@ export const menuItems = [
   { icon: BarChart3, label: "Métricas", href: "/metricas" },
   { icon: Target, label: "Metas", href: "/metas" },
   { icon: Users, label: "Gestión de empleados", href: "/empleados" },
+  { icon: Clock, label: "Asistencias y Rotación", href: "/asistencias-rotacion" },
   { icon: Bell, label: "Alertas", href: "/alertas" },
 ]
 

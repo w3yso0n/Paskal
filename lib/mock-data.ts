@@ -373,3 +373,94 @@ export const alerts: Alert[] = [
     actionRequired: true,
   },
 ]
+
+// Attendance and Shift Rotation
+export type ShiftType = "Mañana" | "Tarde" | "Noche"
+export type AttendanceStatus = "Asistente" | "Ausente" | "Retardo" | "Permiso"
+
+export interface AttendanceRecord {
+  id: string
+  employeeId: string
+  employeeName: string
+  date: Date
+  checkInTime?: string
+  checkOutTime?: string
+  status: AttendanceStatus
+  hoursWorked?: number
+  notes?: string
+}
+
+export interface ShiftRotation {
+  id: string
+  employeeId: string
+  employeeName: string
+  machine: string
+  shift: ShiftType
+  date: Date
+  startTime: string
+  endTime: string
+  status: "Programado" | "Completado" | "Cancelado"
+}
+
+export interface AttendanceStats {
+  employeeId: string
+  employeeName: string
+  totalDays: number
+  presentDays: number
+  absentDays: number
+  lateDays: number
+  permissions: number
+  attendancePercentage: number
+  averageHoursWorked: number
+}
+
+// Attendance records for the last 30 days
+export const attendanceRecords: AttendanceRecord[] = [
+  // Carlos Ramírez
+  { id: "a1", employeeId: "1", employeeName: "Carlos Ramírez", date: new Date(2026, 0, 23), checkInTime: "06:00", checkOutTime: "14:30", status: "Asistente", hoursWorked: 8.5 },
+  { id: "a2", employeeId: "1", employeeName: "Carlos Ramírez", date: new Date(2026, 0, 22), checkInTime: "06:05", checkOutTime: "14:30", status: "Retardo", hoursWorked: 8.4 },
+  { id: "a3", employeeId: "1", employeeName: "Carlos Ramírez", date: new Date(2026, 0, 21), checkInTime: "06:00", checkOutTime: "14:30", status: "Asistente", hoursWorked: 8.5 },
+  { id: "a4", employeeId: "1", employeeName: "Carlos Ramírez", date: new Date(2026, 0, 20), checkInTime: "06:00", checkOutTime: "14:15", status: "Asistente", hoursWorked: 8.25 },
+  { id: "a5", employeeId: "1", employeeName: "Carlos Ramírez", date: new Date(2026, 0, 17), status: "Permiso", notes: "Permiso médico" },
+  // María González
+  { id: "a6", employeeId: "2", employeeName: "María González", date: new Date(2026, 0, 23), checkInTime: "14:00", checkOutTime: "22:30", status: "Asistente", hoursWorked: 8.5 },
+  { id: "a7", employeeId: "2", employeeName: "María González", date: new Date(2026, 0, 22), checkInTime: "14:00", checkOutTime: "22:30", status: "Asistente", hoursWorked: 8.5 },
+  { id: "a8", employeeId: "2", employeeName: "María González", date: new Date(2026, 0, 21), checkInTime: "14:00", checkOutTime: "22:30", status: "Asistente", hoursWorked: 8.5 },
+  { id: "a9", employeeId: "2", employeeName: "María González", date: new Date(2026, 0, 20), status: "Ausente", notes: "Sin justificación" },
+  { id: "a10", employeeId: "2", employeeName: "María González", date: new Date(2026, 0, 17), checkInTime: "14:10", checkOutTime: "22:30", status: "Retardo", hoursWorked: 8.3 },
+  // Juan Pérez
+  { id: "a11", employeeId: "3", employeeName: "Juan Pérez", date: new Date(2026, 0, 23), checkInTime: "22:00", checkOutTime: "06:00", status: "Asistente", hoursWorked: 8 },
+  { id: "a12", employeeId: "3", employeeName: "Juan Pérez", date: new Date(2026, 0, 22), checkInTime: "22:00", checkOutTime: "06:30", status: "Asistente", hoursWorked: 8.5 },
+  { id: "a13", employeeId: "3", employeeName: "Juan Pérez", date: new Date(2026, 0, 21), checkInTime: "22:00", checkOutTime: "06:00", status: "Asistente", hoursWorked: 8 },
+  { id: "a14", employeeId: "3", employeeName: "Juan Pérez", date: new Date(2026, 0, 20), checkInTime: "22:00", checkOutTime: "06:00", status: "Asistente", hoursWorked: 8 },
+  { id: "a15", employeeId: "3", employeeName: "Juan Pérez", date: new Date(2026, 0, 17), checkInTime: "22:05", checkOutTime: "06:00", status: "Retardo", hoursWorked: 7.9 },
+  // Ana López
+  { id: "a16", employeeId: "4", employeeName: "Ana López", date: new Date(2026, 0, 23), checkInTime: "06:00", checkOutTime: "14:30", status: "Asistente", hoursWorked: 8.5 },
+  { id: "a17", employeeId: "4", employeeName: "Ana López", date: new Date(2026, 0, 22), checkInTime: "06:00", checkOutTime: "14:30", status: "Asistente", hoursWorked: 8.5 },
+  { id: "a18", employeeId: "4", employeeName: "Ana López", date: new Date(2026, 0, 21), checkInTime: "06:00", checkOutTime: "14:30", status: "Asistente", hoursWorked: 8.5 },
+  { id: "a19", employeeId: "4", employeeName: "Ana López", date: new Date(2026, 0, 20), checkInTime: "06:00", checkOutTime: "14:30", status: "Asistente", hoursWorked: 8.5 },
+  { id: "a20", employeeId: "4", employeeName: "Ana López", date: new Date(2026, 0, 17), checkInTime: "06:00", checkOutTime: "14:30", status: "Asistente", hoursWorked: 8.5 },
+]
+
+// Shift rotations
+export const shiftRotations: ShiftRotation[] = [
+  // Week of Jan 20-24, 2026
+  { id: "s1", employeeId: "1", employeeName: "Carlos Ramírez", machine: "M3", shift: "Mañana", date: new Date(2026, 0, 23), startTime: "06:00", endTime: "14:30", status: "Completado" },
+  { id: "s2", employeeId: "1", employeeName: "Carlos Ramírez", machine: "M3", shift: "Mañana", date: new Date(2026, 0, 24), startTime: "06:00", endTime: "14:30", status: "Programado" },
+  { id: "s3", employeeId: "2", employeeName: "María González", machine: "M7", shift: "Tarde", date: new Date(2026, 0, 23), startTime: "14:00", endTime: "22:30", status: "Completado" },
+  { id: "s4", employeeId: "2", employeeName: "María González", machine: "M7", shift: "Tarde", date: new Date(2026, 0, 24), startTime: "14:00", endTime: "22:30", status: "Programado" },
+  { id: "s5", employeeId: "3", employeeName: "Juan Pérez", machine: "M1", shift: "Noche", date: new Date(2026, 0, 23), startTime: "22:00", endTime: "06:00", status: "Completado" },
+  { id: "s6", employeeId: "3", employeeName: "Juan Pérez", machine: "M1", shift: "Noche", date: new Date(2026, 0, 24), startTime: "22:00", endTime: "06:00", status: "Programado" },
+  { id: "s7", employeeId: "4", employeeName: "Ana López", machine: "M12", shift: "Mañana", date: new Date(2026, 0, 23), startTime: "06:00", endTime: "14:30", status: "Completado" },
+  { id: "s8", employeeId: "4", employeeName: "Ana López", machine: "M12", shift: "Mañana", date: new Date(2026, 0, 24), startTime: "06:00", endTime: "14:30", status: "Programado" },
+  { id: "s9", employeeId: "1", employeeName: "Carlos Ramírez", machine: "M3", shift: "Tarde", date: new Date(2026, 0, 25), startTime: "14:00", endTime: "22:30", status: "Programado" },
+  { id: "s10", employeeId: "2", employeeName: "María González", machine: "M7", shift: "Noche", date: new Date(2026, 0, 25), startTime: "22:00", endTime: "06:00", status: "Programado" },
+]
+
+// Attendance statistics
+export const attendanceStats: AttendanceStats[] = [
+  { employeeId: "1", employeeName: "Carlos Ramírez", totalDays: 20, presentDays: 17, absentDays: 0, lateDays: 2, permissions: 1, attendancePercentage: 85, averageHoursWorked: 8.3 },
+  { employeeId: "2", employeeName: "María González", totalDays: 20, presentDays: 16, absentDays: 1, lateDays: 1, permissions: 2, attendancePercentage: 80, averageHoursWorked: 8.2 },
+  { employeeId: "3", employeeName: "Juan Pérez", totalDays: 20, presentDays: 18, absentDays: 0, lateDays: 1, permissions: 1, attendancePercentage: 90, averageHoursWorked: 8.1 },
+  { employeeId: "4", employeeName: "Ana López", totalDays: 20, presentDays: 20, absentDays: 0, lateDays: 0, permissions: 0, attendancePercentage: 100, averageHoursWorked: 8.5 },
+]
