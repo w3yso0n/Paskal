@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { KpiCard } from "@/components/dashboard/kpi-card"
+import { AttendanceTable } from "@/components/attendance/attendance-table"
+import { AttendanceStatsCards } from "@/components/attendance/attendance-stats-cards"
 import { Button } from "@/components/ui/button"
 import {
   Tabs,
@@ -39,6 +41,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
@@ -57,6 +61,9 @@ import {
   MoreVertical,
   Download,
   FileSpreadsheet,
+  UserCheck,
+  UserMinus,
+  UserPlus,
 } from "lucide-react"
 import {
   BarChart,
@@ -83,6 +90,8 @@ import {
   topSkusData,
   operators,
   employees,
+  attendanceRecords,
+  attendanceStats,
 } from "@/lib/mock-data"
 import { cn } from "@/lib/utils"
 
@@ -112,6 +121,23 @@ interface ProductionBaseRow {
 const clampPercent = (value: number) => Math.max(0, Math.min(100, value))
 
 export default function MetricsPage() {
+  const [activeTab, setActiveTab] = useState("produccion")
+  const [filterStartDate, setFilterStartDate] = useState(() => {
+    const d = new Date()
+    d.setDate(d.getDate() - 14)
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, "0")
+    const dd = String(d.getDate()).padStart(2, "0")
+    return `${yyyy}-${mm}-${dd}`
+  })
+  const [filterEndDate, setFilterEndDate] = useState(() => {
+    const d = new Date()
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, "0")
+    const dd = String(d.getDate()).padStart(2, "0")
+    return `${yyyy}-${mm}-${dd}`
+  })
+
   const formatDate = (date: Date) => {
     const yyyy = date.getFullYear()
     const mm = String(date.getMonth() + 1).padStart(2, "0")
@@ -344,12 +370,17 @@ export default function MetricsPage() {
     type RecentEvent = ProductionBaseRow & { tsLabel: string }
     type DistRow = { event: ProductionEventType; count: number; color: string }
 
-    const now = new Date()
-    const start14d = new Date(now)
-    start14d.setDate(now.getDate() - 13)
-    start14d.setHours(0, 0, 0, 0)
+    // Parse filter dates
+    const startDate = new Date(filterStartDate)
+    startDate.setHours(0, 0, 0, 0)
+    const endDate = new Date(filterEndDate)
+    endDate.setHours(23, 59, 59, 999)
 
-    const rows14d = productionBaseRows.filter((r) => new Date(r.timestamp) >= start14d)
+    // Filter rows by selected date range
+    const rows14d = productionBaseRows.filter((r) => {
+      const rowDate = new Date(r.timestamp)
+      return rowDate >= startDate && rowDate <= endDate
+    })
 
     const eventOrder: ProductionEventType[] = [
       "Producción",
@@ -604,7 +635,21 @@ export default function MetricsPage() {
       machineScatter,
       recentNonProductionEvents,
     }
-  }, [productionBaseRows])
+  }, [productionBaseRows, filterStartDate, filterEndDate])
+
+  // Filter attendance records by date range
+  const filteredAttendanceRecords = useMemo(() => {
+    const startDate = new Date(filterStartDate)
+    startDate.setHours(0, 0, 0, 0)
+    const endDate = new Date(filterEndDate)
+    endDate.setHours(23, 59, 59, 999)
+
+    return attendanceRecords.filter((record) => {
+      const recordDate = new Date(record.date)
+      recordDate.setHours(0, 0, 0, 0)
+      return recordDate >= startDate && recordDate <= endDate
+    })
+  }, [filterStartDate, filterEndDate])
 
   const handleGenerateProductionReport = async () => {
     const blob = await buildProductionReportWorkbook({
@@ -658,374 +703,636 @@ export default function MetricsPage() {
       <div className="space-y-6">
         {/* Header */}
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Métricas de Producción</h1>
+          <h1 className="text-2xl font-bold text-foreground">Centro de Métricas</h1>
           <p className="text-muted-foreground">
-            Analítica basada en el monitoreo por hora de las máquinas
+            Monitoreo integral de producción, operadores, asistencia y rotación de personal
           </p>
         </div>
 
-        {/* Downloads */}
+        {/* Date Range Filter */}
         <div className="rounded-xl border border-border bg-card p-6">
-          <div className="mb-4 flex items-center gap-2">
-            <FileSpreadsheet className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold text-card-foreground">Reportes descargables (XLSX)</h2>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <Label className="text-sm font-medium text-foreground mb-2 block">Desde</Label>
+              <input
+                type="date"
+                value={filterStartDate}
+                onChange={(e) => setFilterStartDate(e.target.value)}
+                className={cn(
+                  "w-full px-3 py-2 rounded-md border border-input bg-background text-sm",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                )}
+              />
+            </div>
+            <div className="flex-1">
+              <Label className="text-sm font-medium text-foreground mb-2 block">Hasta</Label>
+              <input
+                type="date"
+                value={filterEndDate}
+                onChange={(e) => setFilterEndDate(e.target.value)}
+                className={cn(
+                  "w-full px-3 py-2 rounded-md border border-input bg-background text-sm",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                )}
+              />
+            </div>
+            <Button 
+              onClick={() => {
+                // Filtro aplicado automáticamente al cambiar las fechas
+                setActiveTab(activeTab) // Trigger re-render
+              }}
+              className="gap-2"
+            >
+              <Clock className="h-4 w-4" />
+              Aplicar
+            </Button>
           </div>
-          <p className="mb-4 text-sm text-muted-foreground">
-            Genera reportes en Excel (.xlsx). El reporte de producción incluye 3 hojas: Detalle, Resumen diario y Resumen mensual.
+          <p className="text-xs text-muted-foreground mt-3">
+            Rango seleccionado: <span className="font-medium">{filterStartDate}</span> a <span className="font-medium">{filterEndDate}</span>
           </p>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <Button variant="outline" className="justify-start" onClick={() => setIsReportDialogOpen(true)}>
-              <Download /> Generar reporte de producción (rango)
-            </Button>
-            <Button variant="outline" className="justify-start" onClick={handleDownloadBonusReportXlsx}>
-              <Download /> Reporte de Bonos (XLSX)
-            </Button>
-          </div>
         </div>
 
-        {/* Report dialog */}
-        <Dialog open={isReportDialogOpen} onOpenChange={setIsReportDialogOpen}>
-          <DialogContent className="sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle>Generar reporte de producción (XLSX)</DialogTitle>
-              <DialogDescription>
-                Selecciona un rango de fechas y si se consideran ambos turnos (matutino y vespertino).
-              </DialogDescription>
-            </DialogHeader>
+        {/* Main Tabs */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+          <TabsList className="grid w-full grid-cols-4">
+            <TabsTrigger value="produccion">Producción</TabsTrigger>
+            <TabsTrigger value="operadores">Operadores & Empacadores</TabsTrigger>
+            <TabsTrigger value="asistencia">Asistencia</TabsTrigger>
+            <TabsTrigger value="rotacion">Rotación</TabsTrigger>
+          </TabsList>
 
-            <div className="grid gap-4">
+          {/* ========== PRODUCCIÓN TAB ========== */}
+          <TabsContent value="produccion" className="space-y-6">
+            {/* Reportes */}
+            <div className="rounded-xl border border-border bg-card p-6">
+              <div className="mb-4 flex items-center gap-2">
+                <FileSpreadsheet className="h-5 w-5 text-muted-foreground" />
+                <h2 className="text-lg font-semibold text-card-foreground">Reportes Descargables</h2>
+              </div>
               <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">Fecha inicio</label>
-                  <input
-                    type="date"
-                    className={cn(
-                      "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    )}
-                    value={reportStartDate}
-                    onChange={(e) => setReportStartDate(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">Fecha fin</label>
-                  <input
-                    type="date"
-                    className={cn(
-                      "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
-                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    )}
-                    value={reportEndDate}
-                    onChange={(e) => setReportEndDate(e.target.value)}
-                  />
-                </div>
+                <Button variant="outline" className="justify-start" onClick={() => setIsReportDialogOpen(true)}>
+                  <Download className="h-4 w-4" /> Reporte de Producción (Rango)
+                </Button>
+                <Button variant="outline" className="justify-start" onClick={handleDownloadBonusReportXlsx}>
+                  <Download className="h-4 w-4" /> Reporte de Bonos
+                </Button>
               </div>
-
-              <div className="flex items-start gap-3">
-                <Checkbox
-                  checked={includeBothShifts}
-                  onCheckedChange={(v) => setIncludeBothShifts(Boolean(v))}
-                />
-                <div className="space-y-1">
-                  <p className="text-sm font-medium text-foreground">Considerar ambos turnos</p>
-                  <p className="text-sm text-muted-foreground">
-                    Si desactivas, el reporte se filtra por un turno.
-                  </p>
-                </div>
-              </div>
-
-              {!includeBothShifts && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground">Turno</label>
-                  <Select value={selectedShift} onValueChange={(v) => setSelectedShift(v as ShiftType)}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Seleccionar" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="matutino">Matutino (06:00–13:59)</SelectItem>
-                      <SelectItem value="vespertino">Vespertino (14:00–21:59)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
             </div>
 
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setIsReportDialogOpen(false)}>
-                Cancelar
-              </Button>
-              <Button onClick={handleGenerateProductionReport}>
-                <Download /> Generar XLSX
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+            {/* Report dialog */}
+            <Dialog open={isReportDialogOpen} onOpenChange={setIsReportDialogOpen}>
+              <DialogContent className="sm:max-w-lg">
+                <DialogHeader>
+                  <DialogTitle>Generar Reporte de Producción</DialogTitle>
+                  <DialogDescription>
+                    Selecciona rango de fechas y turnos
+                  </DialogDescription>
+                </DialogHeader>
 
-        {/* Top KPI Cards */}
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <KpiCard
-            title="Producción Total"
-            value="3,301"
-            subtitle="Unidades hoy"
-            icon={CheckCircle}
-            iconColor="text-primary"
-          />
-          <KpiCard
-            title="Promedio por Hora"
-            value="275"
-            subtitle="Unidades/hora"
-            icon={Clock}
-            iconColor="text-primary"
-          />
-          <KpiCard
-            title="Hora Pico"
-            value="09:00"
-            subtitle="325 unidades"
-            icon={Zap}
-            iconColor="text-yellow-500"
-          />
-          <KpiCard
-            title="Uptime Promedio"
-            value="94%"
-            subtitle="Disponibilidad"
-            icon={TrendingUp}
-            iconColor="text-primary"
-          />
-        </div>
-
-        {/* Charts Row */}
-        <div className="grid gap-6 lg:grid-cols-3">
-          {/* Hourly Production Bar Chart */}
-          <div className="lg:col-span-2 rounded-xl border border-border bg-card p-6">
-            <div className="mb-4 flex items-center gap-2">
-              <Clock className="h-5 w-5 text-muted-foreground" />
-              <h2 className="text-lg font-semibold text-card-foreground">Producción por Hora</h2>
-            </div>
-            <div className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={hourlyProductionData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-                  <XAxis dataKey="hour" tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} domain={[0, 400]} />
-                  <Tooltip />
-                  <Bar dataKey="production" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Event Distribution Donut Chart */}
-          <div className="rounded-xl border border-border bg-card p-6">
-            <div className="mb-4 flex items-center gap-2">
-              <TrendingUp className="h-5 w-5 text-muted-foreground" />
-              <h2 className="text-lg font-semibold text-card-foreground">Distribución de Eventos</h2>
-            </div>
-            <div className="h-[200px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={eventDistributionData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={50}
-                    outerRadius={80}
-                    paddingAngle={2}
-                    dataKey="value"
-                  >
-                    {eventDistributionData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            <div className="mt-4 space-y-2">
-              {eventDistributionData.map((item) => (
-                <div key={item.name} className="flex items-center justify-between text-sm">
-                  <div className="flex items-center gap-2">
-                    <div className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: item.color }} />
-                    <span className="text-muted-foreground">{item.name}</span>
-                  </div>
-                  <span className="font-medium text-foreground">{item.value}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Tables Row */}
-        <div className="grid gap-6 lg:grid-cols-2">
-          {/* Machine Performance Table */}
-          <div className="rounded-xl border border-border bg-card p-6">
-            <div className="mb-4 flex items-center gap-2">
-              <CheckCircle className="h-5 w-5 text-primary" />
-              <h2 className="text-lg font-semibold text-card-foreground">
-                Rendimiento por Máquina (Top 5)
-              </h2>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[560px]">
-                <thead>
-                  <tr className="border-b border-border text-left text-sm text-muted-foreground">
-                    <th className="pb-3 font-medium">Máquina</th>
-                    <th className="pb-3 font-medium">Operador</th>
-                    <th className="pb-3 font-medium text-right">Prom/Hora</th>
-                    <th className="pb-3 font-medium text-right">Uptime</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topMachinesData.map((machine) => (
-                    <tr key={machine.machine} className="border-b border-border last:border-0">
-                      <td className="py-3 font-medium text-primary">{machine.machine}</td>
-                      <td className="py-3 text-foreground">{machine.operator}</td>
-                      <td className="py-3 text-right font-medium text-foreground">
-                        {machine.avgPerHour}
-                      </td>
-                      <td className="py-3 text-right">
-                        <span
-                          className={cn(
-                            "font-medium",
-                            machine.uptime >= 95
-                              ? "text-green-600"
-                              : machine.uptime >= 90
-                                ? "text-yellow-600"
-                                : "text-red-600"
-                          )}
-                        >
-                          {machine.uptime}%
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Top SKUs */}
-          <div className="rounded-xl border border-border bg-card p-6">
-            <div className="mb-4 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <RefreshCw className="h-5 w-5 text-primary" />
-                <h2 className="text-lg font-semibold text-card-foreground">SKUs Más Producidos</h2>
-              </div>
-              <button className="text-muted-foreground hover:text-foreground">
-                <MoreVertical className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="space-y-4">
-              {topSkusData.map((sku) => (
-                <div key={sku.sku}>
-                  <div className="mb-1 flex items-center justify-between text-sm">
-                    <span className="font-medium text-foreground">{sku.sku}</span>
-                    <span className="text-muted-foreground">
-                      {sku.units.toLocaleString()} uds ({sku.percentage}%)
-                    </span>
-                  </div>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
-                    <div
-                      className="h-full rounded-full bg-primary"
-                      style={{ width: `${sku.percentage * 3}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* New: richer analytics based on machine_id/timestamp/operator/packers/event/sku */}
-        <div className="rounded-xl border border-border bg-card p-6">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-card-foreground">Métricas avanzadas (últimos 14 días)</h2>
-            <p className="text-sm text-muted-foreground">
-              Derivadas de los registros por máquina: operador, empacadores, evento, SKU y conteo. (Estimadas para demo)
-            </p>
-          </div>
-
-          <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <KpiCard
-              title="Cambios SKU"
-              value={analytics.changeovers14d.toLocaleString()}
-              subtitle={`${analytics.changeoversPer1k.toFixed(2)} por 1k uds`}
-              icon={RefreshCw}
-              iconColor="text-primary"
-            />
-            <KpiCard
-              title="Producción (14d)"
-              value={analytics.produced14d.toLocaleString()}
-              subtitle="Unidades producidas"
-              icon={TrendingUp}
-              iconColor="text-primary"
-            />
-            <KpiCard
-              title="Eventos de paro"
-              value={analytics.downtimeEvents14d.toLocaleString()}
-              subtitle="Parada + Mant. + Limpieza"
-              icon={AlertTriangle}
-              iconColor="text-yellow-500"
-            />
-            <KpiCard
-              title="Eventos (14d)"
-              value={analytics.eventBreakdown.reduce((acc, e) => acc + e.count, 0).toLocaleString()}
-              subtitle="Conteo total de eventos"
-              icon={Clock}
-              iconColor="text-primary"
-            />
-          </div>
-
-          <Tabs defaultValue="equipos">
-            <TabsList className="mb-4">
-              <TabsTrigger value="equipos">Operadores & Empaque</TabsTrigger>
-              <TabsTrigger value="sku">SKU & Eventos</TabsTrigger>
-              <TabsTrigger value="turnos">Turnos</TabsTrigger>
-              <TabsTrigger value="maquinas">Máquinas</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="equipos">
-              <div className="space-y-6">
-                <div className="grid gap-6 lg:grid-cols-2">
-                  <div className="rounded-xl border border-border bg-background p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-foreground">Top operadores por unidades</h3>
-                    <Badge variant="outline">14d</Badge>
-                  </div>
-                  <ChartContainer
-                    className="h-[320px] w-full aspect-auto"
-                    config={{
-                      units: { label: "Unidades", color: "#22c55e" },
-                    }}
-                  >
-                    <BarChart data={analytics.topOperators} margin={{ left: 8, right: 8 }}>
-                      <CartesianGrid vertical={false} />
-                      <XAxis
-                        dataKey="name"
-                        tick={{ fontSize: 11 }}
-                        interval={0}
-                        angle={-20}
-                        textAnchor="end"
-                        height={60}
+                <div className="grid gap-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">Fecha inicio</label>
+                      <input
+                        type="date"
+                        className={cn(
+                          "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
+                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        )}
+                        value={reportStartDate}
+                        onChange={(e) => setReportStartDate(e.target.value)}
                       />
-                      <YAxis tick={{ fontSize: 12 }} />
-                      <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="units" radius={[4, 4, 0, 0]}>
-                        {analytics.topOperators.map((entry, index) => (
-                          <Cell
-                            key={entry.name}
-                            fill={operatorBarPalette[index % operatorBarPalette.length]}
-                          />
-                        ))}
-                      </Bar>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">Fecha fin</label>
+                      <input
+                        type="date"
+                        className={cn(
+                          "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
+                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                        )}
+                        value={reportEndDate}
+                        onChange={(e) => setReportEndDate(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      checked={includeBothShifts}
+                      onCheckedChange={(v) => setIncludeBothShifts(Boolean(v))}
+                    />
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-foreground">Ambos turnos</p>
+                      <p className="text-sm text-muted-foreground">
+                        Matutino y vespertino
+                      </p>
+                    </div>
+                  </div>
+
+                  {!includeBothShifts && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-foreground">Turno</label>
+                      <Select value={selectedShift} onValueChange={(v) => setSelectedShift(v as ShiftType)}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Seleccionar" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="matutino">Matutino (06:00–13:59)</SelectItem>
+                          <SelectItem value="vespertino">Vespertino (14:00–21:59)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setIsReportDialogOpen(false)}>
+                    Cancelar
+                  </Button>
+                  <Button onClick={handleGenerateProductionReport}>
+                    <Download className="h-4 w-4" /> Generar
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            {/* KPI Cards */}
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <KpiCard
+                title="Producción Hoy"
+                value="3,301"
+                subtitle="Unidades"
+                icon={CheckCircle}
+                iconColor="text-primary"
+              />
+              <KpiCard
+                title="Promedio/Hora"
+                value="275"
+                subtitle="Unidades"
+                icon={Clock}
+                iconColor="text-primary"
+              />
+              <KpiCard
+                title="Hora Pico"
+                value="09:00"
+                subtitle="325 uds"
+                icon={Zap}
+                iconColor="text-yellow-500"
+              />
+              <KpiCard
+                title="Uptime"
+                value="94%"
+                subtitle="Disponibilidad"
+                icon={TrendingUp}
+                iconColor="text-primary"
+              />
+            </div>
+
+            {/* Production Charts */}
+            <div className="grid gap-6 lg:grid-cols-3">
+              {/* Hourly Chart */}
+              <div className="lg:col-span-2 rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Producción por Hora</h3>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={hourlyProductionData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                      <XAxis dataKey="hour" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 12 }} domain={[0, 400]} />
+                      <Tooltip />
+                      <Bar dataKey="production" fill="#22c55e" radius={[4, 4, 0, 0]} />
                     </BarChart>
-                  </ChartContainer>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Event Distribution */}
+              <div className="rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Distribución de Eventos</h3>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={eventDistributionData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={50}
+                        outerRadius={80}
+                        paddingAngle={2}
+                        dataKey="value"
+                      >
+                        {eventDistributionData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+
+            {/* Machines & SKUs */}
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Machines */}
+              <div className="rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Top Máquinas</h3>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[560px]">
+                    <thead>
+                      <tr className="border-b border-border text-left text-sm text-muted-foreground">
+                        <th className="pb-3 font-medium">Máquina</th>
+                        <th className="pb-3 font-medium">Operador</th>
+                        <th className="pb-3 font-medium text-right">Prom/Hr</th>
+                        <th className="pb-3 font-medium text-right">Uptime</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {topMachinesData.map((machine) => (
+                        <tr key={machine.machine} className="border-b border-border last:border-0">
+                          <td className="py-3 font-medium text-primary">{machine.machine}</td>
+                          <td className="py-3 text-foreground">{machine.operator}</td>
+                          <td className="py-3 text-right font-medium">{machine.avgPerHour}</td>
+                          <td className="py-3 text-right">
+                            <span
+                              className={cn(
+                                "font-medium",
+                                machine.uptime >= 95
+                                  ? "text-green-600"
+                                  : machine.uptime >= 90
+                                    ? "text-yellow-600"
+                                    : "text-red-600"
+                              )}
+                            >
+                              {machine.uptime}%
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* SKUs */}
+              <div className="rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">SKUs Más Producidos</h3>
+                <div className="space-y-4">
+                  {topSkusData.map((sku) => (
+                    <div key={sku.sku}>
+                      <div className="mb-1 flex items-center justify-between text-sm">
+                        <span className="font-medium">{sku.sku}</span>
+                        <span className="text-muted-foreground">{sku.units.toLocaleString()} uds</span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
+                        <div
+                          className="h-full rounded-full bg-primary"
+                          style={{ width: `${sku.percentage * 3}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Advanced Metrics - KPIs */}
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="font-semibold text-foreground mb-4">Métricas Avanzadas (14 días)</h3>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <KpiCard
+                  title="Cambios SKU"
+                  value={analytics.changeovers14d.toLocaleString()}
+                  subtitle={`${analytics.changeoversPer1k.toFixed(2)}/1k uds`}
+                  icon={RefreshCw}
+                  iconColor="text-primary"
+                />
+                <KpiCard
+                  title="Producción (14d)"
+                  value={analytics.produced14d.toLocaleString()}
+                  subtitle="Unidades"
+                  icon={TrendingUp}
+                  iconColor="text-primary"
+                />
+                <KpiCard
+                  title="Eventos Paro"
+                  value={analytics.downtimeEvents14d.toLocaleString()}
+                  subtitle="Parada+Mant.+Limpieza"
+                  icon={AlertTriangle}
+                  iconColor="text-yellow-500"
+                />
+                <KpiCard
+                  title="Total Eventos"
+                  value={analytics.eventBreakdown.reduce((acc, e) => acc + e.count, 0).toLocaleString()}
+                  subtitle="14 días"
+                  icon={Clock}
+                  iconColor="text-primary"
+                />
+              </div>
+            </div>
+
+            {/* Advanced Tabs */}
+            <Tabs defaultValue="prod-vs-downtime" className="space-y-4">
+              <TabsList className="grid w-full grid-cols-3">
+                <TabsTrigger value="prod-vs-downtime">Producción vs Paros</TabsTrigger>
+                <TabsTrigger value="sku-eventos">SKU & Eventos</TabsTrigger>
+                <TabsTrigger value="turnos">Turnos</TabsTrigger>
+              </TabsList>
+
+              {/* Producción vs Paros */}
+              <TabsContent value="prod-vs-downtime" className="space-y-4">
+                <div className="grid gap-6 lg:grid-cols-3">
+                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
+                    <h3 className="text-sm font-semibold text-foreground mb-3">Producción vs Paros (Diario)</h3>
+                    <ChartContainer
+                      className="h-[300px] w-full aspect-auto"
+                      config={{
+                        produced: { label: "Producción", color: "#22c55e" },
+                        downtime: { label: "Paros", color: "#f97316" },
+                      }}
+                    >
+                      <AreaChart data={analytics.dailySeries} margin={{ left: 8, right: 8 }}>
+                        <CartesianGrid vertical={false} />
+                        <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                        <YAxis tick={{ fontSize: 12 }} />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Area type="monotone" dataKey="produced" stroke="var(--color-produced)" fill="var(--color-produced)" fillOpacity={0.18} strokeWidth={2} />
+                        <Area type="monotone" dataKey="downtime" stroke="var(--color-downtime)" fill="var(--color-downtime)" fillOpacity={0.12} strokeWidth={2} />
+                      </AreaChart>
+                    </ChartContainer>
                   </div>
 
                   <div className="rounded-xl border border-border bg-background p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-foreground">Empacadores (atribución 50/50)</h3>
-                    <Badge variant="outline">14d</Badge>
+                    <h3 className="text-sm font-semibold text-foreground mb-3">Resumen por Evento</h3>
+                    <div className="space-y-2">
+                      {analytics.eventBreakdown.map((e) => (
+                        <div key={e.event} className="flex items-center justify-between">
+                          <Badge variant={eventBadgeVariant(e.event)}>{e.event}</Badge>
+                          <span className="font-mono text-sm text-foreground">{e.count.toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
+                </div>
+              </TabsContent>
+
+              {/* SKU & Eventos */}
+              <TabsContent value="sku-eventos" className="space-y-4">
+                <div className="grid gap-6 lg:grid-cols-3">
+                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
+                    <h3 className="text-sm font-semibold text-foreground mb-3">Distribución por SKU</h3>
+                    <ChartContainer
+                      className="h-[300px] w-full aspect-auto"
+                      config={{ units: { label: "Unidades" } }}
+                    >
+                      <BarChart data={analytics.skuDistribution.slice(0, 10)} margin={{ left: 8, right: 8 }}>
+                        <CartesianGrid vertical={false} />
+                        <XAxis dataKey="sku" tick={{ fontSize: 12 }} />
+                        <YAxis tick={{ fontSize: 12 }} />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Bar dataKey="units" radius={[4, 4, 0, 0]}>
+                          {analytics.skuDistribution.slice(0, 10).map((s, index) => (
+                            <Cell key={s.sku} fill={skuPalette[index % skuPalette.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ChartContainer>
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-background p-4">
+                    <h3 className="text-sm font-semibold text-foreground mb-3">SKU (Top 6)</h3>
+                    <div className="h-[300px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie data={analytics.topSkus} dataKey="units" nameKey="sku" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2}>
+                            {analytics.topSkus.map((s, index) => (
+                              <Cell key={s.sku} fill={skuPalette[index % skuPalette.length]} />
+                            ))}
+                          </Pie>
+                          <Tooltip />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+              </TabsContent>
+
+              {/* Turnos */}
+              <TabsContent value="turnos" className="space-y-4">
+                <div className="grid gap-6 lg:grid-cols-3">
+                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
+                    <h3 className="text-sm font-semibold text-foreground mb-3">Matutino vs Vespertino</h3>
+                    <ChartContainer
+                      className="h-[300px] w-full aspect-auto"
+                      config={{
+                        matutino: { label: "Matutino", color: "#3b82f6" },
+                        vespertino: { label: "Vespertino", color: "#f97316" },
+                      }}
+                    >
+                      <BarChart data={analytics.shiftComparisonMetrics} margin={{ left: 8, right: 8 }}>
+                        <CartesianGrid vertical={false} />
+                        <XAxis dataKey="metric" tick={{ fontSize: 12 }} />
+                        <YAxis tick={{ fontSize: 12 }} />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Bar dataKey="matutino" fill="var(--color-matutino)" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="vespertino" fill="var(--color-vespertino)" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ChartContainer>
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-background p-4">
+                    <h3 className="text-sm font-semibold text-foreground mb-3">Eventos por Turno</h3>
+                    <div className="space-y-4">
+                      <div className="h-[140px]">
+                        <p className="mb-2 text-xs font-medium text-muted-foreground">Matutino</p>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie data={analytics.shiftEventDistributions.matutino} dataKey="count" nameKey="event" cx="50%" cy="50%" innerRadius={30} outerRadius={55} paddingAngle={2}>
+                              {analytics.shiftEventDistributions.matutino.map((d) => (
+                                <Cell key={d.event} fill={d.color} />
+                              ))}
+                            </Pie>
+                            <Tooltip />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div className="h-[140px]">
+                        <p className="mb-2 text-xs font-medium text-muted-foreground">Vespertino</p>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie data={analytics.shiftEventDistributions.vespertino} dataKey="count" nameKey="event" cx="50%" cy="50%" innerRadius={30} outerRadius={55} paddingAngle={2}>
+                              {analytics.shiftEventDistributions.vespertino.map((d) => (
+                                <Cell key={d.event} fill={d.color} />
+                              ))}
+                            </Pie>
+                            <Tooltip />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </TabsContent>
+            </Tabs>
+          </TabsContent>
+
+          {/* ========== OPERADORES & EMPACADORES TAB ========== */}
+          <TabsContent value="operadores" className="space-y-6">
+            {/* Top Operadores & Empacadores */}
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Top Operadores */}
+              <div className="rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Top Operadores por Unidades</h3>
+                <ChartContainer
+                  className="h-[320px] w-full aspect-auto"
+                  config={{ units: { label: "Unidades", color: "#22c55e" } }}
+                >
+                  <BarChart data={analytics.topOperators} margin={{ left: 8, right: 8 }}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-20} textAnchor="end" height={60} />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Bar dataKey="units" radius={[4, 4, 0, 0]}>
+                      {analytics.topOperators.map((entry, index) => (
+                        <Cell key={entry.name} fill={operatorBarPalette[index % operatorBarPalette.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ChartContainer>
+              </div>
+
+              {/* Top Empacadores */}
+              <div className="rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Top Empacadores por Unidades</h3>
+                <ChartContainer
+                  className="h-[320px] w-full aspect-auto"
+                  config={{ units: { label: "Unidades", color: "#3b82f6" } }}
+                >
+                  <BarChart data={analytics.topPackers.slice(0, 8)} margin={{ left: 8, right: 8 }}>
+                    <CartesianGrid vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} angle={-20} textAnchor="end" height={60} />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                    <Bar dataKey="units" radius={[4, 4, 0, 0]}>
+                      {analytics.topPackers.slice(0, 8).map((entry, index) => (
+                        <Cell key={entry.name} fill={operatorBarPalette[index % operatorBarPalette.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ChartContainer>
+              </div>
+            </div>
+
+            {/* Distribuciones */}
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Distribución de Operadores */}
+              <div className="rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Distribución de Operadores</h3>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie 
+                        data={analytics.topOperators} 
+                        dataKey="units" 
+                        nameKey="name" 
+                        cx="50%" 
+                        cy="50%" 
+                        innerRadius={55} 
+                        outerRadius={90} 
+                        paddingAngle={2}
+                      >
+                        {analytics.topOperators.map((op, index) => (
+                          <Cell key={op.name} fill={operatorBarPalette[index % operatorBarPalette.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Distribución de Empacadores */}
+              <div className="rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Distribución de Empacadores</h3>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={analytics.packerDistribution.slice(0, 8)} dataKey="units" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2}>
+                        {analytics.packerDistribution.slice(0, 8).map((p, index) => (
+                          <Cell key={p.name} fill={skuPalette[index % skuPalette.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+
+            {/* Eventos por Operador */}
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="font-semibold text-foreground mb-4">Distribución de Eventos por Operador</h3>
+              <Accordion type="single" collapsible>
+                {analytics.operatorEventDistributions.map((op) => (
+                  <AccordionItem key={op.operator} value={op.operator}>
+                    <AccordionTrigger>{op.operator}</AccordionTrigger>
+                    <AccordionContent>
+                      <div className="grid gap-4 lg:grid-cols-3">
+                        <div className="lg:col-span-1">
+                          <p className="text-sm text-muted-foreground">Total eventos</p>
+                          <p className="text-2xl font-bold text-foreground">{op.total.toLocaleString()}</p>
+                        </div>
+                        <div className="lg:col-span-2 h-[220px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie data={op.dist} dataKey="count" nameKey="event" cx="50%" cy="50%" innerRadius={55} outerRadius={85} paddingAngle={2}>
+                                {op.dist.map((d) => (
+                                  <Cell key={d.event} fill={d.color} />
+                                ))}
+                              </Pie>
+                              <Tooltip />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                ))}
+              </Accordion>
+            </div>
+
+            {/* Detalle Operadores & Empacadores */}
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Operadores Detalle */}
+              <div className="rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Operadores - Detalle</h3>
+                <div className="h-[320px] overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Operador</TableHead>
+                        <TableHead className="text-right">Unidades</TableHead>
+                        <TableHead className="text-right">Paros</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {analytics.topOperators.map((op) => (
+                        <TableRow key={op.name}>
+                          <TableCell className="font-medium">{op.name}</TableCell>
+                          <TableCell className="text-right tabular-nums">{op.units.toLocaleString()}</TableCell>
+                          <TableCell className="text-right tabular-nums">{op.downtime}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+
+              {/* Empacadores Detalle */}
+              <div className="rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Empacadores - Detalle (Atribución 50/50)</h3>
+                <div className="h-[320px] overflow-y-auto">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -1044,495 +1351,177 @@ export default function MetricsPage() {
                       ))}
                     </TableBody>
                   </Table>
-
-                  <div className="mt-4">
-                    <Accordion type="single" collapsible>
-                      <AccordionItem value="recent-events">
-                        <AccordionTrigger>Últimos eventos relevantes (no producción)</AccordionTrigger>
-                        <AccordionContent>
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Fecha</TableHead>
-                                <TableHead>Máquina</TableHead>
-                                <TableHead>Evento</TableHead>
-                                <TableHead>SKU</TableHead>
-                                <TableHead>Operador</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {analytics.recentNonProductionEvents.map((r) => (
-                                <TableRow key={`${r.machine_id}-${r.timestamp}-${r.event}`}
-                                  className={cn(r.event === "Rechazo" && "bg-destructive/5")}
-                                >
-                                  <TableCell className="text-muted-foreground">{r.tsLabel}</TableCell>
-                                  <TableCell className="font-medium text-primary">{r.machine_id}</TableCell>
-                                  <TableCell>
-                                    <Badge variant={eventBadgeVariant(r.event)}>{r.event}</Badge>
-                                  </TableCell>
-                                  <TableCell>{r.sku}</TableCell>
-                                  <TableCell className="text-muted-foreground">{r.operator}</TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        </AccordionContent>
-                      </AccordionItem>
-                    </Accordion>
-                  </div>
-                  </div>
-                </div>
-
-                <div className="grid gap-6 lg:grid-cols-3">
-                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-foreground">Distribución de eventos por operador</h3>
-                      <Badge variant="outline">cada operador</Badge>
-                    </div>
-                    <Accordion type="single" collapsible>
-                      {analytics.operatorEventDistributions.map((op) => (
-                        <AccordionItem key={op.operator} value={op.operator}>
-                          <AccordionTrigger>{op.operator}</AccordionTrigger>
-                          <AccordionContent>
-                            <div className="grid gap-4 lg:grid-cols-3">
-                              <div className="lg:col-span-1">
-                                <p className="text-sm text-muted-foreground">Total eventos</p>
-                                <p className="text-2xl font-bold text-foreground">{op.total.toLocaleString()}</p>
-                              </div>
-                              <div className="lg:col-span-2">
-                                <div className="h-[220px]">
-                                  <ResponsiveContainer width="100%" height="100%">
-                                    <PieChart>
-                                      <Pie
-                                        data={op.dist}
-                                        dataKey="count"
-                                        nameKey="event"
-                                        cx="50%"
-                                        cy="50%"
-                                        innerRadius={55}
-                                        outerRadius={85}
-                                        paddingAngle={2}
-                                      >
-                                        {op.dist.map((d) => (
-                                          <Cell key={d.event} fill={d.color} />
-                                        ))}
-                                      </Pie>
-                                      <Tooltip />
-                                    </PieChart>
-                                  </ResponsiveContainer>
-                                </div>
-                              </div>
-                            </div>
-                          </AccordionContent>
-                        </AccordionItem>
-                      ))}
-                    </Accordion>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-foreground">Distribución de empacadores</h3>
-                      <Badge variant="outline">unidades</Badge>
-                    </div>
-                    <div className="h-[260px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={analytics.packerDistribution.slice(0, 8)}
-                            dataKey="units"
-                            nameKey="name"
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={55}
-                            outerRadius={90}
-                            paddingAngle={2}
-                          >
-                            {analytics.packerDistribution.slice(0, 8).map((p, index) => (
-                              <Cell key={p.name} fill={skuPalette[index % skuPalette.length]} />
-                            ))}
-                          </Pie>
-                          <Tooltip />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <p className="mt-2 text-xs text-muted-foreground">Mostrando top 8 por unidades.</p>
-                  </div>
                 </div>
               </div>
-            </TabsContent>
+            </div>
 
-            <TabsContent value="sku">
-              <div className="space-y-6">
-                <div className="grid gap-6 lg:grid-cols-3">
-                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-foreground">Producción vs paros (por día)</h3>
-                      <Badge variant="outline">14d</Badge>
-                    </div>
-                    <ChartContainer
-                      className="h-[320px] w-full aspect-auto"
-                      config={{
-                        produced: { label: "Producción", color: "#22c55e" },
-                        downtime: { label: "Paros", color: "#f97316" },
-                      }}
-                    >
-                      <AreaChart data={analytics.dailySeries} margin={{ left: 8, right: 8 }}>
-                        <CartesianGrid vertical={false} />
-                        <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
-                        <ChartTooltip content={<ChartTooltipContent />} />
-                        <Area
-                          type="monotone"
-                          dataKey="produced"
-                          stroke="var(--color-produced)"
-                          fill="var(--color-produced)"
-                          fillOpacity={0.18}
-                          strokeWidth={2}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="downtime"
-                          stroke="var(--color-downtime)"
-                          fill="var(--color-downtime)"
-                          fillOpacity={0.12}
-                          strokeWidth={2}
-                        />
-                      </AreaChart>
-                    </ChartContainer>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-foreground">Distribución de eventos (conteo)</h3>
-                      <Badge variant="outline">14d</Badge>
-                    </div>
-                    <div className="space-y-2">
-                      {analytics.eventBreakdown.map((e) => (
-                        <div key={e.event} className="flex items-center justify-between">
-                          <Badge variant={eventBadgeVariant(e.event)}>{e.event}</Badge>
-                          <span className="font-mono text-sm text-foreground tabular-nums">{e.count.toLocaleString()}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid gap-6 lg:grid-cols-3">
-                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-foreground">Distribución por SKU (unidades)</h3>
-                      <Badge variant="outline">14d</Badge>
-                    </div>
-                    <ChartContainer
-                      className="h-[300px] w-full aspect-auto"
-                      config={{
-                        units: { label: "Unidades" },
-                      }}
-                    >
-                      <BarChart data={analytics.skuDistribution.slice(0, 10)} margin={{ left: 8, right: 8 }}>
-                        <CartesianGrid vertical={false} />
-                        <XAxis dataKey="sku" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
-                        <ChartTooltip content={<ChartTooltipContent />} />
-                        <Bar dataKey="units" radius={[4, 4, 0, 0]}>
-                          {analytics.skuDistribution.slice(0, 10).map((s, index) => (
-                            <Cell key={s.sku} fill={skuPalette[index % skuPalette.length]} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ChartContainer>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-foreground">SKU (top 6)</h3>
-                      <Badge variant="outline">share</Badge>
-                    </div>
-                    <div className="h-[300px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie
-                            data={analytics.topSkus}
-                            dataKey="units"
-                            nameKey="sku"
-                            cx="50%"
-                            cy="50%"
-                            innerRadius={55}
-                            outerRadius={90}
-                            paddingAngle={2}
-                          >
-                            {analytics.topSkus.map((s, index) => (
-                              <Cell key={s.sku} fill={skuPalette[index % skuPalette.length]} />
-                            ))}
-                          </Pie>
-                          <Tooltip />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="turnos">
-              <div className="space-y-6">
-                <div className="grid gap-6 lg:grid-cols-3">
-                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-foreground">Comparación matutino vs vespertino</h3>
-                      <Badge variant="outline">14d</Badge>
-                    </div>
-                    <ChartContainer
-                      className="h-[320px] w-full aspect-auto"
-                      config={{
-                        matutino: { label: "Matutino", color: "#3b82f6" },
-                        vespertino: { label: "Vespertino", color: "#f97316" },
-                      }}
-                    >
-                      <BarChart data={analytics.shiftComparisonMetrics} margin={{ left: 8, right: 8 }}>
-                        <CartesianGrid vertical={false} />
-                        <XAxis dataKey="metric" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
-                        <ChartTooltip content={<ChartTooltipContent />} />
-                        <Bar dataKey="matutino" fill="var(--color-matutino)" radius={[4, 4, 0, 0]} />
-                        <Bar dataKey="vespertino" fill="var(--color-vespertino)" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ChartContainer>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-foreground">Eventos por turno (sumado)</h3>
-                      <Badge variant="outline">conteo</Badge>
-                    </div>
-                    <div className="grid gap-4">
-                      <div className="h-[160px]">
-                        <p className="mb-2 text-xs font-medium text-muted-foreground">Matutino</p>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                            <Pie
-                              data={analytics.shiftEventDistributions.matutino}
-                              dataKey="count"
-                              nameKey="event"
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={35}
-                              outerRadius={60}
-                              paddingAngle={2}
-                            >
-                              {analytics.shiftEventDistributions.matutino.map((d) => (
-                                <Cell key={d.event} fill={d.color} />
-                              ))}
-                            </Pie>
-                            <Tooltip />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </div>
-
-                      <div className="h-[160px]">
-                        <p className="mb-2 text-xs font-medium text-muted-foreground">Vespertino</p>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                            <Pie
-                              data={analytics.shiftEventDistributions.vespertino}
-                              dataKey="count"
-                              nameKey="event"
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={35}
-                              outerRadius={60}
-                              paddingAngle={2}
-                            >
-                              {analytics.shiftEventDistributions.vespertino.map((d) => (
-                                <Cell key={d.event} fill={d.color} />
-                              ))}
-                            </Pie>
-                            <Tooltip />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid gap-6 lg:grid-cols-3">
-                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-foreground">Producción por día: matutino vs vespertino</h3>
-                      <Badge variant="outline">14d</Badge>
-                    </div>
-                    <ChartContainer
-                      className="h-[320px] w-full aspect-auto"
-                      config={{
-                        matutinoProduced: { label: "Matutino", color: "#3b82f6" },
-                        vespertinoProduced: { label: "Vespertino", color: "#f97316" },
-                      }}
-                    >
-                      <LineChart data={analytics.shiftDailySeries} margin={{ left: 8, right: 8 }}>
-                        <CartesianGrid vertical={false} />
-                        <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
-                        <ChartTooltip content={<ChartTooltipContent />} />
-                        <Line
-                          type="monotone"
-                          dataKey="matutinoProduced"
-                          stroke="var(--color-matutinoProduced)"
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="vespertinoProduced"
-                          stroke="var(--color-vespertinoProduced)"
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                      </LineChart>
-                    </ChartContainer>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <h3 className="text-sm font-semibold text-foreground">Paros por día (conteo)</h3>
-                      <Badge variant="outline">14d</Badge>
-                    </div>
-                    <ChartContainer
-                      className="h-[320px] w-full aspect-auto"
-                      config={{
-                        matutinoDowntime: { label: "Matutino", color: "#3b82f6" },
-                        vespertinoDowntime: { label: "Vespertino", color: "#f97316" },
-                      }}
-                    >
-                      <LineChart data={analytics.shiftDailySeries} margin={{ left: 8, right: 8 }}>
-                        <CartesianGrid vertical={false} />
-                        <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
-                        <ChartTooltip content={<ChartTooltipContent />} />
-                        <Line
-                          type="monotone"
-                          dataKey="matutinoDowntime"
-                          stroke="var(--color-matutinoDowntime)"
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="vespertinoDowntime"
-                          stroke="var(--color-vespertinoDowntime)"
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                      </LineChart>
-                    </ChartContainer>
-                  </div>
-                </div>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="maquinas">
-              <div className="grid gap-6 lg:grid-cols-3">
-                <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-foreground">Mapa de dispersión: producción vs paros</h3>
-                    <Badge variant="outline">por máquina</Badge>
-                  </div>
-                  <ChartContainer
-                    className="h-[340px] w-full aspect-auto"
-                    config={{
-                      produced: { label: "Producción", color: "#22c55e" },
-                      downtimeEvents: { label: "Paros", color: "#f97316" },
-                      machine: { label: "Máquina", color: "#64748b" },
-                    }}
-                  >
-                    <ScatterChart margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
-                      <CartesianGrid />
-                      <XAxis dataKey="produced" name="Producción" tick={{ fontSize: 12 }} />
-                      <YAxis dataKey="downtimeEvents" name="Paros" tick={{ fontSize: 12 }} />
-                      <ChartTooltip
-                        content={<ChartTooltipContent nameKey="machine" />}
-                      />
-                      <Scatter data={analytics.machineScatter} fill="#3b82f6" />
-                    </ScatterChart>
-                  </ChartContainer>
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Útil para detectar máquinas con alto volumen y alta incidencia de paros.
-                  </p>
-                </div>
-
-                <div className="rounded-xl border border-border bg-background p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-foreground">Top SKUs (14d)</h3>
-                    <Badge variant="outline">unidades</Badge>
-                  </div>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>SKU</TableHead>
-                        <TableHead className="text-right">Unidades</TableHead>
+            {/* Últimos Eventos Relevantes */}
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="font-semibold text-foreground mb-4">Últimos Eventos Relevantes (No Producción)</h3>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Fecha</TableHead>
+                      <TableHead>Máquina</TableHead>
+                      <TableHead>Evento</TableHead>
+                      <TableHead>SKU</TableHead>
+                      <TableHead>Operador</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {analytics.recentNonProductionEvents.map((r) => (
+                      <TableRow key={`${r.machine_id}-${r.timestamp}-${r.event}`} className={cn(r.event === "Rechazo" && "bg-destructive/5")}>
+                        <TableCell className="text-muted-foreground">{r.tsLabel}</TableCell>
+                        <TableCell className="font-medium text-primary">{r.machine_id}</TableCell>
+                        <TableCell>
+                          <Badge variant={eventBadgeVariant(r.event)}>{r.event}</Badge>
+                        </TableCell>
+                        <TableCell>{r.sku}</TableCell>
+                        <TableCell className="text-muted-foreground">{r.operator}</TableCell>
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {analytics.topSkus.map((s) => (
-                        <TableRow key={s.sku}>
-                          <TableCell className="font-medium">{s.sku}</TableCell>
-                          <TableCell className="text-right font-mono tabular-nums">{s.units.toLocaleString()}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* ========== ASISTENCIA TAB ========== */}
+          <TabsContent value="asistencia" className="space-y-6">
+            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+              {attendanceStats.map((stat) => (
+                <div key={stat.employeeId} className="rounded-xl border border-border bg-card p-4">
+                  <p className="text-sm font-medium text-muted-foreground mb-1">{stat.employeeName}</p>
+                  <p className="text-2xl font-bold text-foreground mb-2">{stat.attendancePercentage}%</p>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100 mb-3">
+                    <div className="h-full rounded-full bg-green-500" style={{ width: `${stat.attendancePercentage}%` }} />
+                  </div>
+                  <div className="text-xs text-muted-foreground space-y-1">
+                    <div>Presente: {stat.presentDays}/{stat.totalDays}</div>
+                    <div>Ausencias: {stat.absentDays}</div>
+                    <div>Retardos: {stat.lateDays}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="font-semibold text-foreground mb-4">Registros Recientes</h3>
+              <AttendanceTable records={filteredAttendanceRecords} onDelete={() => {}} />
+            </div>
+          </TabsContent>
+
+          {/* ========== ROTACIÓN TAB ========== */}
+          <TabsContent value="rotacion" className="space-y-6">
+            {/* KPIs */}
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <KpiCard
+                title="Personal Activo"
+                value={employees.length.toString()}
+                subtitle="Colaboradores"
+                icon={Users}
+                iconColor="text-primary"
+              />
+              <KpiCard
+                title="Ingresos"
+                value="3"
+                subtitle="Este mes"
+                icon={UserPlus}
+                iconColor="text-green-600"
+              />
+              <KpiCard
+                title="Salidas"
+                value="1"
+                subtitle="Este mes"
+                icon={UserMinus}
+                iconColor="text-red-600"
+              />
+              <KpiCard
+                title="Tasa Rotación"
+                value="3.7%"
+                subtitle="Anualizado"
+                icon={RefreshCw}
+                iconColor="text-yellow-600"
+              />
+            </div>
+
+            {/* Historial y Resumen */}
+            <div className="grid gap-6 lg:grid-cols-3">
+              <div className="lg:col-span-2 rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Movimientos de Personal</h3>
+                <div className="space-y-3">
+                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 flex-shrink-0">
+                      <UserPlus className="h-4 w-4 text-green-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-foreground">Roberto Cortés</p>
+                      <p className="text-xs text-muted-foreground">Ingreso • 2026-01-20 • Operador</p>
+                    </div>
+                  </div>
+                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 flex-shrink-0">
+                      <UserPlus className="h-4 w-4 text-green-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-foreground">Patricia Díaz</p>
+                      <p className="text-xs text-muted-foreground">Ingreso • 2026-01-15 • Empacadora</p>
+                    </div>
+                  </div>
+                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 flex-shrink-0">
+                      <UserMinus className="h-4 w-4 text-red-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-foreground">Luis Fernández</p>
+                      <p className="text-xs text-muted-foreground">Salida • 2026-01-10 • Renuncia</p>
+                    </div>
+                  </div>
+                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 flex-shrink-0">
+                      <UserPlus className="h-4 w-4 text-green-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-foreground">Gabriel Mendez</p>
+                      <p className="text-xs text-muted-foreground">Ingreso • 2026-01-05 • Operador</p>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </TabsContent>
-          </Tabs>
-        </div>
 
-        {/* Bottom KPI Cards */}
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="flex items-center gap-4 rounded-xl border border-border bg-card p-5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <CheckCircle className="h-5 w-5" />
+              <div className="rounded-xl border border-border bg-card p-6">
+                <h3 className="font-semibold text-foreground mb-4">Resumen del Mes</h3>
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm text-muted-foreground">Ingresos</span>
+                      <span className="font-bold text-green-600">+3</span>
+                    </div>
+                    <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-green-500" style={{ width: "75%" }} />
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm text-muted-foreground">Salidas</span>
+                      <span className="font-bold text-red-600">-1</span>
+                    </div>
+                    <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-red-500" style={{ width: "25%" }} />
+                    </div>
+                  </div>
+                  <div className="pt-2 border-t border-border">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-foreground">Neto</span>
+                      <span className="text-lg font-bold text-primary">+2</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Eficiencia OEE
-              </p>
-              <p className="text-2xl font-bold text-card-foreground">87.5%</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4 rounded-xl border border-border bg-card p-5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-yellow-100 text-yellow-600">
-              <AlertTriangle className="h-5 w-5" />
-            </div>
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Tiempo Muerto
-              </p>
-              <p className="text-2xl font-bold text-card-foreground">2.3 hrs</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4 rounded-xl border border-border bg-card p-5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <Users className="h-5 w-5" />
-            </div>
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Operadores Activos
-              </p>
-              <p className="text-2xl font-bold text-card-foreground">12</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-4 rounded-xl border border-border bg-card p-5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-              <RefreshCw className="h-5 w-5" />
-            </div>
-            <div>
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Cambios SKU
-              </p>
-              <p className="text-2xl font-bold text-card-foreground">45</p>
-            </div>
-          </div>
-        </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </DashboardLayout>
   )

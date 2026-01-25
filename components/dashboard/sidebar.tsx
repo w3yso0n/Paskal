@@ -13,7 +13,6 @@ export const menuItems = [
   { icon: BarChart3, label: "Métricas", href: "/metricas" },
   { icon: Target, label: "Metas", href: "/metas" },
   { icon: Users, label: "Gestión de empleados", href: "/empleados" },
-  { icon: Clock, label: "Asistencias y Rotación", href: "/asistencias-rotacion" },
   { icon: Bell, label: "Alertas", href: "/alertas" },
 ]
 
