@@ -8,7 +8,6 @@ import {
   Info,
   CheckCircle2,
   Factory,
-  Wrench,
   Users,
   Monitor,
   Filter,
@@ -52,7 +51,6 @@ const typeColors: Record<AlertType, { bg: string; text: string; border: string }
 const categoryIcons: Record<AlertCategory, typeof Factory> = {
   machine: Factory,
   production: Monitor,
-  maintenance: Wrench,
   employee: Users,
   system: Info,
 }
@@ -60,7 +58,6 @@ const categoryIcons: Record<AlertCategory, typeof Factory> = {
 const categoryLabels: Record<AlertCategory, string> = {
   machine: "Máquina",
   production: "Producción",
-  maintenance: "Mantenimiento",
   employee: "Empleado",
   system: "Sistema",
 }
@@ -489,7 +486,6 @@ export default function AlertasClient() {
                       <SelectItem value="all">Todas las categorías</SelectItem>
                       <SelectItem value="machine">Máquina</SelectItem>
                       <SelectItem value="maintenance">Mantenimiento</SelectItem>
-                      <SelectItem value="employee">Empleado</SelectItem>
                       <SelectItem value="system">Sistema</SelectItem>
                     </SelectContent>
                   </Select>

@@ -35,9 +35,7 @@ export const machineProductionData = Array.from({ length: 20 }, (_, i) => {
 export const eventDistributionData = [
   { name: "Producción", value: 720, color: "#22c55e" },
   { name: "Cambio SKU", value: 45, color: "#3b82f6" },
-  { name: "Mantenimiento", value: 32, color: "#eab308" },
   { name: "Parada", value: 28, color: "#f97316" },
-  { name: "Limpieza", value: 15, color: "#ef4444" },
 ]
 
 // Top machines performance
@@ -145,7 +143,7 @@ export const employees: Employee[] = [
 
 // Alerts and Notifications
 export type AlertType = "warning" | "error" | "info" | "success"
-export type AlertCategory = "machine" | "production" | "maintenance" | "employee" | "system"
+export type AlertCategory = "machine" | "production" | "employee" | "system"
 
 export interface Alert {
   id: string
@@ -321,17 +319,6 @@ export const alerts: Alert[] = [
     actionRequired: true,
   },
   {
-    id: "a3",
-    type: "info",
-    category: "maintenance",
-    title: "Mantenimiento Programado",
-    message: "Mantenimiento preventivo de M8 programado para mañana a las 10:00.",
-    timestamp: new Date(Date.now() - 30 * 60 * 1000),
-    isRead: true,
-    machineId: "m8",
-    actionRequired: false,
-  },
-  {
     id: "a4",
     type: "success",
     category: "production",
@@ -361,17 +348,6 @@ export const alerts: Alert[] = [
     timestamp: new Date(Date.now() - 120 * 60 * 1000),
     isRead: true,
     actionRequired: false,
-  },
-  {
-    id: "a7",
-    type: "warning",
-    category: "maintenance",
-    title: "Cambio de SKU Requerido",
-    message: "M11 necesita cambio de SKU para siguiente orden de producción.",
-    timestamp: new Date(Date.now() - 150 * 60 * 1000),
-    isRead: false,
-    machineId: "m11",
-    actionRequired: true,
   },
 ]
 
