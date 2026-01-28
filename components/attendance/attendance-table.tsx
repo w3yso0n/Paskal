@@ -4,8 +4,9 @@ import { AttendanceRecord, AttendanceStatus } from "@/lib/mock-data"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Trash2, Edit2 } from "lucide-react"
+import { Trash2, Edit2, Download } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { exportAttendanceToExcel } from "@/lib/export-to-excel"
 
 interface AttendanceTableProps {
   records: AttendanceRecord[]
@@ -30,9 +31,20 @@ export function AttendanceTable({ records, onDelete }: AttendanceTableProps) {
   }
 
   return (
-    <div className="rounded-xl border border-border overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full">
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <Button
+          onClick={() => exportAttendanceToExcel(records)}
+          variant="outline"
+          className="gap-2"
+        >
+          <Download className="h-4 w-4" />
+          Exportar a Excel
+        </Button>
+      </div>
+      <div className="rounded-xl border border-border overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
           <thead>
             <tr className="border-b border-border bg-muted/50">
               <th className="px-4 py-3 text-left text-sm font-semibold text-foreground">
@@ -124,6 +136,7 @@ export function AttendanceTable({ records, onDelete }: AttendanceTableProps) {
           No hay registros de asistencia
         </div>
       )}
+      </div>
     </div>
   )
 }

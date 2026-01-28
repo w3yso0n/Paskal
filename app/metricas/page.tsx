@@ -1368,7 +1368,7 @@ export default function MetricsPage() {
           {/* ========== ASISTENCIA TAB ========== */}
           <TabsContent value="asistencia" className="space-y-6">
             <div className="rounded-xl border border-border bg-card p-6">
-              <h3 className="font-semibold text-foreground mb-4">Registros Recientes</h3>
+              <h3 className="font-semibold text-foreground mb-4">Registros de asistencias</h3>
               <AttendanceTable records={filteredAttendanceRecords} onDelete={() => {}} />
             </div>
           </TabsContent>
