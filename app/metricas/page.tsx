@@ -98,10 +98,7 @@ import { cn } from "@/lib/utils"
 type ProductionEventType =
   | "Producción"
   | "Cambio SKU"
-  | "Mantenimiento"
   | "Parada"
-  | "Limpieza"
-  | "Rechazo"
 
 type ShiftType = "matutino" | "vespertino"
 
@@ -205,13 +202,9 @@ export default function MetricsPage() {
 
             if (roll < 0.05) event = "Parada"
             else if (roll < 0.09) event = "Cambio SKU"
-            else if (roll < 0.12) event = "Mantenimiento"
-            else if (roll < 0.14) event = "Limpieza"
-            else if (roll < 0.17) event = "Rechazo"
 
             const produced = event === "Producción" ? 8 + Math.floor(Math.random() * 18) : 0
-            const rejected = event === "Rechazo" ? 1 + Math.floor(Math.random() * 5) : 0
-            const count = event === "Rechazo" ? rejected : produced
+            const count = produced
 
             rows.push({
               machine_id,
@@ -282,23 +275,21 @@ export default function MetricsPage() {
       }
     })
 
-    const dailyAgg = new Map<string, { produccion: number; rechazos: number; paros: number; cambios_sku: number }>()
-    const monthlyAgg = new Map<string, { produccion: number; rechazos: number; paros: number; cambios_sku: number }>()
+    const dailyAgg = new Map<string, { produccion: number; paros: number; cambios_sku: number }>()
+    const monthlyAgg = new Map<string, { produccion: number; paros: number; cambios_sku: number }>()
 
     for (const r of filtered) {
       const ts = new Date(r.timestamp)
       const dayKey = formatDate(ts)
       const monthKey = formatYearMonth(ts)
 
-      const day = dailyAgg.get(dayKey) ?? { produccion: 0, rechazos: 0, paros: 0, cambios_sku: 0 }
-      const month = monthlyAgg.get(monthKey) ?? { produccion: 0, rechazos: 0, paros: 0, cambios_sku: 0 }
+      const day = dailyAgg.get(dayKey) ?? { produccion: 0, paros: 0, cambios_sku: 0 }
+      const month = monthlyAgg.get(monthKey) ?? { produccion: 0, paros: 0, cambios_sku: 0 }
 
       if (r.event === "Producción") {
         day.produccion += r.count
         month.produccion += r.count
-      } else if (r.event === "Rechazo") {
-        day.rechazos += r.count
-        month.rechazos += r.count
+
       } else if (r.event === "Parada") {
         day.paros += 1
         month.paros += 1
@@ -336,10 +327,7 @@ export default function MetricsPage() {
 
   const eventBadgeVariant = (event: ProductionEventType) => {
     if (event === "Producción") return "secondary" as const
-    if (event === "Rechazo") return "destructive" as const
     if (event === "Parada") return "outline" as const
-    if (event === "Mantenimiento") return "outline" as const
-    if (event === "Limpieza") return "outline" as const
     if (event === "Cambio SKU") return "default" as const
     return "secondary" as const
   }
@@ -385,19 +373,13 @@ export default function MetricsPage() {
     const eventOrder: ProductionEventType[] = [
       "Producción",
       "Cambio SKU",
-      "Mantenimiento",
       "Parada",
-      "Limpieza",
-      "Rechazo",
     ]
 
     const eventColors: Record<ProductionEventType, string> = {
       "Producción": "#22c55e",
       "Cambio SKU": "#3b82f6",
-      "Mantenimiento": "#eab308",
       "Parada": "#f97316",
-      "Limpieza": "#ef4444",
-      "Rechazo": "#a855f7",
     }
 
     const buildDist = (m: Map<ProductionEventType, number>): DistRow[] =>
@@ -413,7 +395,7 @@ export default function MetricsPage() {
       .filter((r) => r.event === "Producción")
       .reduce((acc, r) => acc + r.count, 0)
     const changeovers14d = rows14d.filter((r) => r.event === "Cambio SKU").length
-    const downtimeEvents14d = rows14d.filter((r) => ["Parada", "Mantenimiento", "Limpieza"].includes(r.event)).length
+    const downtimeEvents14d = rows14d.filter((r) => ["Parada"].includes(r.event)).length
 
     const changeoversPer1k = produced14d > 0 ? (changeovers14d / produced14d) * 1000 : 0
 
@@ -457,7 +439,7 @@ export default function MetricsPage() {
 
       const day = dailyAgg.get(dayKey) ?? { produced: 0, downtime: 0 }
       if (r.event === "Producción") day.produced += r.count
-      if (["Parada", "Mantenimiento", "Limpieza"].includes(r.event)) day.downtime += 1
+      if (["Parada"].includes(r.event)) day.downtime += 1
       dailyAgg.set(dayKey, day)
 
       if (shift) {
@@ -475,7 +457,7 @@ export default function MetricsPage() {
           if (shift === "matutino") d.matutinoProduced += r.count
           if (shift === "vespertino") d.vespertinoProduced += r.count
         }
-        if (["Parada", "Mantenimiento", "Limpieza"].includes(r.event)) {
+        if (["Parada"].includes(r.event)) {
           if (shift === "matutino") d.matutinoDowntime += 1
           if (shift === "vespertino") d.vespertinoDowntime += 1
         }
@@ -485,7 +467,7 @@ export default function MetricsPage() {
         s.events.set(r.event, (s.events.get(r.event) ?? 0) + 1)
         if (r.event === "Producción") s.produced += r.count
         if (r.event === "Cambio SKU") s.changeovers += 1
-        if (["Parada", "Mantenimiento", "Limpieza"].includes(r.event)) s.downtime += 1
+        if (["Parada"].includes(r.event)) s.downtime += 1
       }
 
       eventAgg.set(r.event, (eventAgg.get(r.event) ?? 0) + 1)
@@ -496,12 +478,12 @@ export default function MetricsPage() {
 
       const op = operatorAgg.get(r.operator) ?? { units: 0, downtime: 0 }
       if (r.event === "Producción") op.units += r.count
-      if (["Parada", "Mantenimiento", "Limpieza"].includes(r.event)) op.downtime += 1
+      if (["Parada"].includes(r.event)) op.downtime += 1
       operatorAgg.set(r.operator, op)
 
       const machine = machineAgg.get(r.machine_id) ?? { produced: 0, downtime: 0 }
       if (r.event === "Producción") machine.produced += r.count
-      if (["Parada", "Mantenimiento", "Limpieza"].includes(r.event)) machine.downtime += 1
+      if (["Parada"].includes(r.event)) machine.downtime += 1
       machineAgg.set(r.machine_id, machine)
 
       if (r.event === "Producción") {
@@ -590,10 +572,7 @@ export default function MetricsPage() {
     const eventBreakdown = (Object.keys({
       "Producción": 1,
       "Cambio SKU": 1,
-      "Mantenimiento": 1,
       "Parada": 1,
-      "Limpieza": 1,
-      "Rechazo": 1,
     }) as ProductionEventType[]).map((event) => ({
       event,
       count: eventAgg.get(event) ?? 0,
@@ -752,6 +731,22 @@ export default function MetricsPage() {
           </p>
         </div>
 
+        {/* Reportes */}
+        <div className="rounded-xl border border-border bg-card p-6">
+          <div className="mb-4 flex items-center gap-2">
+            <FileSpreadsheet className="h-5 w-5 text-muted-foreground" />
+            <h2 className="text-lg font-semibold text-card-foreground">Reportes Descargables</h2>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Button variant="outline" className="justify-start" onClick={() => setIsReportDialogOpen(true)}>
+              <Download className="h-4 w-4" /> Reporte de Producción (Rango)
+            </Button>
+            <Button variant="outline" className="justify-start" onClick={handleDownloadBonusReportXlsx}>
+              <Download className="h-4 w-4" /> Reporte de Bonos
+            </Button>
+          </div>
+        </div>
+
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList className="grid w-full grid-cols-4">
@@ -763,22 +758,6 @@ export default function MetricsPage() {
 
           {/* ========== PRODUCCIÓN TAB ========== */}
           <TabsContent value="produccion" className="space-y-6">
-            {/* Reportes */}
-            <div className="rounded-xl border border-border bg-card p-6">
-              <div className="mb-4 flex items-center gap-2">
-                <FileSpreadsheet className="h-5 w-5 text-muted-foreground" />
-                <h2 className="text-lg font-semibold text-card-foreground">Reportes Descargables</h2>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Button variant="outline" className="justify-start" onClick={() => setIsReportDialogOpen(true)}>
-                  <Download className="h-4 w-4" /> Reporte de Producción (Rango)
-                </Button>
-                <Button variant="outline" className="justify-start" onClick={handleDownloadBonusReportXlsx}>
-                  <Download className="h-4 w-4" /> Reporte de Bonos
-                </Button>
-              </div>
-            </div>
-
             {/* Report dialog */}
             <Dialog open={isReportDialogOpen} onOpenChange={setIsReportDialogOpen}>
               <DialogContent className="sm:max-w-lg">
@@ -999,7 +978,7 @@ export default function MetricsPage() {
 
             {/* Advanced Metrics - KPIs */}
             <div className="rounded-xl border border-border bg-card p-6">
-              <h3 className="font-semibold text-foreground mb-4">Métricas Avanzadas (14 días)</h3>
+              <h3 className="font-semibold text-foreground mb-4">Métricas Avanzadas</h3>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <KpiCard
                   title="Cambios SKU"
@@ -1009,7 +988,7 @@ export default function MetricsPage() {
                   iconColor="text-primary"
                 />
                 <KpiCard
-                  title="Producción (14d)"
+                  title="Producción "
                   value={analytics.produced14d.toLocaleString()}
                   subtitle="Unidades"
                   icon={TrendingUp}
@@ -1018,14 +997,13 @@ export default function MetricsPage() {
                 <KpiCard
                   title="Eventos Paro"
                   value={analytics.downtimeEvents14d.toLocaleString()}
-                  subtitle="Parada+Mant.+Limpieza"
+                  subtitle="Eventos de Parada"
                   icon={AlertTriangle}
                   iconColor="text-yellow-500"
                 />
                 <KpiCard
                   title="Total Eventos"
                   value={analytics.eventBreakdown.reduce((acc, e) => acc + e.count, 0).toLocaleString()}
-                  subtitle="14 días"
                   icon={Clock}
                   iconColor="text-primary"
                 />
@@ -1036,8 +1014,8 @@ export default function MetricsPage() {
             <Tabs defaultValue="prod-vs-downtime" className="space-y-4">
               <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="prod-vs-downtime">Producción vs Paros</TabsTrigger>
-                <TabsTrigger value="sku-eventos">SKU & Eventos</TabsTrigger>
-                <TabsTrigger value="turnos">Turnos</TabsTrigger>
+                <TabsTrigger value="sku-eventos">SKUs</TabsTrigger>
+                <TabsTrigger value="turnos">Comparación de Turnos</TabsTrigger>
               </TabsList>
 
               {/* Producción vs Paros */}
@@ -1357,7 +1335,7 @@ export default function MetricsPage() {
 
             {/* Últimos Eventos Relevantes */}
             <div className="rounded-xl border border-border bg-card p-6">
-              <h3 className="font-semibold text-foreground mb-4">Últimos Eventos Relevantes (No Producción)</h3>
+              <h3 className="font-semibold text-foreground mb-4">Últimos Eventos  </h3>
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
@@ -1371,7 +1349,7 @@ export default function MetricsPage() {
                   </TableHeader>
                   <TableBody>
                     {analytics.recentNonProductionEvents.map((r) => (
-                      <TableRow key={`${r.machine_id}-${r.timestamp}-${r.event}`} className={cn(r.event === "Rechazo" && "bg-destructive/5")}>
+                      <TableRow key={`${r.machine_id}-${r.timestamp}-${r.event}`}>
                         <TableCell className="text-muted-foreground">{r.tsLabel}</TableCell>
                         <TableCell className="font-medium text-primary">{r.machine_id}</TableCell>
                         <TableCell>
@@ -1389,23 +1367,6 @@ export default function MetricsPage() {
 
           {/* ========== ASISTENCIA TAB ========== */}
           <TabsContent value="asistencia" className="space-y-6">
-            <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-              {attendanceStats.map((stat) => (
-                <div key={stat.employeeId} className="rounded-xl border border-border bg-card p-4">
-                  <p className="text-sm font-medium text-muted-foreground mb-1">{stat.employeeName}</p>
-                  <p className="text-2xl font-bold text-foreground mb-2">{stat.attendancePercentage}%</p>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100 mb-3">
-                    <div className="h-full rounded-full bg-green-500" style={{ width: `${stat.attendancePercentage}%` }} />
-                  </div>
-                  <div className="text-xs text-muted-foreground space-y-1">
-                    <div>Presente: {stat.presentDays}/{stat.totalDays}</div>
-                    <div>Ausencias: {stat.absentDays}</div>
-                    <div>Retardos: {stat.lateDays}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
             <div className="rounded-xl border border-border bg-card p-6">
               <h3 className="font-semibold text-foreground mb-4">Registros Recientes</h3>
               <AttendanceTable records={filteredAttendanceRecords} onDelete={() => {}} />
@@ -1425,14 +1386,14 @@ export default function MetricsPage() {
               />
               <KpiCard
                 title="Ingresos"
-                value="3"
+                value="6"
                 subtitle="Este mes"
                 icon={UserPlus}
                 iconColor="text-green-600"
               />
               <KpiCard
                 title="Salidas"
-                value="1"
+                value="2"
                 subtitle="Este mes"
                 icon={UserMinus}
                 iconColor="text-red-600"
@@ -1487,6 +1448,33 @@ export default function MetricsPage() {
                       <p className="text-xs text-muted-foreground">Ingreso • 2026-01-05 • Operador</p>
                     </div>
                   </div>
+                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 flex-shrink-0">
+                      <UserPlus className="h-4 w-4 text-green-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-foreground">Marcela Vega</p>
+                      <p className="text-xs text-muted-foreground">Ingreso • 2026-01-18 • Empacadora</p>
+                    </div>
+                  </div>
+                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 flex-shrink-0">
+                      <UserMinus className="h-4 w-4 text-red-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-foreground">Tomás Ruiz</p>
+                      <p className="text-xs text-muted-foreground">Salida • 2026-01-08 • Traslado</p>
+                    </div>
+                  </div>
+                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 flex-shrink-0">
+                      <UserPlus className="h-4 w-4 text-green-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-foreground">Alejandro López</p>
+                      <p className="text-xs text-muted-foreground">Ingreso • 2026-01-22 • Supervisor</p>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1496,7 +1484,7 @@ export default function MetricsPage() {
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm text-muted-foreground">Ingresos</span>
-                      <span className="font-bold text-green-600">+3</span>
+                      <span className="font-bold text-green-600">+6</span>
                     </div>
                     <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
                       <div className="h-full bg-green-500" style={{ width: "75%" }} />
@@ -1505,7 +1493,7 @@ export default function MetricsPage() {
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm text-muted-foreground">Salidas</span>
-                      <span className="font-bold text-red-600">-1</span>
+                      <span className="font-bold text-red-600">-2</span>
                     </div>
                     <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
                       <div className="h-full bg-red-500" style={{ width: "25%" }} />
@@ -1514,7 +1502,7 @@ export default function MetricsPage() {
                   <div className="pt-2 border-t border-border">
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium text-foreground">Neto</span>
-                      <span className="text-lg font-bold text-primary">+2</span>
+                      <span className="text-lg font-bold text-primary">+4</span>
                     </div>
                   </div>
                 </div>

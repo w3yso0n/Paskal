@@ -23,6 +23,7 @@ export default function EmployeesPage() {
     name: "",
     role: "Operador" as "Operador" | "Empacador",
     nfcId: "",
+    shift: "Matutino" as "Matutino" | "Vespertino",
   })
 
   const handleAddEmployee = () => {
@@ -34,7 +35,7 @@ export default function EmployeesPage() {
           ...newEmployee,
         },
       ])
-      setNewEmployee({ name: "", role: "Operador", nfcId: "" })
+      setNewEmployee({ name: "", role: "Operador", nfcId: "", shift: "Matutino" })
       setIsDialogOpen(false)
     }
   }
@@ -112,6 +113,23 @@ export default function EmployeesPage() {
                     placeholder="Ej: NFC-006"
                   />
                 </div>
+                <div className="space-y-2">
+                  <Label htmlFor="shift">Turno</Label>
+                  <select
+                    id="shift"
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    value={newEmployee.shift}
+                    onChange={(e) =>
+                      setNewEmployee({
+                        ...newEmployee,
+                        shift: e.target.value as "Matutino" | "Vespertino",
+                      })
+                    }
+                  >
+                    <option value="Matutino">Matutino</option>
+                    <option value="Vespertino">Vespertino</option>
+                  </select>
+                </div>
                 <Button onClick={handleAddEmployee} className="w-full">
                   Agregar empleado
                 </Button>
@@ -128,6 +146,7 @@ export default function EmployeesPage() {
               <tr className="border-b border-border text-left text-sm text-muted-foreground">
                 <th className="px-6 py-4 font-medium">Nombre</th>
                 <th className="px-6 py-4 font-medium">Rol</th>
+                <th className="px-6 py-4 font-medium">Turno</th>
                 <th className="px-6 py-4 font-medium">NFC ID</th>
                 <th className="px-6 py-4 font-medium text-right">Acciones</th>
               </tr>
@@ -146,6 +165,18 @@ export default function EmployeesPage() {
                       )}
                     >
                       {employee.role}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span
+                      className={cn(
+                        "inline-flex rounded-md px-2.5 py-1 text-xs font-medium",
+                        employee.shift === "Matutino"
+                          ? "bg-blue-100 text-blue-700"
+                          : "bg-orange-100 text-orange-700"
+                      )}
+                    >
+                      {employee.shift}
                     </span>
                   </td>
                   <td className="px-6 py-4 font-mono text-sm text-muted-foreground">

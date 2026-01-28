@@ -1,11 +1,29 @@
 "use client"
 
+import { useState, useRef } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { OperatorCard, OperatorRow } from "@/components/operations/operator-card"
 import { operators } from "@/lib/mock-data"
-import { Trophy } from "lucide-react"
+import { Trophy, Maximize2, Minimize2 } from "lucide-react"
+import { Button } from "@/components/ui/button"
 
 export default function OperationsBoardPage() {
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const handleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await containerRef.current?.requestFullscreen()
+        setIsFullscreen(true)
+      } else {
+        await document.exitFullscreen()
+        setIsFullscreen(false)
+      }
+    } catch (err) {
+      console.error("Error toggling fullscreen:", err)
+    }
+  }
   const sortedOperators = [...operators].sort((a, b) => b.units - a.units)
   const topThree = sortedOperators.slice(0, 3)
   const restOperators = sortedOperators.slice(3)
@@ -21,11 +39,25 @@ export default function OperationsBoardPage() {
         { label: "Tablero Operativo" }
       ]}
     >
-      <div className="space-y-3">
+      <div ref={containerRef} className={`space-y-3 ${isFullscreen ? 'fixed inset-0 bg-background overflow-auto p-8' : ''}`}>
         {/* Header */}
-        <div className="flex items-center gap-2">
-          <Trophy className="h-5 w-5 text-yellow-500" />
-          <h1 className="text-xl font-bold text-foreground sm:text-2xl">Tablero Operativo en Vivo</h1>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Trophy className="h-5 w-5 text-yellow-500" />
+            <h1 className="text-xl font-bold text-foreground sm:text-2xl">Tablero Operativo en Vivo</h1>
+          </div>
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={handleFullscreen}
+            title={isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
+          >
+            {isFullscreen ? (
+              <Minimize2 className="h-4 w-4" />
+            ) : (
+              <Maximize2 className="h-4 w-4" />
+            )}
+          </Button>
         </div>
 
         {/* Top 3 Podium */}

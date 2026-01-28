@@ -172,7 +172,7 @@ export default function AlertasClient() {
           const minutes = Math.max(0, Math.floor(stagnantMs / 60000))
           const machineLabel = machineId.toUpperCase()
           const currentCount = machineCounters[machineId] ?? 0
-          const message = `La máquina ${machineLabel} está encendida pero la producción no ha incrementado en ${minutes} min (contador actual: ${currentCount} uds). Verifica operación, abastecimiento y registro.`
+          const message = `La máquina ${machineLabel} lleva ${minutes} minutos sin aumentar su producción (contador actual: ${currentCount} uds). Verifica operación, abastecimiento y registro.`
 
           if (existingIndex === -1) {
             next = [

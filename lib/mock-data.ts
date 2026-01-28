@@ -132,14 +132,15 @@ export interface Employee {
   name: string
   role: "Operador" | "Empacador"
   nfcId: string
+  shift: "Matutino" | "Vespertino"
 }
 
 export const employees: Employee[] = [
-  { id: "1", name: "Juan Pérez", role: "Operador", nfcId: "NFC-001" },
-  { id: "2", name: "María García", role: "Empacador", nfcId: "NFC-002" },
-  { id: "3", name: "Carlos López", role: "Operador", nfcId: "NFC-003" },
-  { id: "4", name: "Ana Martínez", role: "Empacador", nfcId: "NFC-004" },
-  { id: "5", name: "Roberto Sánchez", role: "Operador", nfcId: "NFC-005" },
+  { id: "1", name: "Juan Pérez", role: "Operador", nfcId: "NFC-001", shift: "Matutino" },
+  { id: "2", name: "María García", role: "Empacador", nfcId: "NFC-002", shift: "Vespertino" },
+  { id: "3", name: "Carlos López", role: "Operador", nfcId: "NFC-003", shift: "Matutino" },
+  { id: "4", name: "Ana Martínez", role: "Empacador", nfcId: "NFC-004", shift: "Vespertino" },
+  { id: "5", name: "Roberto Sánchez", role: "Operador", nfcId: "NFC-005", shift: "Matutino" },
 ]
 
 // Alerts and Notifications
@@ -313,7 +314,7 @@ export const alerts: Alert[] = [
     type: "warning",
     category: "production",
     title: "Producción Baja en M4",
-    message: "La máquina M4 está operando al 65% de su capacidad normal.",
+    message: "La máquina M4 lleva 45 minutos sin aumentar su producción.",
     timestamp: new Date(Date.now() - 15 * 60 * 1000),
     isRead: false,
     machineId: "m4",
