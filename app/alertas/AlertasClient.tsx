@@ -16,12 +16,16 @@ import {
   Trash2,
   RefreshCw,
   Search,
+  Plus,
+  Loader2,
 } from "lucide-react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -29,10 +33,30 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
-import { alerts as initialAlerts, machines, type Alert, type AlertType, type AlertCategory } from "@/lib/mock-data"
+import {
+  alerts as initialAlerts,
+  machines,
+  type Alert,
+  type AlertType,
+  type AlertCategory,
+} from "@/lib/mock-data"
 import { useSearchParams } from "next/navigation"
+import { useAuth } from "@/contexts/auth-context"
+import { hasPermission } from "@/lib/permissions"
+import type { AlertRuleSeverity } from "@/lib/api"
+import { useAlertRules } from "./hooks/use-alert-rules"
+import { useProductionMonitor } from "./hooks/use-production-monitor"
+
+// --- Constants ---
 
 const typeIcons: Record<AlertType, typeof AlertCircle> = {
   error: AlertCircle,
@@ -62,17 +86,31 @@ const categoryLabels: Record<AlertCategory, string> = {
   system: "Sistema",
 }
 
-const typeLabels: Record<AlertType, string> = {
-  error: "Error",
-  warning: "Advertencia",
-  info: "Información",
-  success: "Éxito",
+const CONDITION_OPTIONS = [
+  { value: "idle_minutes", label: "Minutos sin avance (producción)" },
+  { value: "value_above", label: "Valor por encima de umbral" },
+  { value: "value_below", label: "Valor por debajo de umbral" },
+]
+
+const SEVERITY_OPTIONS: { value: AlertRuleSeverity; label: string }[] = [
+  { value: "low", label: "Baja" },
+  { value: "medium", label: "Media" },
+  { value: "high", label: "Alta" },
+  { value: "critical", label: "Crítica" },
+]
+
+const severityRank: Record<AlertType, number> = {
+  error: 4,
+  warning: 3,
+  info: 2,
+  success: 1,
 }
+
+// --- Helpers ---
 
 function formatTimeAgo(date: Date): string {
   const now = new Date()
   const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60))
-
   if (diffInMinutes < 1) return "Ahora mismo"
   if (diffInMinutes < 60) return `Hace ${diffInMinutes} min`
   if (diffInMinutes < 1440) return `Hace ${Math.floor(diffInMinutes / 60)} hrs`
@@ -88,137 +126,56 @@ function formatDateTime(date: Date): string {
   })
 }
 
+// --- Component ---
 
 export default function AlertasClient() {
   const searchParams = useSearchParams()
+  const { user, getAccessToken } = useAuth()
 
+  const canManageRules = hasPermission(user, "alert-rules.create")
+  const canDismissAlerts = hasPermission(user, "alerts.dismiss")
+  const canEditThreshold = hasPermission(user, "production.edit-threshold")
+
+  // --- View and filter state ---
   const [view, setView] = useState<"production" | "operations">("production")
+  const [filterType, setFilterType] = useState("all")
+  const [filterCategory, setFilterCategory] = useState("all")
+  const [searchQuery, setSearchQuery] = useState("")
+  const [activeTab, setActiveTab] = useState("all")
 
+  // --- Idle threshold ---
   const initialIdleThresholdMinutes = useMemo(() => {
     const fromQuery = Number(searchParams.get("idleMin"))
     return Number.isFinite(fromQuery) && fromQuery > 0 ? Math.round(fromQuery) : 10
   }, [searchParams])
+  const [idleThresholdMinutes, setIdleThresholdMinutes] = useState(initialIdleThresholdMinutes)
 
-  const [idleThresholdMinutes, setIdleThresholdMinutes] = useState<number>(initialIdleThresholdMinutes)
+  // --- Hooks ---
+  const alertRules = useAlertRules({
+    enabled: canManageRules,
+    getAccessToken,
+  })
+
+  const productionMonitor = useProductionMonitor({ idleThresholdMinutes })
+
+  // --- Alerts state ---
   const [alerts, setAlerts] = useState<Alert[]>(initialAlerts)
-  const [machineCounters, setMachineCounters] = useState<Record<string, number>>(() => {
-    return Object.fromEntries(machines.map((m) => [m.id, 0]))
-  })
-  const [lastIncreaseAtByMachine, setLastIncreaseAtByMachine] = useState<Record<string, number>>(() => {
-    const now = Date.now()
-    return Object.fromEntries(machines.map((m) => [m.id, now]))
-  })
 
-  const activeMachineIds = useMemo(() => {
-    return machines.filter((m) => m.status === "active").map((m) => m.id)
-  }, [])
-
-  // Simulación: contadores de producción que a veces dejan de aumentar aun con máquina activa.
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      const now = Date.now()
-
-      const incrementsByMachine: Record<string, number> = {}
-      for (const machineId of activeMachineIds) {
-        const shouldIncrease = Math.random() < 0.8
-        incrementsByMachine[machineId] = shouldIncrease ? 1 + Math.floor(Math.random() * 5) : 0
-      }
-
-      setMachineCounters((prev) => {
-        const next = { ...prev }
-        for (const machineId of activeMachineIds) {
-          const increment = incrementsByMachine[machineId] ?? 0
-          if (increment <= 0) continue
-          next[machineId] = (next[machineId] ?? 0) + increment
-        }
-        return next
-      })
-
-      setLastIncreaseAtByMachine((prev) => {
-        const next = { ...prev }
-        for (const machineId of activeMachineIds) {
-          const increment = incrementsByMachine[machineId] ?? 0
-          if (increment <= 0) continue
-          next[machineId] = now
-        }
-        return next
-      })
-    }, 12_000)
-
-    return () => window.clearInterval(intervalId)
-  }, [activeMachineIds])
-
-  // Regla prioritaria: máquina activa sin incremento de producción durante X minutos.
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      const now = Date.now()
-      const thresholdMs = Math.max(1, idleThresholdMinutes) * 60 * 1000
-
-      setAlerts((prev) => {
-        let next = prev
-
-        for (const machineId of activeMachineIds) {
-          const lastIncreaseAt = lastIncreaseAtByMachine[machineId] ?? now
-          const stagnantMs = now - lastIncreaseAt
-          const isStagnant = stagnantMs >= thresholdMs
-          const ruleAlertId = `rule-stagnant-production-${machineId}`
-          const existingIndex = next.findIndex((a) => a.id === ruleAlertId)
-
-          if (!isStagnant) continue
-
-          const minutes = Math.max(0, Math.floor(stagnantMs / 60000))
-          const machineLabel = machineId.toUpperCase()
-          const currentCount = machineCounters[machineId] ?? 0
-          const message = `La máquina ${machineLabel} lleva ${minutes} minutos sin aumentar su producción (contador actual: ${currentCount} uds). Verifica operación, abastecimiento y registro.`
-
-          if (existingIndex === -1) {
-            next = [
-              {
-                id: ruleAlertId,
-                type: "warning",
-                category: "production",
-                title: `Producción sin avance en ${machineLabel}`,
-                message,
-                timestamp: new Date(now),
-                isRead: false,
-                machineId,
-                actionRequired: true,
-              },
-              ...next,
-            ]
-            continue
-          }
-
-          const existing = next[existingIndex]
-          const shouldReopen = existing.isRead || !existing.actionRequired
-          if (shouldReopen || existing.message !== message) {
-            const updated: Alert = {
-              ...existing,
-              message,
-              timestamp: new Date(now),
-              isRead: false,
-              actionRequired: true,
-            }
-            next = [...next.slice(0, existingIndex), updated, ...next.slice(existingIndex + 1)]
-          }
-        }
-
-        return next
-      })
+      setAlerts((prev) => productionMonitor.generateStagnationAlerts(prev))
     }, 3_000)
-
     return () => window.clearInterval(intervalId)
-  }, [activeMachineIds, idleThresholdMinutes, lastIncreaseAtByMachine, machineCounters])
-  const [filterType, setFilterType] = useState<string>("all")
-  const [filterCategory, setFilterCategory] = useState<string>("all")
-  const [searchQuery, setSearchQuery] = useState("")
-  const [activeTab, setActiveTab] = useState("all")
+  }, [productionMonitor])
 
-  const scopedAlerts = useMemo(() => {
-    return view === "production"
-      ? alerts.filter((a) => a.category === "production")
-      : alerts.filter((a) => a.category !== "production")
-  }, [alerts, view])
+  // --- Derived state ---
+  const scopedAlerts = useMemo(
+    () =>
+      view === "production"
+        ? alerts.filter((a) => a.category === "production")
+        : alerts.filter((a) => a.category !== "production"),
+    [alerts, view],
+  )
 
   const unreadCount = scopedAlerts.filter((a) => !a.isRead).length
   const actionRequiredCount = scopedAlerts.filter((a) => a.actionRequired && !a.isRead).length
@@ -240,57 +197,47 @@ export default function AlertasClient() {
     return matchesTab && matchesType && matchesCategory && matchesSearch
   })
 
-  const sortedAlerts = useMemo(() => {
-    const severityRank: Record<AlertType, number> = {
-      error: 4,
-      warning: 3,
-      info: 2,
-      success: 1,
-    }
+  const sortedAlerts = useMemo(
+    () =>
+      [...filteredAlerts].sort((a, b) => {
+        const aPriority = a.actionRequired && !a.isRead ? 1 : 0
+        const bPriority = b.actionRequired && !b.isRead ? 1 : 0
+        if (aPriority !== bPriority) return bPriority - aPriority
 
-    return [...filteredAlerts].sort((a, b) => {
-      const aPriority = (a.actionRequired && !a.isRead) ? 1 : 0
-      const bPriority = (b.actionRequired && !b.isRead) ? 1 : 0
-      if (aPriority !== bPriority) return bPriority - aPriority
+        const aUnread = !a.isRead ? 1 : 0
+        const bUnread = !b.isRead ? 1 : 0
+        if (aUnread !== bUnread) return bUnread - aUnread
 
-      const aUnread = !a.isRead ? 1 : 0
-      const bUnread = !b.isRead ? 1 : 0
-      if (aUnread !== bUnread) return bUnread - aUnread
+        if (severityRank[a.type] !== severityRank[b.type])
+          return severityRank[b.type] - severityRank[a.type]
 
-      const aSeverity = severityRank[a.type]
-      const bSeverity = severityRank[b.type]
-      if (aSeverity !== bSeverity) return bSeverity - aSeverity
+        return b.timestamp.getTime() - a.timestamp.getTime()
+      }),
+    [filteredAlerts],
+  )
 
-      return b.timestamp.getTime() - a.timestamp.getTime()
-    })
-  }, [filteredAlerts])
+  // --- Alert actions ---
+  const handleMarkAsRead = (id: string) =>
+    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, isRead: true } : a)))
 
-  const handleMarkAsRead = (id: string) => {
-    setAlerts((prev) => prev.map((alert) => (alert.id === id ? { ...alert, isRead: true } : alert)))
-  }
+  const handleMarkAllAsRead = () =>
+    setAlerts((prev) => prev.map((a) => ({ ...a, isRead: true })))
 
-  const handleMarkAllAsRead = () => {
-    setAlerts((prev) => prev.map((alert) => ({ ...alert, isRead: true })))
-  }
+  const handleDismiss = (id: string) =>
+    setAlerts((prev) => prev.filter((a) => a.id !== id))
 
-  const handleDismiss = (id: string) => {
-    setAlerts((prev) => prev.filter((alert) => alert.id !== id))
-  }
+  const handleClearAll = () =>
+    setAlerts((prev) => prev.filter((a) => !a.isRead))
 
-  const handleClearAll = () => {
-    setAlerts((prev) => prev.filter((alert) => !alert.isRead))
-  }
-
-  const handleResolve = (id: string) => {
+  const handleResolve = (id: string) =>
     setAlerts((prev) =>
-      prev.map((alert) => (alert.id === id ? { ...alert, isRead: true, actionRequired: false } : alert))
+      prev.map((a) => (a.id === id ? { ...a, isRead: true, actionRequired: false } : a)),
     )
-  }
 
   return (
     <DashboardLayout breadcrumbs={[{ label: "Inicio", href: "/" }, { label: "Alertas" }]}>
       <div className="space-y-6">
-        {/* Page Header */}
+        {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -298,7 +245,9 @@ export default function AlertasClient() {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-foreground">Centro de Alertas</h1>
-              <p className="text-sm text-muted-foreground">Monitorea todas las alertas y notificaciones del sistema</p>
+              <p className="text-sm text-muted-foreground">
+                Monitorea todas las alertas y notificaciones del sistema
+              </p>
             </div>
           </div>
           <div className="flex gap-2">
@@ -306,10 +255,12 @@ export default function AlertasClient() {
               <Check className="mr-2 h-4 w-4" />
               Marcar todas como leídas
             </Button>
-            <Button variant="outline" onClick={handleClearAll}>
-              <Trash2 className="mr-2 h-4 w-4" />
-              Limpiar leídas
-            </Button>
+            {canDismissAlerts && (
+              <Button variant="outline" onClick={handleClearAll}>
+                <Trash2 className="mr-2 h-4 w-4" />
+                Limpiar leídas
+              </Button>
+            )}
           </div>
         </div>
 
@@ -325,6 +276,173 @@ export default function AlertasClient() {
           </CardContent>
         </Card>
 
+        {/* Alert Rules (admin only) */}
+        {canManageRules && (
+          <Card>
+            <CardHeader className="pb-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <CardTitle>Reglas de alerta</CardTitle>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Crea reglas con umbrales para que el sistema dispare alertas automáticamente.
+                  </p>
+                </div>
+                <Dialog open={alertRules.dialogOpen} onOpenChange={alertRules.setDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button className="gap-2">
+                      <Plus className="h-4 w-4" />
+                      Nueva regla
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                      <DialogTitle>Nueva regla de alerta</DialogTitle>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-4">
+                      <div className="grid gap-2">
+                        <Label htmlFor="rule-name">Nombre</Label>
+                        <Input
+                          id="rule-name"
+                          placeholder="Ej: Producción sin avance 15 min"
+                          value={alertRules.form.name}
+                          onChange={(e) =>
+                            alertRules.setForm((f) => ({ ...f, name: e.target.value }))
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label>Condición</Label>
+                        <Select
+                          value={alertRules.form.condition}
+                          onValueChange={(v) =>
+                            alertRules.setForm((f) => ({ ...f, condition: v }))
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {CONDITION_OPTIONS.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="grid gap-2">
+                        <Label htmlFor="rule-threshold">Umbral</Label>
+                        <Input
+                          id="rule-threshold"
+                          type="number"
+                          min={1}
+                          value={alertRules.form.threshold}
+                          onChange={(e) =>
+                            alertRules.setForm((f) => ({
+                              ...f,
+                              threshold: Math.max(1, Number(e.target.value) || 1),
+                            }))
+                          }
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Para &quot;minutos sin avance&quot;: minutos que disparan la alerta. Para
+                          valor: límite numérico.
+                        </p>
+                      </div>
+                      <div className="grid gap-2">
+                        <Label>Severidad</Label>
+                        <Select
+                          value={alertRules.form.severity}
+                          onValueChange={(v) =>
+                            alertRules.setForm((f) => ({
+                              ...f,
+                              severity: v as AlertRuleSeverity,
+                            }))
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {SEVERITY_OPTIONS.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={alertRules.form.isActive}
+                          onCheckedChange={(checked) =>
+                            alertRules.setForm((f) => ({ ...f, isActive: checked }))
+                          }
+                        />
+                        <Label>Regla activa</Label>
+                      </div>
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <Button variant="outline" onClick={() => alertRules.setDialogOpen(false)}>
+                        Cancelar
+                      </Button>
+                      <Button onClick={alertRules.handleCreate} disabled={alertRules.submitting}>
+                        {alertRules.submitting ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Creando…
+                          </>
+                        ) : (
+                          "Crear regla"
+                        )}
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {alertRules.loading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                </div>
+              ) : alertRules.rules.length === 0 ? (
+                <p className="py-4 text-sm text-muted-foreground">
+                  No hay reglas de alerta. Crea una con el botón &quot;Nueva regla&quot;.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {alertRules.rules.map((rule) => (
+                    <div
+                      key={rule.id}
+                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 p-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-medium text-foreground">{rule.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          Condición:{" "}
+                          {CONDITION_OPTIONS.find((o) => o.value === rule.condition)?.label ??
+                            rule.condition}{" "}
+                          · Umbral: {rule.threshold ?? "—"} · Severidad: {rule.severity}
+                          {!rule.isActive && " · Inactiva"}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => alertRules.handleDelete(rule.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {/* Production Monitor */}
         {view === "production" && (
           <Card>
@@ -333,7 +451,8 @@ export default function AlertasClient() {
                 <div>
                   <CardTitle>Estado de producción por máquina</CardTitle>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Muestra el tiempo desde el último incremento. Dispara alerta al superar el umbral.
+                    Muestra el tiempo desde el último incremento. Dispara alerta al superar el
+                    umbral.
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -342,8 +461,13 @@ export default function AlertasClient() {
                     type="number"
                     min={1}
                     value={idleThresholdMinutes}
-                    onChange={(e) => setIdleThresholdMinutes(Math.max(1, Number(e.target.value) || 1))}
+                    onChange={(e) =>
+                      canEditThreshold &&
+                      setIdleThresholdMinutes(Math.max(1, Number(e.target.value) || 1))
+                    }
                     className="w-24"
+                    readOnly={!canEditThreshold}
+                    disabled={!canEditThreshold}
                   />
                 </div>
               </div>
@@ -353,10 +477,14 @@ export default function AlertasClient() {
                 {machines
                   .filter((m) => m.status === "active")
                   .map((m) => {
-                    const lastIncreaseAt = lastIncreaseAtByMachine[m.id] ?? Date.now()
-                    const minutes = Math.max(0, Math.floor((Date.now() - lastIncreaseAt) / 60000))
+                    const lastIncreaseAt =
+                      productionMonitor.lastIncreaseAtByMachine[m.id] ?? Date.now()
+                    const minutes = Math.max(
+                      0,
+                      Math.floor((Date.now() - lastIncreaseAt) / 60000),
+                    )
                     const isOverThreshold = minutes >= idleThresholdMinutes
-                    const counter = machineCounters[m.id] ?? 0
+                    const counter = productionMonitor.machineCounters[m.id] ?? 0
 
                     return (
                       <div key={m.id} className="rounded-lg border border-border bg-card p-4">
@@ -371,8 +499,15 @@ export default function AlertasClient() {
                         </div>
                         <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
                           <div>
-                            <p className="text-xs text-muted-foreground">Min desde último incremento</p>
-                            <p className={cn("font-semibold", isOverThreshold ? "text-destructive" : "text-foreground")}>
+                            <p className="text-xs text-muted-foreground">
+                              Min desde último incremento
+                            </p>
+                            <p
+                              className={cn(
+                                "font-semibold",
+                                isOverThreshold ? "text-destructive" : "text-foreground",
+                              )}
+                            >
                               {minutes} min
                             </p>
                           </div>
@@ -443,12 +578,8 @@ export default function AlertasClient() {
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <Tabs value={activeTab} onValueChange={setActiveTab}>
                 <TabsList>
-                  <TabsTrigger value="all">
-                    Todas ({scopedAlerts.length})
-                  </TabsTrigger>
-                  <TabsTrigger value="unread">
-                    Sin leer ({unreadCount})
-                  </TabsTrigger>
+                  <TabsTrigger value="all">Todas ({scopedAlerts.length})</TabsTrigger>
+                  <TabsTrigger value="unread">Sin leer ({unreadCount})</TabsTrigger>
                   <TabsTrigger value="action">
                     Acción requerida ({actionRequiredCount})
                   </TabsTrigger>
@@ -461,7 +592,7 @@ export default function AlertasClient() {
                     placeholder="Buscar alertas..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-9 w-64"
+                    className="w-64 pl-9"
                   />
                 </div>
                 <Select value={filterType} onValueChange={setFilterType}>
@@ -512,18 +643,30 @@ export default function AlertasClient() {
                       className={cn(
                         "flex items-start gap-4 rounded-lg border p-4 transition-all",
                         colors.border,
-                        !alert.isRead ? colors.bg : "bg-card hover:bg-muted/50"
+                        !alert.isRead ? colors.bg : "bg-card hover:bg-muted/50",
                       )}
                     >
-                      <div className={cn("flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full", colors.bg)}>
+                      <div
+                        className={cn(
+                          "flex h-10 w-10 shrink-0 items-center justify-center rounded-full",
+                          colors.bg,
+                        )}
+                      >
                         <TypeIcon className={cn("h-5 w-5", colors.text)} />
                       </div>
 
-                      <div className="flex-1 min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-4">
                           <div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className={cn("font-semibold", !alert.isRead ? "text-foreground" : "text-muted-foreground")}>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h3
+                                className={cn(
+                                  "font-semibold",
+                                  !alert.isRead
+                                    ? "text-foreground"
+                                    : "text-muted-foreground",
+                                )}
+                              >
                                 {alert.title}
                               </h3>
                               {alert.actionRequired && !alert.isRead && (
@@ -531,7 +674,9 @@ export default function AlertasClient() {
                                   Acción requerida
                                 </span>
                               )}
-                              {!alert.isRead && <span className="h-2 w-2 rounded-full bg-primary" />}
+                              {!alert.isRead && (
+                                <span className="h-2 w-2 rounded-full bg-primary" />
+                              )}
                             </div>
                             <p className="mt-1 text-sm text-muted-foreground">{alert.message}</p>
                             <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
@@ -542,26 +687,43 @@ export default function AlertasClient() {
                               <span>{formatTimeAgo(alert.timestamp)}</span>
                               <span>{formatDateTime(alert.timestamp)}</span>
                               {alert.machineId && (
-                                <span className="rounded bg-muted px-1.5 py-0.5 text-xs">{alert.machineId.toUpperCase()}</span>
+                                <span className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                                  {alert.machineId.toUpperCase()}
+                                </span>
                               )}
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2 flex-shrink-0">
+                          <div className="flex shrink-0 items-center gap-2">
                             {alert.actionRequired && !alert.isRead && (
-                              <Button size="sm" variant="default" onClick={() => handleResolve(alert.id)}>
+                              <Button
+                                size="sm"
+                                variant="default"
+                                onClick={() => handleResolve(alert.id)}
+                              >
                                 <Check className="mr-1 h-3 w-3" />
                                 Resolver
                               </Button>
                             )}
                             {!alert.isRead && (
-                              <Button size="sm" variant="outline" onClick={() => handleMarkAsRead(alert.id)}>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleMarkAsRead(alert.id)}
+                              >
                                 Marcar leída
                               </Button>
                             )}
-                            <Button size="sm" variant="ghost" onClick={() => handleDismiss(alert.id)}>
-                              <X className="h-4 w-4" />
-                            </Button>
+                            {canDismissAlerts && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleDismiss(alert.id)}
+                                title="Eliminar alerta"
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -576,8 +738,8 @@ export default function AlertasClient() {
         {/* Real-time indicator */}
         <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
           <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75"></span>
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500"></span>
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
           </span>
           Actualizaciones en tiempo real activas
         </div>
@@ -585,5 +747,3 @@ export default function AlertasClient() {
     </DashboardLayout>
   )
 }
-
-

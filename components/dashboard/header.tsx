@@ -1,7 +1,8 @@
 "use client"
 
 import { useState, useCallback } from "react"
-import { ChevronDown, Menu, LogOut } from "lucide-react"
+import Link from "next/link"
+import { ChevronDown, Menu, LogOut, Settings } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -82,7 +83,14 @@ export function Header({ breadcrumbs, onOpenMobileMenu }: HeaderProps) {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem>Perfil</DropdownMenuItem>
-            <DropdownMenuItem>Configuración</DropdownMenuItem>
+            {user?.isPlatformAdmin && (
+              <DropdownMenuItem asChild>
+                <Link href="/configuracion" className="flex items-center gap-2">
+                  <Settings className="h-4 w-4" />
+                  Configuración
+                </Link>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => logout()}

@@ -11,10 +11,14 @@ export const apiBaseUrl = getBaseUrl();
 
 // --- Tipos del backend (auth) ---
 
+export type UserRole = "admin" | "manager" | "operator" | "viewer";
+
 export interface RequestUser {
   id: string;
   orgId: string;
   email: string;
+  role: UserRole;
+  isPlatformAdmin: boolean;
 }
 
 export interface AuthTokens {
@@ -132,4 +136,220 @@ export async function fetchMe(accessToken: string): Promise<RequestUser> {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   return parseResponse<RequestUser>(res);
+}
+
+// --- Config (requiere token) ---
+
+export interface EmailConfigResponse {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  from: string;
+  configured: boolean;
+}
+
+export interface EmailConfigPayload {
+  host: string;
+  port: number;
+  secure?: boolean;
+  user?: string;
+  password?: string;
+  from: string;
+}
+
+async function fetchWithAuth(
+  path: string,
+  options: RequestInit & { accessToken: string }
+): Promise<Response> {
+  const base = apiBaseUrl || "";
+  const { accessToken, ...init } = options;
+  return fetch(`${base}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      ...init.headers,
+    },
+  });
+}
+
+export async function getEmailConfig(
+  accessToken: string
+): Promise<EmailConfigResponse> {
+  const res = await fetchWithAuth("/config/email", { accessToken });
+  return parseResponse<EmailConfigResponse>(res);
+}
+
+export async function setEmailConfig(
+  accessToken: string,
+  payload: EmailConfigPayload
+): Promise<EmailConfigResponse> {
+  const res = await fetchWithAuth("/config/email", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+    accessToken,
+  });
+  return parseResponse<EmailConfigResponse>(res);
+}
+
+// --- Alert rules (requiere token; crear/editar/eliminar solo admin org) ---
+
+export type AlertRuleSeverity = "low" | "medium" | "high" | "critical";
+
+export interface AlertRule {
+  id: string;
+  orgId: string;
+  name: string;
+  metricId: string | null;
+  plantId: string | null;
+  lineId: string | null;
+  machineId: string | null;
+  condition: string;
+  threshold: number | null;
+  severity: AlertRuleSeverity;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateAlertRulePayload {
+  name: string;
+  condition: string;
+  threshold?: number | null;
+  severity?: AlertRuleSeverity;
+  isActive?: boolean;
+  metricId?: string | null;
+  plantId?: string | null;
+  lineId?: string | null;
+  machineId?: string | null;
+}
+
+export interface UpdateAlertRulePayload extends Partial<CreateAlertRulePayload> {}
+
+export async function getAlertRules(accessToken: string): Promise<AlertRule[]> {
+  const res = await fetchWithAuth("/alert-rules", { accessToken });
+  return parseResponse<AlertRule[]>(res);
+}
+
+export async function createAlertRule(
+  accessToken: string,
+  payload: CreateAlertRulePayload
+): Promise<AlertRule> {
+  const res = await fetchWithAuth("/alert-rules", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    accessToken,
+  });
+  return parseResponse<AlertRule>(res);
+}
+
+export async function updateAlertRule(
+  accessToken: string,
+  id: string,
+  payload: UpdateAlertRulePayload
+): Promise<AlertRule> {
+  const res = await fetchWithAuth(`/alert-rules/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+    accessToken,
+  });
+  return parseResponse<AlertRule>(res);
+}
+
+export async function deleteAlertRule(
+  accessToken: string,
+  id: string
+): Promise<void> {
+  const res = await fetchWithAuth(`/alert-rules/${id}`, {
+    method: "DELETE",
+    accessToken,
+  });
+  await parseResponse<void>(res);
+}
+
+// --- Users (requiere token; org = automática para org admin, elegible solo platform admin) ---
+
+export interface ApiUser {
+  id: string;
+  orgId: string;
+  email: string;
+  fullName: string;
+  role: UserRole;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateUserPayload {
+  orgId?: string;
+  email: string;
+  password: string;
+  fullName: string;
+  role?: UserRole;
+  status?: string;
+}
+
+export interface UpdateUserPayload {
+  orgId?: string;
+  email?: string;
+  password?: string;
+  fullName?: string;
+  role?: UserRole;
+  status?: string;
+}
+
+export async function getUsers(accessToken: string): Promise<ApiUser[]> {
+  const res = await fetchWithAuth("/users", { accessToken });
+  return parseResponse<ApiUser[]>(res);
+}
+
+export async function createUser(
+  accessToken: string,
+  payload: CreateUserPayload
+): Promise<ApiUser> {
+  const res = await fetchWithAuth("/users", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    accessToken,
+  });
+  return parseResponse<ApiUser>(res);
+}
+
+export async function updateUser(
+  accessToken: string,
+  id: string,
+  payload: UpdateUserPayload
+): Promise<ApiUser> {
+  const res = await fetchWithAuth(`/users/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+    accessToken,
+  });
+  return parseResponse<ApiUser>(res);
+}
+
+export async function deleteUser(
+  accessToken: string,
+  id: string
+): Promise<void> {
+  const res = await fetchWithAuth(`/users/${id}`, {
+    method: "DELETE",
+    accessToken,
+  });
+  await parseResponse<void>(res);
+}
+
+// --- Orgs (solo platform admin, para dropdown al crear usuario) ---
+
+export interface ApiOrg {
+  id: string;
+  name: string;
+  code: string | null;
+  createdAt: string;
+}
+
+export async function getOrgs(accessToken: string): Promise<ApiOrg[]> {
+  const res = await fetchWithAuth("/orgs", { accessToken });
+  return parseResponse<ApiOrg[]>(res);
 }

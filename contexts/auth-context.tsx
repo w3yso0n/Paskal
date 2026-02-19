@@ -15,6 +15,17 @@ import { toast } from "sonner"
 
 const STORAGE_ACCESS = "paskal_access_token"
 const STORAGE_REFRESH = "paskal_refresh_token"
+const TOKEN_EXPIRY_MARGIN_MS = 30_000
+
+function isTokenExpired(token: string): boolean {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]))
+    if (!payload.exp) return false
+    return payload.exp * 1000 < Date.now() + TOKEN_EXPIRY_MARGIN_MS
+  } catch {
+    return true
+  }
+}
 
 interface AuthState {
   user: RequestUser | null
@@ -106,14 +117,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [router, setUser])
 
   const getAccessToken = useCallback(async (): Promise<string | null> => {
-    let { access, refresh } = loadStoredTokens()
-    if (access) {
-      try {
-        await fetchMe(access)
-        return access
-      } catch {
-        access = null
-      }
+    const { access, refresh } = loadStoredTokens()
+    if (access && !isTokenExpired(access)) {
+      return access
     }
     if (refresh) {
       try {

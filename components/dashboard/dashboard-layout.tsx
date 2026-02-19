@@ -9,12 +9,58 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
 
-import { Sidebar, menuItems } from "./sidebar"
+import {
+  Sidebar,
+  productionMenuItems,
+  adminMenuItems,
+  platformConfigItem,
+} from "./sidebar"
 import { Header } from "./header"
+import {
+  hasPermission,
+  showAdminSection,
+  showPlatformSection,
+} from "@/lib/permissions"
 
 interface DashboardLayoutProps {
   children: React.ReactNode
   breadcrumbs?: { label: string; href?: string }[]
+}
+
+function MobileNavLink({
+  href,
+  label,
+  icon: Icon,
+  isActive,
+  onClick,
+}: {
+  href: string
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  isActive: boolean
+  onClick: () => void
+}) {
+  return (
+    <Link
+      href={href}
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+        isActive ? "bg-primary/10 text-primary" : "text-foreground/80 hover:bg-muted hover:text-foreground"
+      )}
+    >
+      <Icon className="h-5 w-5 shrink-0" />
+      <span>{label}</span>
+    </Link>
+  )
+}
+
+function MobileSectionLabel({ label }: { label: string }) {
+  return (
+    <div className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      {label}
+    </div>
+  )
 }
 
 export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps) {
@@ -22,6 +68,11 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
   const { user } = useAuth()
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false)
+  const hasAdmin = showAdminSection(user)
+  const hasPlatform = showPlatformSection(user)
+  const visibleAdminItems = adminMenuItems.filter(
+    (item) => !item.permission || hasPermission(user, item.permission),
+  )
 
   return (
     <div className="min-h-screen bg-background">
@@ -54,25 +105,43 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
           </div>
 
           <nav className="space-y-1 px-2 py-4">
-            {menuItems.map((item) => {
-              const isActive = pathname === item.href
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
+            {productionMenuItems.map((item) => (
+              <MobileNavLink
+                key={item.href}
+                href={item.href}
+                label={item.label}
+                icon={item.icon}
+                isActive={pathname === item.href}
+                onClick={() => setMobileMenuOpen(false)}
+              />
+            ))}
+            {hasAdmin && visibleAdminItems.length > 0 && (
+              <>
+                <MobileSectionLabel label="Administración" />
+                {visibleAdminItems.map((item) => (
+                  <MobileNavLink
+                    key={item.href}
+                    href={item.href}
+                    label={item.label}
+                    icon={item.icon}
+                    isActive={pathname === item.href}
+                    onClick={() => setMobileMenuOpen(false)}
+                  />
+                ))}
+              </>
+            )}
+            {hasPlatform && (
+              <>
+                <MobileSectionLabel label="Plataforma" />
+                <MobileNavLink
+                  href={platformConfigItem.href}
+                  label={platformConfigItem.label}
+                  icon={platformConfigItem.icon}
+                  isActive={pathname === platformConfigItem.href}
                   onClick={() => setMobileMenuOpen(false)}
-                  className={cn(
-                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-primary/10 text-primary"
-                      : "text-foreground/80 hover:bg-muted hover:text-foreground"
-                  )}
-                >
-                  <item.icon className="h-5 w-5 flex-shrink-0" />
-                  <span>{item.label}</span>
-                </Link>
-              )
-            })}
+                />
+              </>
+            )}
           </nav>
 
           <div className="mt-auto border-t border-border p-4">
