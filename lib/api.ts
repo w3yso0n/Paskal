@@ -30,6 +30,26 @@ export interface ApiError {
   statusCode?: number;
 }
 
+/**
+ * Mensaje seguro para mostrar al usuario (sin revelar detalles que ayuden a ataques).
+ * El error real debe registrarse en consola o backend.
+ */
+export function getSafeLoginMessage(error: unknown): string {
+  if (error && typeof error === "object" && "message" in error) {
+    const msg = String((error as { message?: unknown }).message ?? "").toLowerCase();
+    if (msg.includes("fetch") || msg.includes("network") || msg.includes("failed")) {
+      return "No se pudo conectar. Comprueba tu conexión e intenta de nuevo.";
+    }
+  }
+  if (error && typeof error === "object" && "statusCode" in error) {
+    const code = (error as { statusCode?: number }).statusCode;
+    if (code === 401 || code === 403 || code === 400) {
+      return "Correo o contraseña incorrectos.";
+    }
+  }
+  return "No se pudo iniciar sesión. Intenta de nuevo.";
+}
+
 async function parseResponse<T>(res: Response): Promise<T> {
   const text = await res.text();
   let body: { message?: string; statusCode?: number } = {};

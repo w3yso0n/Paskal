@@ -7,10 +7,11 @@ import {
   refreshTokens,
   logoutApi,
   fetchMe,
+  getSafeLoginMessage,
   type RequestUser,
   type AuthTokens,
-  type ApiError,
 } from "@/lib/api"
+import { toast } from "sonner"
 
 const STORAGE_ACCESS = "paskal_access_token"
 const STORAGE_REFRESH = "paskal_refresh_token"
@@ -83,9 +84,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(user)
         router.replace("/")
       } catch (e) {
-        const err = e as ApiError
-        setError(err?.message ?? "Error al iniciar sesión")
+        if (typeof window !== "undefined") {
+          console.error("[Auth] Login failed", e)
+        }
+        const safeMessage = getSafeLoginMessage(e)
+        setError(safeMessage)
         setState((s) => ({ ...s, loading: false }))
+        toast.error(safeMessage, { duration: 5000 })
         throw e
       }
     },

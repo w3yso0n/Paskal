@@ -2,6 +2,7 @@ import React from "react"
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
+import { Toaster } from 'sonner'
 import { AuthProvider } from '@/contexts/auth-context'
 import { AuthGuard } from '@/components/auth/auth-guard'
 import './globals.css'
@@ -45,6 +46,7 @@ export default function RootLayout({
             {children}
           </AuthGuard>
         </AuthProvider>
+        <Toaster richColors position="top-center" closeButton duration={5000} />
         <Analytics />
       </body>
     </html>
