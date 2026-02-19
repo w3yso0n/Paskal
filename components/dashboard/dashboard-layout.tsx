@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { useAuth } from "@/contexts/auth-context"
 
 import { Sidebar, menuItems } from "./sidebar"
 import { Header } from "./header"
@@ -18,6 +19,7 @@ interface DashboardLayoutProps {
 
 export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps) {
   const pathname = usePathname()
+  const { user } = useAuth()
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false)
 
@@ -74,7 +76,7 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
           </nav>
 
           <div className="mt-auto border-t border-border p-4">
-            <p className="text-sm text-muted-foreground">admin@paskal.com</p>
+            <p className="truncate text-sm text-muted-foreground">{user?.email ?? "Usuario"}</p>
           </div>
         </SheetContent>
       </Sheet>

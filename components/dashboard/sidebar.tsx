@@ -3,8 +3,9 @@
 import Link from "next/link"
 import Image from "next/image"
 import { usePathname } from "next/navigation"
-import { Home, Factory, Monitor, BarChart3, Users, ChevronLeft, ChevronRight, User, Bell, Target, Clock } from "lucide-react"
+import { Home, Factory, Monitor, BarChart3, Users, ChevronLeft, ChevronRight, User, Bell, Target } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useAuth } from "@/contexts/auth-context"
 
 export const menuItems = [
   { icon: Home, label: "Inicio", href: "/" },
@@ -24,6 +25,7 @@ interface SidebarProps {
 
 export function Sidebar({ collapsed = false, onCollapsedChange, className }: SidebarProps) {
   const pathname = usePathname()
+  const { user } = useAuth()
 
   return (
     <aside
@@ -97,7 +99,9 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
             <User className="h-4 w-4" />
           </div>
           {!collapsed && (
-            <span className="text-sm text-sidebar-foreground/80">admin@paskal.com</span>
+            <span className="truncate text-sm text-sidebar-foreground/80">
+              {user?.email ?? "Usuario"}
+            </span>
           )}
         </div>
       </div>

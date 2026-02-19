@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useCallback } from "react"
-import { ChevronDown, Menu } from "lucide-react"
+import { ChevronDown, Menu, LogOut } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,6 +11,7 @@ import {
 import { AlertsDropdown } from "@/components/notifications/alerts-dropdown"
 import { alerts as initialAlerts } from "@/lib/mock-data"
 import { Button } from "@/components/ui/button"
+import { useAuth } from "@/contexts/auth-context"
 
 interface HeaderProps {
   breadcrumbs?: { label: string; href?: string }[]
@@ -18,6 +19,7 @@ interface HeaderProps {
 }
 
 export function Header({ breadcrumbs, onOpenMobileMenu }: HeaderProps) {
+  const { user, logout } = useAuth()
   const [alerts, setAlerts] = useState(initialAlerts)
 
   const handleMarkAsRead = useCallback((id: string) => {
@@ -75,13 +77,19 @@ export function Header({ breadcrumbs, onOpenMobileMenu }: HeaderProps) {
         />
         <DropdownMenu>
           <DropdownMenuTrigger className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
-            admin@paskal.com
+            {user?.email ?? "Usuario"}
             <ChevronDown className="h-4 w-4" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem>Perfil</DropdownMenuItem>
             <DropdownMenuItem>Configuración</DropdownMenuItem>
-            <DropdownMenuItem className="text-destructive">Cerrar sesión</DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-destructive"
+              onClick={() => logout()}
+            >
+              <LogOut className="h-4 w-4" />
+              Cerrar sesión
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
