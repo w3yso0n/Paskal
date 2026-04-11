@@ -1,9 +1,11 @@
 "use client"
 
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { MachineCard } from "@/components/production/machine-card"
-import { employees, machines, type Machine } from "@/lib/mock-data"
+import type { Machine } from "@/lib/types"
+import { getEmployees, getMachines, type ApiEmployee, type ApiMachine } from "@/lib/api"
+import { useAuth } from "@/contexts/auth-context"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -27,31 +29,91 @@ import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Maximize2, Minimize2, Settings2, RotateCcw } from "lucide-react"
 
+/** Mapeo código máquina -> posición en diagrama (row, col).
+ * Nota: las columnas son 0-indexed (col: 0 es la primera columna visual).
+ * La 2da columna visual es col: 1 y aquí solo debe tener M7 y M8.
+ */
+const MACHINE_POSITIONS: Record<string, { row: number; col: number }> = {
+  M1: { row: 6, col: 0 }, M2: { row: 5, col: 0 }, M3: { row: 4, col: 0 }, M4: { row: 3, col: 0 },
+  M5: { row: 2, col: 0 }, M6: { row: 1, col: 0 }, M7: { row: 6, col: 1 }, M8: { row: 5, col: 1 },
+  M9: { row: 6, col: 2 }, M10: { row: 5, col: 2 }, M11: { row: 4, col: 2 }, M12: { row: 3, col: 2 },
+  M13: { row: 6, col: 3 }, M14: { row: 5, col: 3 }, M15: { row: 4, col: 3 }, M16: { row: 3, col: 3 },
+  M17: { row: 6, col: 4 }, M18: { row: 5, col: 4 }, M19: { row: 4, col: 4 }, M20: { row: 3, col: 4 },
+}
+
+function mapApiMachineToFrontend(m: ApiMachine): Machine {
+  const statusMap = { running: "active" as const, idle: "waiting" as const, stopped: "inactive" as const, maintenance: "inactive" as const, offline: "inactive" as const }
+  const code = m.code ?? m.name
+  const position = MACHINE_POSITIONS[code] ?? { row: 0, col: 0 }
+  return { id: m.id, name: m.name, status: statusMap[m.status], position }
+}
+
 interface MachineData extends Machine {
-  code?: string
+  machineCode?: string
+  sku?: string
   operator?: string
   packer?: string
   production?: number
 }
 
 export default function ProductionFloorPage() {
-  const operators = useMemo(
-    () => employees.filter((e) => e.role === "Operador").map((e) => e.name),
-    []
-  )
-  const packers = useMemo(
-    () => employees.filter((e) => e.role === "Empacador").map((e) => e.name),
-    []
-  )
+  const { getAccessToken, user } = useAuth()
+  const [employeeRows, setEmployeeRows] = useState<ApiEmployee[]>([])
+  const operators = useMemo(() => {
+    const byPosition = employeeRows
+      .filter((e) => (e.position ?? "").toLowerCase().includes("oper"))
+      .map((e) => e.fullName)
+    if (byPosition.length > 0) return byPosition
+    return employeeRows.filter((e) => e.status === "active").map((e) => e.fullName)
+  }, [employeeRows])
+  const packers = useMemo(() => {
+    const byPosition = employeeRows
+      .filter((e) => (e.position ?? "").toLowerCase().includes("empac"))
+      .map((e) => e.fullName)
+    if (byPosition.length > 0) return byPosition
+    return employeeRows.filter((e) => e.status === "active").map((e) => e.fullName)
+  }, [employeeRows])
 
-  const [machineData, setMachineData] = useState<MachineData[]>(
-    machines.map(m => ({
-      ...m,
-      production: Math.floor(Math.random() * 300) + 100,
-      operator: operators.length ? operators[Math.floor(Math.random() * operators.length)] : undefined,
-      packer: packers.length ? packers[Math.floor(Math.random() * packers.length)] : undefined,
-    }))
-  )
+  const [machineData, setMachineData] = useState<MachineData[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const token = await getAccessToken()
+        if (!token) {
+          setMachineData([])
+          return
+        }
+        const [apiMachines, apiEmployees] = await Promise.all([
+          getMachines(token),
+          getEmployees(token),
+        ])
+        if (cancelled) return
+        setEmployeeRows(
+          user?.orgId ? apiEmployees.filter((e) => e.orgId === user.orgId) : apiEmployees,
+        )
+        const mapped = apiMachines.map((m) => ({
+          ...mapApiMachineToFrontend(m),
+          machineCode: m.code ?? undefined,
+        }))
+        setMachineData(mapped)
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Error al cargar máquinas")
+          setMachineData([])
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [getAccessToken, user?.orgId])
   const [selectedMachine, setSelectedMachine] = useState<MachineData | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [isDiagramFullscreen, setIsDiagramFullscreen] = useState(false)
@@ -75,7 +137,7 @@ export default function ProductionFloorPage() {
     if (isDiagramFullscreen) setIsDiagramFullscreen(false)
     setSelectedMachine(machine)
     setFocusedMachineId(machine.id)
-    setCodeInput(machine.code || "")
+    setCodeInput(machine.sku || "")
     setOperatorInput(machine.operator || "")
     setPackerInput(machine.packer || "")
     setIsDialogOpen(true)
@@ -88,7 +150,7 @@ export default function ProductionFloorPage() {
           m.id === selectedMachine.id 
             ? {
                 ...m,
-                code: codeInput || undefined,
+                sku: codeInput || undefined,
                 operator: operatorInput || undefined,
                 packer: packerInput || undefined,
               }
@@ -104,13 +166,8 @@ export default function ProductionFloorPage() {
   }
 
   const handleReset = () => {
-    setMachineData(
-      machines.map(m => ({
-        ...m,
-        production: Math.floor(Math.random() * 300) + 100,
-        operator: operators.length ? operators[Math.floor(Math.random() * operators.length)] : undefined,
-        packer: packers.length ? packers[Math.floor(Math.random() * packers.length)] : undefined,
-      }))
+    setMachineData((prev) =>
+      prev.map((m) => ({ ...m, operator: undefined, packer: undefined }))
     )
   }
 
@@ -122,7 +179,7 @@ export default function ProductionFloorPage() {
   const activeCount = machineData.filter(m => m.status === "active").length
   const waitingCount = machineData.filter(m => m.status === "waiting").length
   const inactiveCount = machineData.filter(m => m.status === "inactive").length
-  const assignedCount = machineData.filter(m => m.code).length
+  const assignedCount = machineData.filter(m => m.sku).length
 
   const sortedMachines = useMemo(() => {
     const byNumericName = (value: string) => {
@@ -146,7 +203,7 @@ export default function ProductionFloorPage() {
                     id={machine.id}
                     name={machine.name}
                     status={machine.status}
-                    code={machine.code}
+                    code={machine.sku}
                     operator={machine.operator}
                     packer={machine.packer}
                     production={machine.production}
@@ -178,6 +235,17 @@ export default function ProductionFloorPage() {
             </p>
           </div>
         </div>
+
+        {error && (
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+            {error}
+          </div>
+        )}
+        {loading && (
+          <div className="rounded-lg border border-border bg-muted/30 p-4 text-muted-foreground">
+            Cargando máquinas…
+          </div>
+        )}
 
         {/* Stats Cards */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -269,7 +337,7 @@ export default function ProductionFloorPage() {
             </TableHeader>
             <TableBody>
               {sortedMachines.map((m, index) => {
-                const ok = Boolean(m.code) && Boolean(m.operator) && Boolean(m.packer)
+                const ok = Boolean(m.sku) && Boolean(m.operator) && Boolean(m.packer)
                 return (
                   <TableRow
                     key={m.id}
@@ -283,10 +351,10 @@ export default function ProductionFloorPage() {
                         ref={(el) => {
                           skuRefs.current[index] = el
                         }}
-                        value={m.code ?? ""}
+                        value={m.sku ?? ""}
                         placeholder="SKU-001"
                         onFocus={() => setFocusedMachineId(m.id)}
-                        onChange={(e) => handleQuickUpdate(m.id, { code: e.target.value.toUpperCase() })}
+                        onChange={(e) => handleQuickUpdate(m.id, { sku: e.target.value.toUpperCase() })}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") {
                             e.preventDefault()

@@ -340,6 +340,26 @@ export async function deleteUser(
   await parseResponse<void>(res);
 }
 
+// --- Machines (piso de producción) ---
+
+export interface ApiMachine {
+  id: string;
+  orgId: string;
+  name: string;
+  code: string | null;
+  status: "running" | "idle" | "stopped" | "maintenance" | "offline";
+  workstationId?: string | null;
+  model?: string | null;
+  serialNumber?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export async function getMachines(accessToken: string): Promise<ApiMachine[]> {
+  const res = await fetchWithAuth("/machine", { accessToken });
+  return parseResponse<ApiMachine[]>(res);
+}
+
 // --- Orgs (solo platform admin, para dropdown al crear usuario) ---
 
 export interface ApiOrg {
@@ -352,4 +372,200 @@ export interface ApiOrg {
 export async function getOrgs(accessToken: string): Promise<ApiOrg[]> {
   const res = await fetchWithAuth("/orgs", { accessToken });
   return parseResponse<ApiOrg[]>(res);
+}
+
+// --- Employees ---
+
+export type ApiEmployeeStatus = "active" | "inactive" | "terminated";
+
+export interface ApiEmployee {
+  id: string;
+  orgId: string;
+  employeeCode: string | null;
+  fullName: string;
+  email: string | null;
+  phone: string | null;
+  position: string | null;
+  status: ApiEmployeeStatus;
+  hiredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateEmployeePayload {
+  orgId: string;
+  fullName: string;
+  employeeCode?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  position?: string | null;
+  status?: ApiEmployeeStatus;
+  hiredAt?: string | Date | null;
+}
+
+export interface UpdateEmployeePayload extends Partial<CreateEmployeePayload> {}
+
+export async function getEmployees(accessToken: string): Promise<ApiEmployee[]> {
+  const res = await fetchWithAuth("/employee", { accessToken });
+  return parseResponse<ApiEmployee[]>(res);
+}
+
+export async function createEmployee(
+  accessToken: string,
+  payload: CreateEmployeePayload,
+): Promise<ApiEmployee> {
+  const res = await fetchWithAuth("/employee", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    accessToken,
+  });
+  return parseResponse<ApiEmployee>(res);
+}
+
+export async function updateEmployee(
+  accessToken: string,
+  id: string,
+  payload: UpdateEmployeePayload,
+): Promise<ApiEmployee> {
+  const res = await fetchWithAuth(`/employee/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+    accessToken,
+  });
+  return parseResponse<ApiEmployee>(res);
+}
+
+export async function deleteEmployee(accessToken: string, id: string): Promise<ApiEmployee> {
+  const res = await fetchWithAuth(`/employee/${id}`, {
+    method: "DELETE",
+    accessToken,
+  });
+  return parseResponse<ApiEmployee>(res);
+}
+
+// --- Alerts ---
+
+export type ApiAlertSeverity = "low" | "medium" | "high" | "critical";
+export type ApiAlertStatus = "open" | "acknowledged" | "closed";
+
+export interface ApiAlert {
+  id: string;
+  orgId: string;
+  ruleId: string | null;
+  plantId: string | null;
+  lineId: string | null;
+  machineId: string | null;
+  title: string;
+  message: string | null;
+  severity: ApiAlertSeverity;
+  status: ApiAlertStatus;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
+}
+
+export interface UpdateAlertPayload {
+  status?: ApiAlertStatus;
+  severity?: ApiAlertSeverity;
+  title?: string;
+  message?: string | null;
+  closedAt?: string | Date | null;
+  ruleId?: string | null;
+  plantId?: string | null;
+  lineId?: string | null;
+  machineId?: string | null;
+  orgId?: string;
+}
+
+export async function getAlerts(accessToken: string): Promise<ApiAlert[]> {
+  const res = await fetchWithAuth("/alert", { accessToken });
+  return parseResponse<ApiAlert[]>(res);
+}
+
+export async function updateAlert(
+  accessToken: string,
+  id: string,
+  payload: UpdateAlertPayload,
+): Promise<ApiAlert> {
+  const res = await fetchWithAuth(`/alert/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+    accessToken,
+  });
+  return parseResponse<ApiAlert>(res);
+}
+
+export async function deleteAlert(accessToken: string, id: string): Promise<ApiAlert> {
+  const res = await fetchWithAuth(`/alert/${id}`, {
+    method: "DELETE",
+    accessToken,
+  });
+  return parseResponse<ApiAlert>(res);
+}
+
+// --- Production events (ingesta PLC / auditoría de eventos) ---
+
+export interface ApiProductionEvent {
+  id: string;
+  orgId: string;
+  machineId: string | null;
+  runId: string | null;
+  eventType: string;
+  message: string | null;
+  occurredAt: string;
+  payload: Record<string, unknown>;
+}
+
+export async function getProductionEvents(
+  accessToken: string,
+  params: { orgId?: string; runId?: string; machineId?: string; limit?: number } = {},
+): Promise<ApiProductionEvent[]> {
+  const q = new URLSearchParams();
+  if (params.orgId) q.set("orgId", params.orgId);
+  if (params.runId) q.set("runId", params.runId);
+  if (params.machineId) q.set("machineId", params.machineId);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  const qs = q.toString();
+  const res = await fetchWithAuth(`/production-event${qs ? `?${qs}` : ""}`, { accessToken });
+  return parseResponse<ApiProductionEvent[]>(res);
+}
+
+// --- Metric points (series de tiempo) ---
+
+export interface ApiMetricPoint {
+  id: string;
+  orgId: string;
+  metricId: string;
+  plantId: string | null;
+  lineId: string | null;
+  machineId: string | null;
+  value: number;
+  measuredAt: string;
+}
+
+export async function getMetricPoints(
+  accessToken: string,
+  params: {
+    orgId?: string;
+    metricId?: string;
+    plantId?: string;
+    lineId?: string;
+    machineId?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+  } = {},
+): Promise<ApiMetricPoint[]> {
+  const q = new URLSearchParams();
+  if (params.orgId) q.set("orgId", params.orgId);
+  if (params.metricId) q.set("metricId", params.metricId);
+  if (params.plantId) q.set("plantId", params.plantId);
+  if (params.lineId) q.set("lineId", params.lineId);
+  if (params.machineId) q.set("machineId", params.machineId);
+  if (params.from) q.set("from", params.from);
+  if (params.to) q.set("to", params.to);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  const qs = q.toString();
+  const res = await fetchWithAuth(`/metric-point${qs ? `?${qs}` : ""}`, { accessToken });
+  return parseResponse<ApiMetricPoint[]>(res);
 }

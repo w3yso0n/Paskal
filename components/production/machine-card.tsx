@@ -2,7 +2,7 @@
 
 import Image from "next/image"
 import { cn } from "@/lib/utils"
-import type { MachineStatus } from "@/lib/mock-data"
+import type { MachineStatus } from "@/lib/types"
 import {
   Tooltip,
   TooltipContent,
@@ -93,12 +93,7 @@ export function MachineCard({
               <span className="mt-1 rounded bg-gray-700 px-2 py-0.5 text-xs font-medium text-white">
                 {name}
               </span>
-              {/* Code badge if assigned */}
-              {code && (
-                <span className="mt-1 rounded bg-primary/20 px-2 py-0.5 text-xs font-medium text-primary">
-                  {code}
-                </span>
-              )}
+
             </div>
           </button>
         </TooltipTrigger>

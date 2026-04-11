@@ -43,18 +43,25 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import {
-  alerts as initialAlerts,
-  machines,
   type Alert,
   type AlertType,
   type AlertCategory,
-} from "@/lib/mock-data"
+} from "@/lib/types"
 import { useSearchParams } from "next/navigation"
 import { useAuth } from "@/contexts/auth-context"
 import { hasPermission } from "@/lib/permissions"
-import type { AlertRuleSeverity } from "@/lib/api"
+import {
+  deleteAlert,
+  getAlerts,
+  getMachines,
+  getProductionEvents,
+  updateAlert,
+  type AlertRuleSeverity,
+  type ApiAlert,
+  type ApiMachine,
+  type ApiProductionEvent,
+} from "@/lib/api"
 import { useAlertRules } from "./hooks/use-alert-rules"
-import { useProductionMonitor } from "./hooks/use-production-monitor"
 
 // --- Constants ---
 
@@ -104,6 +111,58 @@ const severityRank: Record<AlertType, number> = {
   warning: 3,
   info: 2,
   success: 1,
+}
+
+function mapApiAlertToUi(a: ApiAlert): Alert {
+  const type: AlertType =
+    a.severity === "critical"
+      ? "error"
+      : a.severity === "high"
+        ? "warning"
+        : a.severity === "low"
+          ? "info"
+          : "warning"
+
+  const category: AlertCategory =
+    a.machineId != null ? "machine" : a.ruleId != null ? "production" : "system"
+
+  const timestamp = new Date(a.createdAt)
+  const isRead = a.status !== "open"
+  const actionRequired = a.status === "open"
+
+  return {
+    id: a.id,
+    type,
+    category,
+    title: a.title,
+    message: a.message ?? "",
+    timestamp: Number.isNaN(timestamp.getTime()) ? new Date() : timestamp,
+    isRead,
+    machineId: a.machineId ?? undefined,
+    actionRequired,
+  }
+}
+
+function isProductionIncrementEvent(e: ApiProductionEvent): boolean {
+  const payload = e.payload ?? {}
+  const rawEvent =
+    (payload["EVENT"] as string | undefined) ??
+    (payload["event"] as string | undefined) ??
+    e.eventType
+  const event = String(rawEvent ?? "").toLowerCase()
+  if (!event) return false
+  if (event.includes("produ")) return true
+  return event === "producción" || event === "produccion"
+}
+
+function getEventCount(e: ApiProductionEvent): number {
+  const payload = e.payload ?? {}
+  const raw =
+    (payload["COUNT"] as unknown) ??
+    (payload["count"] as unknown) ??
+    (payload["units"] as unknown)
+  const n = typeof raw === "number" ? raw : Number(raw)
+  return Number.isFinite(n) ? n : 0
 }
 
 // --- Helpers ---
@@ -156,17 +215,76 @@ export default function AlertasClient() {
     getAccessToken,
   })
 
-  const productionMonitor = useProductionMonitor({ idleThresholdMinutes })
-
   // --- Alerts state ---
-  const [alerts, setAlerts] = useState<Alert[]>(initialAlerts)
+  const [alerts, setAlerts] = useState<Alert[]>([])
+  const [alertsLoading, setAlertsLoading] = useState(true)
+  const [machineRows, setMachineRows] = useState<ApiMachine[]>([])
+  const [machineCounters, setMachineCounters] = useState<Record<string, number>>({})
+  const [lastIncreaseAtByMachine, setLastIncreaseAtByMachine] = useState<Record<string, number>>(
+    {},
+  )
 
   useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      setAlerts((prev) => productionMonitor.generateStagnationAlerts(prev))
-    }, 3_000)
-    return () => window.clearInterval(intervalId)
-  }, [productionMonitor])
+    let cancelled = false
+    const load = async () => {
+      setAlertsLoading(true)
+      try {
+        const token = await getAccessToken()
+        if (!token) {
+          if (!cancelled) setAlerts([])
+          return
+        }
+        const [apiAlerts, apiMachines] = await Promise.all([
+          getAlerts(token),
+          getMachines(token),
+        ])
+        if (cancelled) return
+        setMachineRows(apiMachines)
+        setAlerts(apiAlerts.map(mapApiAlertToUi))
+      } finally {
+        if (!cancelled) setAlertsLoading(false)
+      }
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [getAccessToken])
+
+  useEffect(() => {
+    if (view !== "production") return
+    let cancelled = false
+    const run = async () => {
+      const token = await getAccessToken()
+      if (!token || !user?.orgId) return
+
+      const events = await getProductionEvents(token, { orgId: user.orgId, limit: 1500 })
+      if (cancelled) return
+
+      const lastByMachine: Record<string, number> = {}
+      const counters: Record<string, number> = {}
+      for (const e of events) {
+        if (!e.machineId) continue
+        if (!isProductionIncrementEvent(e)) continue
+        const count = getEventCount(e)
+        if (count <= 0) continue
+        const ts = new Date(e.occurredAt).getTime()
+        if (!Number.isFinite(ts)) continue
+        counters[e.machineId] = (counters[e.machineId] ?? 0) + count
+        lastByMachine[e.machineId] = Math.max(lastByMachine[e.machineId] ?? 0, ts)
+      }
+
+      setMachineCounters(counters)
+      setLastIncreaseAtByMachine(lastByMachine)
+    }
+
+    run()
+    const intervalId = window.setInterval(run, 20_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [getAccessToken, user?.orgId, view])
 
   // --- Derived state ---
   const scopedAlerts = useMemo(
@@ -217,22 +335,44 @@ export default function AlertasClient() {
   )
 
   // --- Alert actions ---
-  const handleMarkAsRead = (id: string) =>
+  const handleMarkAsRead = async (id: string) => {
     setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, isRead: true } : a)))
+    const token = await getAccessToken()
+    if (!token) return
+    await updateAlert(token, id, { status: "acknowledged" })
+  }
 
-  const handleMarkAllAsRead = () =>
+  const handleMarkAllAsRead = async () => {
     setAlerts((prev) => prev.map((a) => ({ ...a, isRead: true })))
+    const token = await getAccessToken()
+    if (!token) return
+    const unread = scopedAlerts.filter((a) => !a.isRead).map((a) => a.id)
+    await Promise.allSettled(unread.map((id) => updateAlert(token, id, { status: "acknowledged" })))
+  }
 
-  const handleDismiss = (id: string) =>
+  const handleDismiss = async (id: string) => {
     setAlerts((prev) => prev.filter((a) => a.id !== id))
+    const token = await getAccessToken()
+    if (!token) return
+    await deleteAlert(token, id)
+  }
 
-  const handleClearAll = () =>
+  const handleClearAll = async () => {
+    const token = await getAccessToken()
     setAlerts((prev) => prev.filter((a) => !a.isRead))
+    if (!token) return
+    const toDelete = scopedAlerts.filter((a) => a.isRead).map((a) => a.id)
+    await Promise.allSettled(toDelete.map((id) => deleteAlert(token, id)))
+  }
 
-  const handleResolve = (id: string) =>
+  const handleResolve = async (id: string) => {
     setAlerts((prev) =>
       prev.map((a) => (a.id === id ? { ...a, isRead: true, actionRequired: false } : a)),
     )
+    const token = await getAccessToken()
+    if (!token) return
+    await updateAlert(token, id, { status: "closed", closedAt: new Date().toISOString() })
+  }
 
   return (
     <DashboardLayout breadcrumbs={[{ label: "Inicio", href: "/" }, { label: "Alertas" }]}>
@@ -474,17 +614,16 @@ export default function AlertasClient() {
             </CardHeader>
             <CardContent>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {machines
-                  .filter((m) => m.status === "active")
+                {machineRows
+                  .filter((m) => m.status === "running")
                   .map((m) => {
-                    const lastIncreaseAt =
-                      productionMonitor.lastIncreaseAtByMachine[m.id] ?? Date.now()
+                    const lastIncreaseAt = lastIncreaseAtByMachine[m.id] ?? Date.now()
                     const minutes = Math.max(
                       0,
                       Math.floor((Date.now() - lastIncreaseAt) / 60000),
                     )
                     const isOverThreshold = minutes >= idleThresholdMinutes
-                    const counter = productionMonitor.machineCounters[m.id] ?? 0
+                    const counter = machineCounters[m.id] ?? 0
 
                     return (
                       <div key={m.id} className="rounded-lg border border-border bg-card p-4">
@@ -625,7 +764,12 @@ export default function AlertasClient() {
             </div>
           </CardHeader>
           <CardContent>
-            {sortedAlerts.length === 0 ? (
+            {alertsLoading ? (
+              <div className="flex items-center justify-center py-12 text-muted-foreground">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Cargando alertas…
+              </div>
+            ) : sortedAlerts.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
                 <Bell className="mb-3 h-12 w-12 opacity-50" />
                 <p className="text-sm">No hay alertas que coincidan con los filtros</p>

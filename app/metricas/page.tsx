@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { KpiCard } from "@/components/dashboard/kpi-card"
 import { AttendanceTable } from "@/components/attendance/attendance-table"
@@ -83,17 +83,9 @@ import {
   Pie,
   Cell,
 } from "recharts"
-import {
-  hourlyProductionData,
-  eventDistributionData,
-  topMachinesData,
-  topSkusData,
-  operators,
-  employees,
-  attendanceRecords,
-  attendanceStats,
-} from "@/lib/mock-data"
 import { cn } from "@/lib/utils"
+import { useAuth } from "@/contexts/auth-context"
+import { getEmployees, getProductionEvents, type ApiEmployee, type ApiProductionEvent } from "@/lib/api"
 
 type ProductionEventType =
   | "Producción"
@@ -118,6 +110,7 @@ interface ProductionBaseRow {
 const clampPercent = (value: number) => Math.max(0, Math.min(100, value))
 
 export default function MetricsPage() {
+  const { user, getAccessToken } = useAuth()
   const [activeTab, setActiveTab] = useState("produccion")
   const [filterStartDate, setFilterStartDate] = useState(() => {
     const d = new Date()
@@ -166,65 +159,76 @@ export default function MetricsPage() {
     return null
   }
 
-  const productionBaseRows: ProductionBaseRow[] = useMemo(() => {
-    const now = new Date()
-    const skus = ["SKU-001", "SKU-002", "SKU-003", "SKU-004", "SKU-005"]
-    const machineIds = Array.from({ length: 20 }, (_, i) => `M${i + 1}`)
-    const operatorNames = operators.map((o) => o.name)
-    const packerNames = employees.filter((e) => e.role === "Empacador").map((e) => e.name)
+  const [productionBaseRows, setProductionBaseRows] = useState<ProductionBaseRow[]>([])
+  const [employeeRows, setEmployeeRows] = useState<ApiEmployee[]>([])
+  const attendanceRecords = useMemo(() => [], [])
+  const attendanceStats = useMemo(() => [], [])
 
-    const safePackerNames = packerNames.length ? packerNames : ["Empacador A", "Empacador B"]
-
-    const rows: ProductionBaseRow[] = []
-    const daysBack = 30
-
-    for (let dayOffset = daysBack; dayOffset >= 0; dayOffset--) {
-      const baseDate = new Date(now)
-      baseDate.setDate(now.getDate() - dayOffset)
-      baseDate.setHours(6, 0, 0, 0)
-
-      for (const machine_id of machineIds) {
-        const operator = operatorNames[(Number(machine_id.replace("M", "")) - 1) % operatorNames.length]
-        const sku = skus[(Number(machine_id.replace("M", "")) - 1) % skus.length]
-
-        const basePackerIndex = (Number(machine_id.replace("M", "")) - 1) % safePackerNames.length
-        const packer_1 = safePackerNames[basePackerIndex]
-        const packer_2 = safePackerNames[(basePackerIndex + 1) % safePackerNames.length]
-
-        for (let hour = 6; hour <= 21; hour++) {
-          const eventsPerHour = 2
-          for (let e = 0; e < eventsPerHour; e++) {
-            const timestamp = new Date(baseDate)
-            timestamp.setHours(hour, e === 0 ? 10 : 40)
-
-            const roll = Math.random()
-            let event: ProductionEventType = "Producción"
-
-            if (roll < 0.05) event = "Parada"
-            else if (roll < 0.09) event = "Cambio SKU"
-
-            const produced = event === "Producción" ? 8 + Math.floor(Math.random() * 18) : 0
-            const count = produced
-
-            rows.push({
-              machine_id,
-              timestamp: timestamp.toISOString(),
-              operator,
-              packer_1,
-              packer_2,
-              parameter_1: Number((70 + Math.random() * 20).toFixed(2)),
-              parameter_2: Number((15 + Math.random() * 10).toFixed(2)),
-              count,
-              event,
-              sku,
-            })
-          }
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      const token = await getAccessToken()
+      if (!token || !user?.orgId) {
+        if (!cancelled) {
+          setProductionBaseRows([])
+          setEmployeeRows([])
         }
+        return
       }
+
+      const [events, employees] = await Promise.all([
+        getProductionEvents(token, { orgId: user.orgId, limit: 5000 }),
+        getEmployees(token),
+      ])
+      if (cancelled) return
+
+      setEmployeeRows(employees.filter((e) => e.orgId === user.orgId))
+
+      const mapped: ProductionBaseRow[] = events.map((e: ApiProductionEvent) => {
+        const payload = e.payload ?? {}
+        const eventRaw = String((payload["EVENT"] as string | undefined) ?? e.eventType ?? "")
+        const event =
+          eventRaw === "Cambio SKU" || eventRaw === "Parada" || eventRaw === "Producción"
+            ? (eventRaw as ProductionEventType)
+            : eventRaw.toLowerCase().includes("cambio")
+              ? "Cambio SKU"
+              : eventRaw.toLowerCase().includes("paro")
+                ? "Parada"
+                : "Producción"
+
+        const countRaw =
+          (payload["COUNT"] as unknown) ??
+          (payload["count"] as unknown) ??
+          (payload["units"] as unknown)
+        const count = typeof countRaw === "number" ? countRaw : Number(countRaw)
+
+        const ts =
+          String((payload["TIMESTAMP"] as string | undefined) ?? e.occurredAt ?? new Date().toISOString())
+
+        return {
+          machine_id: String((payload["MACHINE_ID"] as string | undefined) ?? e.machineId ?? "—"),
+          timestamp: ts,
+          operator: String((payload["OPERATOR"] as string | undefined) ?? "—"),
+          packer_1: String((payload["PACKAGER_1"] as string | undefined) ?? "—"),
+          packer_2: String((payload["PACKAGER_2"] as string | undefined) ?? "—"),
+          parameter_1: Number((payload["PARAMETER_1"] as unknown) ?? 0) || 0,
+          parameter_2: Number((payload["PARAMETER_2"] as unknown) ?? 0) || 0,
+          count: Number.isFinite(count) ? count : 0,
+          event,
+          sku: String((payload["SKU"] as string | undefined) ?? "—"),
+        }
+      })
+
+      setProductionBaseRows(mapped)
     }
 
-    return rows
-  }, [])
+    load()
+    const intervalId = window.setInterval(load, 30_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
+  }, [getAccessToken, user?.orgId])
 
   const [isReportDialogOpen, setIsReportDialogOpen] = useState(false)
   const [reportStartDate, setReportStartDate] = useState(() => {
@@ -616,6 +620,62 @@ export default function MetricsPage() {
     }
   }, [productionBaseRows, filterStartDate, filterEndDate])
 
+  const hourlyProductionData = useMemo(() => {
+    const today = new Date()
+    const start = new Date(today)
+    start.setHours(0, 0, 0, 0)
+    const end = new Date(today)
+    end.setHours(23, 59, 59, 999)
+
+    const byHour = new Map<string, number>()
+    for (const r of productionBaseRows) {
+      if (r.event !== "Producción") continue
+      const ts = new Date(r.timestamp)
+      if (Number.isNaN(ts.getTime())) continue
+      if (ts < start || ts > end) continue
+      const hour = String(ts.getHours()).padStart(2, "0")
+      byHour.set(hour, (byHour.get(hour) ?? 0) + (Number(r.count) || 0))
+    }
+
+    return [...byHour.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([hour, production]) => ({ hour: `${hour}:00`, production }))
+  }, [productionBaseRows])
+
+  const eventDistributionData = useMemo(() => {
+    const colors: Record<ProductionEventType, string> = {
+      "Producción": "#22c55e",
+      "Cambio SKU": "#3b82f6",
+      "Parada": "#f97316",
+    }
+    return analytics.eventBreakdown
+      .map((e) => ({
+        name: e.event,
+        value: e.count,
+        color: colors[e.event],
+      }))
+      .filter((r) => r.value > 0)
+  }, [analytics.eventBreakdown])
+
+  const topMachinesData = useMemo(() => {
+    return analytics.machineScatter.slice(0, 10).map((m) => {
+      const produced = Number(m.produced) || 0
+      const avgPerHour = Math.round(produced / (14 * 16)) // aprox 2 turnos (16h) en 14 días
+      const downtimeEvents = Number(m.downtimeEvents) || 0
+      const uptime = Math.max(0, Math.min(100, Math.round(100 - downtimeEvents * 2)))
+      return { machine: m.machine, operator: "—", avgPerHour, uptime }
+    })
+  }, [analytics.machineScatter])
+
+  const topSkusData = useMemo(() => {
+    const total = analytics.produced14d > 0 ? analytics.produced14d : 1
+    return analytics.topSkus.map((s) => ({
+      sku: s.sku,
+      units: s.units,
+      percentage: (s.units / total) * 100,
+    }))
+  }, [analytics.produced14d, analytics.topSkus])
+
   // Filter attendance records by date range
   const filteredAttendanceRecords = useMemo(() => {
     const startDate = new Date(filterStartDate)
@@ -652,13 +712,13 @@ export default function MetricsPage() {
     const yearMonth = formatYearMonth(today)
 
     const bonusRatePerUnit = 0.25
-    const rows = operators.map((op) => ({
+    const rows = analytics.topOperators.map((op) => ({
       periodo: yearMonth,
       colaborador: op.name,
-      maquina: op.machine,
-      sku: op.sku,
+      maquina: "—",
+      sku: "—",
       unidades: op.units,
-      avance_bono_pct: clampPercent(op.percentage),
+      avance_bono_pct: clampPercent((op.units / 400) * 100),
       bono_estimado: Number((op.units * bonusRatePerUnit).toFixed(2)),
     }))
 
@@ -671,6 +731,35 @@ export default function MetricsPage() {
     })
     downloadBlob(`reporte-bonos-${yearMonth}.xlsx`, blob)
   }
+
+  // KPIs (sin hardcode / sin mocks). Se calculan a partir de datos existentes;
+  // si no hay datos todavía, se muestran como "—".
+  const hasHourlyData = hourlyProductionData.length > 0
+  const productionToday = hasHourlyData
+    ? hourlyProductionData.reduce((acc, r) => acc + (Number(r.production) || 0), 0)
+    : null
+  const avgPerHour =
+    hasHourlyData && productionToday != null
+      ? Math.round(productionToday / hourlyProductionData.length)
+      : null
+  const peakHour = hasHourlyData
+    ? hourlyProductionData.reduce(
+        (best, r) => {
+          const prod = Number(r.production) || 0
+          if (!best) return { hour: r.hour, production: prod }
+          return prod > best.production ? { hour: r.hour, production: prod } : best
+        },
+        null as null | { hour: string; production: number },
+      )
+    : null
+
+  const uptime =
+    topMachinesData.length > 0
+      ? Math.round(
+          topMachinesData.reduce((acc, m) => acc + (Number(m.uptime) || 0), 0) /
+            topMachinesData.length,
+        )
+      : null
 
   return (
     <DashboardLayout
@@ -840,28 +929,32 @@ export default function MetricsPage() {
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <KpiCard
                 title="Producción Hoy"
-                value="3,301"
+                value={productionToday == null ? "—" : productionToday.toLocaleString()}
                 subtitle="Unidades"
                 icon={CheckCircle}
                 iconColor="text-primary"
               />
               <KpiCard
                 title="Promedio/Hora"
-                value="275"
+                value={avgPerHour == null ? "—" : avgPerHour.toLocaleString()}
                 subtitle="Unidades"
                 icon={Clock}
                 iconColor="text-primary"
               />
               <KpiCard
                 title="Hora Pico"
-                value="09:00"
-                subtitle="325 uds"
+                value={peakHour?.hour ?? "—"}
+                subtitle={
+                  peakHour?.production == null
+                    ? "— uds"
+                    : `${peakHour.production.toLocaleString()} uds`
+                }
                 icon={Zap}
                 iconColor="text-yellow-500"
               />
               <KpiCard
                 title="Uptime"
-                value="94%"
+                value={uptime == null ? "—" : `${uptime}%`}
                 subtitle="Disponibilidad"
                 icon={TrendingUp}
                 iconColor="text-primary"
@@ -1379,7 +1472,7 @@ export default function MetricsPage() {
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <KpiCard
                 title="Personal Activo"
-                value={employees.length.toString()}
+                value={employeeRows.length.toString()}
                 subtitle="Colaboradores"
                 icon={Users}
                 iconColor="text-primary"
@@ -1413,7 +1506,7 @@ export default function MetricsPage() {
                 <h3 className="font-semibold text-foreground mb-4">Movimientos de Personal</h3>
                 <div className="space-y-3">
                   <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 flex-shrink-0">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 shrink-0">
                       <UserPlus className="h-4 w-4 text-green-600" />
                     </div>
                     <div className="flex-1">
@@ -1422,7 +1515,7 @@ export default function MetricsPage() {
                     </div>
                   </div>
                   <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 flex-shrink-0">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 shrink-0">
                       <UserPlus className="h-4 w-4 text-green-600" />
                     </div>
                     <div className="flex-1">
@@ -1431,7 +1524,7 @@ export default function MetricsPage() {
                     </div>
                   </div>
                   <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 flex-shrink-0">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 shrink-0">
                       <UserMinus className="h-4 w-4 text-red-600" />
                     </div>
                     <div className="flex-1">
@@ -1440,7 +1533,7 @@ export default function MetricsPage() {
                     </div>
                   </div>
                   <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 flex-shrink-0">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 shrink-0">
                       <UserPlus className="h-4 w-4 text-green-600" />
                     </div>
                     <div className="flex-1">
@@ -1449,7 +1542,7 @@ export default function MetricsPage() {
                     </div>
                   </div>
                   <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 flex-shrink-0">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 shrink-0">
                       <UserPlus className="h-4 w-4 text-green-600" />
                     </div>
                     <div className="flex-1">
@@ -1458,7 +1551,7 @@ export default function MetricsPage() {
                     </div>
                   </div>
                   <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 flex-shrink-0">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 shrink-0">
                       <UserMinus className="h-4 w-4 text-red-600" />
                     </div>
                     <div className="flex-1">
@@ -1467,7 +1560,7 @@ export default function MetricsPage() {
                     </div>
                   </div>
                   <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 flex-shrink-0">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 shrink-0">
                       <UserPlus className="h-4 w-4 text-green-600" />
                     </div>
                     <div className="flex-1">

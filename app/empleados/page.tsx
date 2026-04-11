@@ -1,10 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Button } from "@/components/ui/button"
 import { Users, Plus, Trash2 } from "lucide-react"
-import { employees as initialEmployees, type Employee } from "@/lib/mock-data"
 import { cn } from "@/lib/utils"
 import {
   Dialog,
@@ -15,37 +14,103 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { useAuth } from "@/contexts/auth-context"
+import {
+  createEmployee,
+  deleteEmployee,
+  getEmployees,
+  type ApiEmployee,
+  type ApiEmployeeStatus,
+} from "@/lib/api"
+
+type UiEmployee = ApiEmployee
 
 export default function EmployeesPage() {
-  const [employees, setEmployees] = useState<Employee[]>(initialEmployees)
+  const { user, getAccessToken } = useAuth()
+  const [employees, setEmployees] = useState<UiEmployee[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [newEmployee, setNewEmployee] = useState({
-    name: "",
-    role: "Operador" as "Operador" | "Empacador",
-    nfcId: "",
-    shift: "Matutino" as "Matutino" | "Vespertino",
+    fullName: "",
+    employeeCode: "",
+    email: "",
+    phone: "",
+    position: "",
+    status: "active" as ApiEmployeeStatus,
   })
 
-  const handleAddEmployee = () => {
-    if (newEmployee.name && newEmployee.nfcId) {
-      setEmployees([
-        ...employees,
-        {
-          id: String(employees.length + 1),
-          ...newEmployee,
-        },
-      ])
-      setNewEmployee({ name: "", role: "Operador", nfcId: "", shift: "Matutino" })
-      setIsDialogOpen(false)
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const token = await getAccessToken()
+        if (!token) {
+          if (!cancelled) setEmployees([])
+          return
+        }
+        const rows = await getEmployees(token)
+        if (!cancelled) setEmployees(rows)
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Error al cargar empleados")
+          setEmployees([])
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [getAccessToken])
+
+  const handleAddEmployee = async () => {
+    const fullName = newEmployee.fullName.trim()
+    if (!fullName) return
+    if (!user?.orgId) return
+
+    const token = await getAccessToken()
+    if (!token) return
+
+    const created = await createEmployee(token, {
+      orgId: user.orgId,
+      fullName,
+      employeeCode: newEmployee.employeeCode.trim() || null,
+      email: newEmployee.email.trim() || null,
+      phone: newEmployee.phone.trim() || null,
+      position: newEmployee.position.trim() || null,
+      status: newEmployee.status,
+    })
+
+    setEmployees((prev) => [created, ...prev])
+    setNewEmployee({
+      fullName: "",
+      employeeCode: "",
+      email: "",
+      phone: "",
+      position: "",
+      status: "active",
+    })
+    setIsDialogOpen(false)
   }
 
-  const handleDeleteEmployee = (id: string) => {
-    setEmployees(employees.filter((e) => e.id !== id))
+  const handleDeleteEmployee = async (id: string) => {
+    const token = await getAccessToken()
+    if (!token) return
+    await deleteEmployee(token, id)
+    setEmployees((prev) => prev.filter((e) => e.id !== id))
   }
 
-  const operadoresCount = employees.filter((e) => e.role === "Operador").length
-  const empacadoresCount = employees.filter((e) => e.role === "Empacador").length
+  const stats = useMemo(() => {
+    const active = employees.filter((e) => e.status === "active").length
+    const inactive = employees.filter((e) => e.status === "inactive").length
+    const terminated = employees.filter((e) => e.status === "terminated").length
+    return { active, inactive, terminated }
+  }, [employees])
 
   return (
     <DashboardLayout
@@ -79,55 +144,68 @@ export default function EmployeesPage() {
               </DialogHeader>
               <div className="space-y-4 py-4">
                 <div className="space-y-2">
-                  <Label htmlFor="name">Nombre completo</Label>
+                  <Label htmlFor="fullName">Nombre completo</Label>
                   <Input
-                    id="name"
-                    value={newEmployee.name}
-                    onChange={(e) => setNewEmployee({ ...newEmployee, name: e.target.value })}
+                    id="fullName"
+                    value={newEmployee.fullName}
+                    onChange={(e) => setNewEmployee({ ...newEmployee, fullName: e.target.value })}
                     placeholder="Ej: Juan Pérez"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="role">Rol</Label>
-                  <select
-                    id="role"
-                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    value={newEmployee.role}
-                    onChange={(e) =>
-                      setNewEmployee({
-                        ...newEmployee,
-                        role: e.target.value as "Operador" | "Empacador",
-                      })
-                    }
-                  >
-                    <option value="Operador">Operador</option>
-                    <option value="Empacador">Empacador</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="nfcId">NFC ID</Label>
+                  <Label htmlFor="employeeCode">Código (NFC / empleado)</Label>
                   <Input
-                    id="nfcId"
-                    value={newEmployee.nfcId}
-                    onChange={(e) => setNewEmployee({ ...newEmployee, nfcId: e.target.value })}
-                    placeholder="Ej: NFC-006"
+                    id="employeeCode"
+                    value={newEmployee.employeeCode}
+                    onChange={(e) =>
+                      setNewEmployee({ ...newEmployee, employeeCode: e.target.value })
+                    }
+                    placeholder="Ej: NFC-006 / OP-123"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="shift">Turno</Label>
+                  <Label htmlFor="position">Puesto</Label>
+                  <Input
+                    id="position"
+                    value={newEmployee.position}
+                    onChange={(e) => setNewEmployee({ ...newEmployee, position: e.target.value })}
+                    placeholder="Ej: Operador / Empacador / Supervisor"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="email">Email (opcional)</Label>
+                  <Input
+                    id="email"
+                    value={newEmployee.email}
+                    onChange={(e) => setNewEmployee({ ...newEmployee, email: e.target.value })}
+                    placeholder="correo@empresa.com"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="phone">Teléfono (opcional)</Label>
+                  <Input
+                    id="phone"
+                    value={newEmployee.phone}
+                    onChange={(e) => setNewEmployee({ ...newEmployee, phone: e.target.value })}
+                    placeholder="+52 ..."
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="status">Estado</Label>
                   <select
-                    id="shift"
+                    id="status"
                     className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    value={newEmployee.shift}
+                    value={newEmployee.status}
                     onChange={(e) =>
                       setNewEmployee({
                         ...newEmployee,
-                        shift: e.target.value as "Matutino" | "Vespertino",
+                        status: e.target.value as ApiEmployeeStatus,
                       })
                     }
                   >
-                    <option value="Matutino">Matutino</option>
-                    <option value="Vespertino">Vespertino</option>
+                    <option value="active">Activo</option>
+                    <option value="inactive">Inactivo</option>
+                    <option value="terminated">Baja</option>
                   </select>
                 </div>
                 <Button onClick={handleAddEmployee} className="w-full">
@@ -138,6 +216,17 @@ export default function EmployeesPage() {
           </Dialog>
         </div>
 
+        {error && (
+          <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-destructive">
+            {error}
+          </div>
+        )}
+        {loading && (
+          <div className="rounded-lg border border-border bg-muted/30 p-4 text-muted-foreground">
+            Cargando empleados…
+          </div>
+        )}
+
         {/* Employee Table */}
         <div className="rounded-xl border border-border bg-card">
           <div className="overflow-x-auto">
@@ -145,42 +234,48 @@ export default function EmployeesPage() {
             <thead>
               <tr className="border-b border-border text-left text-sm text-muted-foreground">
                 <th className="px-6 py-4 font-medium">Nombre</th>
-                <th className="px-6 py-4 font-medium">Rol</th>
-                <th className="px-6 py-4 font-medium">Turno</th>
-                <th className="px-6 py-4 font-medium">NFC ID</th>
+                <th className="px-6 py-4 font-medium">Puesto</th>
+                <th className="px-6 py-4 font-medium">Estado</th>
+                <th className="px-6 py-4 font-medium">Código</th>
                 <th className="px-6 py-4 font-medium text-right">Acciones</th>
               </tr>
             </thead>
             <tbody>
               {employees.map((employee) => (
                 <tr key={employee.id} className="border-b border-border last:border-0">
-                  <td className="px-6 py-4 font-medium text-foreground">{employee.name}</td>
+                  <td className="px-6 py-4 font-medium text-foreground">{employee.fullName}</td>
                   <td className="px-6 py-4">
                     <span
                       className={cn(
                         "inline-flex rounded-md px-2.5 py-1 text-xs font-medium",
-                        employee.role === "Operador"
+                        employee.position
                           ? "bg-primary/10 text-primary"
-                          : "bg-cyan-100 text-cyan-700"
+                          : "bg-muted text-muted-foreground"
                       )}
                     >
-                      {employee.role}
+                      {employee.position ?? "—"}
                     </span>
                   </td>
                   <td className="px-6 py-4">
                     <span
                       className={cn(
                         "inline-flex rounded-md px-2.5 py-1 text-xs font-medium",
-                        employee.shift === "Matutino"
-                          ? "bg-blue-100 text-blue-700"
-                          : "bg-orange-100 text-orange-700"
+                        employee.status === "active"
+                          ? "bg-green-100 text-green-700"
+                          : employee.status === "inactive"
+                            ? "bg-yellow-100 text-yellow-700"
+                            : "bg-red-100 text-red-700"
                       )}
                     >
-                      {employee.shift}
+                      {employee.status === "active"
+                        ? "Activo"
+                        : employee.status === "inactive"
+                          ? "Inactivo"
+                          : "Baja"}
                     </span>
                   </td>
                   <td className="px-6 py-4 font-mono text-sm text-muted-foreground">
-                    {employee.nfcId}
+                    {employee.employeeCode ?? "—"}
                   </td>
                   <td className="px-6 py-4 text-right">
                     <Button
@@ -206,11 +301,15 @@ export default function EmployeesPage() {
           </span>
           <span>•</span>
           <span>
-            Operadores: <strong className="text-foreground">{operadoresCount}</strong>
+            Activos: <strong className="text-foreground">{stats.active}</strong>
           </span>
           <span>•</span>
           <span>
-            Empacadores: <strong className="text-foreground">{empacadoresCount}</strong>
+            Inactivos: <strong className="text-foreground">{stats.inactive}</strong>
+          </span>
+          <span>•</span>
+          <span>
+            Bajas: <strong className="text-foreground">{stats.terminated}</strong>
           </span>
         </div>
       </div>

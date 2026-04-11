@@ -1,0 +1,205 @@
+DOCUMENTO DE ALCANCE FUNCIONAL – PASKAL
+Sistema de Monitoreo Industrial
+
+Atributo: Nombre del producto: Paskal
+Alcance Funcional
+
+================================================================================
+2. MÓDULOS Y SUBMÓDULOS
+================================================================================
+
+--------------------------------------------------------------------------------
+2.1 Autenticación y sesión
+--------------------------------------------------------------------------------
+
+Descripción: Permite a los usuarios identificarse con correo y contraseña, mantener la sesión mediante tokens (acceso y renovación) y cerrar sesión. El usuario actual se obtiene desde el backend y determina rol y organización.
+
+Funcionalidades:
+- Iniciar sesión con correo electrónico y contraseña.
+- Renovación automática de sesión (refresh token).
+- Cierre de sesión (invalidación en backend y limpieza local).
+- Redirección a inicio (/) tras login exitoso; redirección a /login si no hay sesión en rutas protegidas.
+- Mensajes de error controlados (sin revelar detalles que faciliten ataques).
+
+Pantallas: Login (/login). Formulario de correo y contraseña, mostrar/ocultar contraseña, mensaje de error. Propósito: identificación del usuario.
+
+Endpoints:
+- POST /auth/login — Inicio de sesión (email, password).
+- POST /auth/refresh — Renovación de tokens (refreshToken).
+- POST /auth/logout — Cierre de sesión (refreshToken).
+- GET /auth/me — Usuario actual (cabecera Authorization: Bearer <accessToken>).
+
+Reglas de negocio: La aplicación requiere NEXT_PUBLIC_API_URL configurada. El token de acceso se considera válido hasta su expiración; si expira, se intenta renovar con el refresh token antes de redirigir a login.
+
+Roles/permisos: No aplica RBAC en la pantalla de login; el acceso al resto de la aplicación requiere sesión válida.
+
+--------------------------------------------------------------------------------
+2.2 Inicio (Dashboard)
+--------------------------------------------------------------------------------
+
+Descripción: Pantalla principal tras el login con indicadores clave (KPIs) y un gráfico de producción por máquinas en el tiempo.
+
+Funcionalidades:
+- Visualización de KPIs: Producción total (últimos 30 días), Producido hoy, Máquinas activas (ej. 18/20), Meta anual (ej. 92%).
+- Gráfico de líneas de producción por máquina a lo largo del tiempo.
+- Selección/deselección de máquinas para mostrar u ocultar series en el gráfico (incluyendo “todas”).
+
+Pantallas: Inicio (/). Cabecera de bienvenida, tarjetas KPI y gráfico con selector de máquinas. Propósito: vista general de producción y estado de máquinas.
+
+Roles/permisos: Cualquier usuario autenticado puede acceder.
+
+--------------------------------------------------------------------------------
+2.3 Piso de producción
+--------------------------------------------------------------------------------
+
+Descripción: Vista de planta con máquinas distribuidas en columnas/filas. Permite ver estado (activa, en espera, inactiva), producción actual y asignar operador, empacador y código por máquina mediante un diálogo de edición.
+
+Funcionalidades:
+- Visualización del mapa de máquinas con estado (activa, espera, inactiva) y producción actual.
+- Al hacer clic en una máquina se abre un diálogo para editar código, operador y empacador.
+- Opción de pantalla completa para el diagrama del piso.
+
+Pantallas: Piso de producción (/piso-produccion). Diagrama de máquinas y diálogo de asignación. Propósito: operación visual del piso y asignación de personal por máquina.
+
+Reglas de negocio: Operadores y empacadores se obtienen de la lista de empleados.
+
+Roles/permisos: Visible el menú de producción para todos los usuarios autenticados.
+
+--------------------------------------------------------------------------------
+2.4 Tablero operativo
+--------------------------------------------------------------------------------
+
+Descripción: Tablero en vivo con ranking de operadores por unidades producidas, podio para los tres primeros y opción de pantalla completa para visualización en planta.
+
+Funcionalidades:
+- Ranking de operadores ordenado por unidades producidas.
+- Podio visual para el top 3 (1.º, 2.º, 3.º).
+- Resto de operadores en dos columnas.
+- Activar pantalla completa del tablero.
+- Indicación de “meta bono” (ej. 400 uds) y actualización automática.
+
+Pantallas: Tablero operativo (/tablero-operativo). Podio, tabla de rankings y botón de pantalla completa. Propósito: motivación y visibilidad del desempeño en tiempo “casi real”.
+
+Reglas de negocio: Los valores de unidades y porcentajes son de demostración; no hay conexión con datos reales de producción.
+
+Roles/permisos: Accesible a cualquier usuario autenticado desde el menú de producción.
+
+--------------------------------------------------------------------------------
+2.5 Métricas
+--------------------------------------------------------------------------------
+
+Descripción: Módulo de análisis con datos de producción por hora, distribución de eventos (Producción, Cambio SKU, Parada), desempeño por máquina y operador, SKUs más producidos, asistencia de empleados y reportes descargables en Excel.
+
+Funcionalidades:
+- Gráficos y tablas de producción horaria, eventos y comparativas.
+- Tabla de asistencia con registros (entrada, salida, estado, horas) y estadísticas (días presentes, ausentes, retardos, permisos, porcentaje de asistencia, horas promedio).
+- Exportación de asistencia a Excel (formato definido en cliente).
+- Reporte de producción en Excel: detalle por registro, resumen diario y resumen mensual; filtros por rango de fechas y turno (matutino/vespertino/ambos).
+
+Pantallas: Métricas (/metricas). Pestañas o secciones para producción, eventos, operadores, SKUs, asistencia y descarga de reportes. Propósito: análisis y reportes operativos.
+
+Reglas de negocio: Turnos definidos (matutino/vespertino) para filtrar y clasificar datos en reportes.
+
+Roles/permisos: Accesible a usuarios autenticados.
+
+--------------------------------------------------------------------------------
+2.6 Metas
+--------------------------------------------------------------------------------
+
+Descripción: Gestión de metas de producción con períodos diario, semanal, mensual y anual, y estados (en progreso, en riesgo, atrasado, completado, superado). Incluye creación, edición y eliminación de metas en la interfaz.
+
+Funcionalidades:
+- Listado de metas con nombre, descripción, período, valor objetivo, valor actual, unidad y estado.
+- Filtros por pestañas (por período o estado según implementación).
+- Crear nueva meta (nombre, descripción, período, valor objetivo, unidad, fechas).
+- Editar y eliminar metas existentes.
+- Visualización de progreso (barra o indicador) y estado con etiquetas/colores.
+
+Pantallas: Metas (/metas). Lista de tarjetas de metas, formularios de alta/edición y botones de acción. Propósito: definición y seguimiento de objetivos de producción.
+
+Reglas de negocio: Períodos soportados: diaria, semanal, mensual, anual. Estados: on-track, at-risk, behind, completed, exceeded. Las metas pueden asociarse opcionalmente a máquina o SKU.
+
+Roles/permisos: Accesible desde el menú de producción.
+
+--------------------------------------------------------------------------------
+2.7 Alertas
+--------------------------------------------------------------------------------
+
+Descripción: Centro de alertas con monitoreo de “minutos sin avance” por máquina  y listado de alertas con filtros y acciones (marcar leída, resolver, descartar).
+
+Funcionalidades:
+- Dos vistas: “Monitoreo de Producción” (alertas de producción y estado por máquina) y “Funcionamiento” (resto de alertas).
+- Reglas de alerta (solo para roles con permiso): listar, crear (nombre, condición, umbral, severidad, activa) y eliminar. Condiciones en UI: minutos sin avance, valor por encima/debajo de umbral.
+- Monitoreo por máquina: tiempo desde último incremento de producción y contador; umbral configurable en minutos para disparar alerta de “sin avance”.
+- Generación automática de alertas de estancamiento en el cliente cada varios segundos, según umbral.
+- Listado de alertas con filtros por tipo (error, advertencia, info), categoría (máquina, producción, empleado, sistema) y búsqueda por texto.
+- Pestañas: Todas, Sin leer, Acción requerida.
+- Acciones: marcar una o todas como leídas, resolver (acción requerida), descartar (eliminar de la lista). Descartar y limpiar leídas sujeto a permiso.
+- Tarjetas resumen: errores críticos, advertencias, sin leer, acción requerida.
+
+Reglas de negocio: Solo administradores de organización (o roles con permiso) pueden crear/editar/eliminar reglas. 
+
+--------------------------------------------------------------------------------
+2.8 Administración – Gestión de usuarios
+--------------------------------------------------------------------------------
+
+Descripción: Mantenimiento de usuarios de la plataforma: listado, alta con email, contraseña, nombre completo y rol, y baja. Los administradores de plataforma pueden asignar organización al crear usuario.
+
+Funcionalidades:
+- Listar usuarios de la organización (o de todas las organizaciones si el usuario es platform admin).
+- Crear usuario: email, contraseña (mínimo 8 caracteres), nombre completo, rol (Administrador, Gestor, Operador, Visualizador) y, si aplica, organización (solo platform admin).
+- Eliminar usuario con confirmación.
+- La organización del usuario se asigna automáticamente a la del admin de organización cuando no es platform admin.
+
+Pantallas: Gestión de usuarios (/administracion/usuarios). Lista de usuarios, botón “Nuevo usuario” y diálogo de alta, botón eliminar por fila. Propósito: administración de accesos por organización o a nivel plataforma.
+
+Reglas de negocio: Email y contraseña obligatorios; contraseña mínimo 8 caracteres. Solo usuarios con permiso users.assign-org (platform admin) ven y pueden elegir organización al crear usuario. El backend aplica restricciones por organización y por rol.
+
+--------------------------------------------------------------------------------
+2.9 Administración – Configuración de la organización
+--------------------------------------------------------------------------------
+
+Descripción: Configuración de apariencia y preferencias por organización: colores (primario, acento), tema oscuro, logo e imagen, título de la plataforma y cambio de contraseña.
+
+Funcionalidades:
+- Pestaña Colores: definición de color primario y de acento, y opción de forzar tema oscuro.
+- Pestaña Imagen y título: carga de logo e imagen de cabecera, título de la plataforma.
+- Pestaña Contraseñas: flujo de cambio de contraseña con mensaje.
+
+--------------------------------------------------------------------------------
+2.10 Administración – Gestión de empleados
+--------------------------------------------------------------------------------
+
+Descripción: Mantenimiento de empleados (operadores y empacadores) con nombre, rol, NFC ID y turno.
+
+Funcionalidades:
+- Listar empleados con nombre, rol (Operador / Empacador), turno (Matutino / Vespertino) y NFC ID.
+- Agregar empleado: nombre, rol, NFC ID, turno.
+- Eliminar empleado de la lista.
+- Contadores de operadores y empacadores.
+
+Pantallas: Gestión de empleados (/empleados). Tabla de empleados, botón “Agregar empleado” y diálogo de alta, botón eliminar. Propósito: catálogo de personal para asignación en piso y reportes (datos locales).
+
+================================================================================
+4. SUPOSICIONES Y DEPENDENCIAS
+================================================================================
+
+4.1 Stack tecnológico (según package.json)
+- Runtime: Node.js (para build y servidor Next.js).
+- Framework: Next.js 16.x (App Router).
+- UI: React 19.x, Tailwind CSS 4.x, componentes Radix UI, Recharts, Lucide icons.
+- Utilidades: date-fns, react-hook-form, zod, xlsx (exportación Excel), sonner (toasts).
+- Lenguaje: TypeScript 5.x.
+- Otros: next-themes (tema claro/oscuro), Vercel Analytics.
+Se asume compatibilidad con navegadores modernos que soporten las APIs usadas (fetch, localStorage, etc.).
+
+
+================================================================================
+7. RESUMEN EJECUTIVO
+================================================================================
+
+Paskal es un sistema de monitoreo industrial en formato aplicación web que permite a las organizaciones visualizar producción, máquinas, operadores y metas, así como gestionar alertas y usuarios. El acceso se controla por usuario y contraseña y por roles (Administrador, Gestor, Operador, Visualizador); los administradores de plataforma pueden además gestionar varias organizaciones y la configuración global de correo.
+
+Las pantallas principales incluyen un inicio con indicadores y gráfico de producción por máquinas, un piso de producción con mapa de máquinas y asignación de operadores y empacadores, un tablero operativo con ranking de operadores en vivo, métricas con reportes y exportación a Excel, y metas de producción por período. El centro de alertas permite configurar reglas en el servidor y monitorear máquinas por umbral de “minutos sin avance”, con listado y acciones sobre alertas. En administración se gestionan usuarios (altas y bajas, con asignación de organización para plataforma), empleados (catálogo local) y la configuración visual de la organización (colores, logo; persistencia indicada como próxima). La configuración de plataforma (solo para administradores de plataforma) permite configurar el correo SMTP y consultar la lista de organizaciones.
+
+Parte de los datos mostrados (producción, máquinas, operadores, metas, empleados, asistencia) son de demostración o se generan en el navegador; la persistencia real está en un backend externo que no forma parte de este repositorio. El sistema no incluye aplicación móvil, multi-idioma, ni persistencia en backend para configuración de organización, empleados ni metas. Este documento describe únicamente lo que está implementado en el frontend y los contratos de API que utiliza, para servir como alcance funcional de referencia en un contexto contractual.
