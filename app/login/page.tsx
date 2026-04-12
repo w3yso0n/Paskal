@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Loader2, Mail, Lock, Eye, EyeOff, AlertCircle } from "lucide-react"
+import { initFirebaseAnalytics } from "@/lib/firebase"
 
 const COVER_DURATION_MS = 700
 
@@ -26,6 +27,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     setMounted(true)
+    initFirebaseAnalytics()
   }, [])
 
   useEffect(() => {

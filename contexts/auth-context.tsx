@@ -2,8 +2,10 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
+import type { FirebaseError } from "firebase/app"
+import { signInWithEmailAndPassword, signOut } from "firebase/auth"
 import {
-  loginWithPassword,
+  exchangeFirebaseToken,
   refreshTokens,
   logoutApi,
   fetchMe,
@@ -11,7 +13,83 @@ import {
   type RequestUser,
   type AuthTokens,
 } from "@/lib/api"
+import { getFirebaseAuth } from "@/lib/firebase"
 import { toast } from "sonner"
+
+function getLoginErrorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error) {
+    const code = String((error as FirebaseError).code ?? "")
+    if (code.startsWith("auth/")) {
+      if (code === "auth/too-many-requests") {
+        return "Demasiados intentos. Espera un momento e intenta de nuevo."
+      }
+      return "Correo o contraseña incorrectos."
+    }
+  }
+  return getSafeLoginMessage(error)
+}
+
+/** Para consola: Error/Firebase/ApiError no siempre se ven bien con console.error(e) solo. */
+function serializeLoginError(error: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (error == null) {
+    out.kind = String(error)
+    return out
+  }
+  if (typeof error === "string") {
+    out.kind = "string"
+    out.message = error
+    return out
+  }
+  if (typeof error !== "object") {
+    out.kind = typeof error
+    out.value = String(error)
+    return out
+  }
+  const er = error as Record<string, unknown>
+  if (error instanceof Error) {
+    out.kind = "Error"
+    out.name = error.name
+    out.message = error.message
+    if (error.stack) out.stack = error.stack
+  }
+  if (typeof er.code === "string") out.firebaseCode = er.code
+  const sc = er.statusCode ?? er.status
+  if (typeof sc === "number") out.httpStatus = sc
+  if (Array.isArray(er.message)) out.bodyOrMessage = er.message
+  else if (er.message != null && typeof er.message !== "object") {
+    out.bodyOrMessage = er.message
+  } else if (er.message != null && typeof er.message === "object") {
+    try {
+      out.bodyOrMessage = JSON.stringify(er.message)
+    } catch {
+      out.bodyOrMessage = String(er.message)
+    }
+  }
+  if (!out.kind) out.kind = "plainObject"
+  return out
+}
+
+/** Usa console.log (no console.error): Next.js muestra overlay de error en la app con console.error. */
+function logLoginFailure(phase: string, error: unknown): void {
+  if (typeof window === "undefined") return
+  const detail = serializeLoginError(error)
+  const payload = { phase, ...detail }
+  try {
+    console.log(`[Auth] Login failed ${JSON.stringify(payload)}`)
+  } catch {
+    console.log("[Auth] Login failed phase=", phase, "raw=", String(error))
+  }
+  if (error instanceof Error && error.cause != null) {
+    try {
+      console.log(
+        `[Auth] Login failed (cause) ${JSON.stringify(serializeLoginError(error.cause))}`,
+      )
+    } catch {
+      console.log("[Auth] Login failed (cause)", String(error.cause))
+    }
+  }
+}
 
 const STORAGE_ACCESS = "paskal_access_token"
 const STORAGE_REFRESH = "paskal_refresh_token"
@@ -88,17 +166,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async (email: string, password: string) => {
       setLoading(true)
       setError(null)
+      let phase = "start"
       try {
-        const tokens = await loginWithPassword(email, password)
+        phase = "getFirebaseAuth"
+        const auth = getFirebaseAuth()
+        phase = "signInWithEmailAndPassword"
+        const credential = await signInWithEmailAndPassword(auth, email, password)
+        phase = "getIdToken"
+        const idToken = await credential.user.getIdToken()
+        phase = "exchangeFirebaseToken"
+        const tokens = await exchangeFirebaseToken(idToken)
+        phase = "saveTokens"
         saveTokens(tokens)
+        phase = "fetchMe"
         const user = await fetchMe(tokens.accessToken)
         setUser(user)
         router.replace("/")
       } catch (e) {
-        if (typeof window !== "undefined") {
-          console.error("[Auth] Login failed", e)
-        }
-        const safeMessage = getSafeLoginMessage(e)
+        logLoginFailure(phase, e)
+        const safeMessage = getLoginErrorMessage(e)
         setError(safeMessage)
         setState((s) => ({ ...s, loading: false }))
         toast.error(safeMessage, { duration: 5000 })
@@ -112,6 +198,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { refresh } = loadStoredTokens()
     if (refresh) await logoutApi(refresh)
     clearStoredTokens()
+    try {
+      await signOut(getFirebaseAuth())
+    } catch {
+      // Sin sesión Firebase, ya cerrada o Firebase no inicializado
+    }
     setUser(null)
     router.replace("/login")
   }, [router, setUser])

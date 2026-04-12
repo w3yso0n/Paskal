@@ -47,6 +47,14 @@ export function getSafeLoginMessage(error: unknown): string {
   }
   if (error && typeof error === "object" && "statusCode" in error) {
     const code = (error as { statusCode?: number }).statusCode;
+    const msg = String((error as { message?: unknown }).message ?? "");
+    if (code === 403 && msg.toLowerCase().includes("registrada")) {
+      return msg || "Tu cuenta no está registrada en la plataforma.";
+    }
+    if (code === 503) {
+      if (msg.trim()) return msg;
+      return "El servidor no puede validar el inicio de sesión. Intenta más tarde.";
+    }
     if (code === 401 || code === 403 || code === 400) {
       return "Correo o contraseña incorrectos.";
     }
@@ -87,6 +95,22 @@ export async function loginWithPassword(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email: email.trim(), password }),
+  });
+  return parseResponse<AuthTokens>(res);
+}
+
+/**
+ * Firebase: intercambia idToken por JWT de la API (access + refresh).
+ */
+export async function exchangeFirebaseToken(idToken: string): Promise<AuthTokens> {
+  const base = apiBaseUrl || undefined;
+  if (!base) {
+    throw new Error("NEXT_PUBLIC_API_URL no está configurada");
+  }
+  const res = await fetch(`${base}/auth/firebase`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idToken }),
   });
   return parseResponse<AuthTokens>(res);
 }
