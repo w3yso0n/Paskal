@@ -15,7 +15,6 @@ export type UserRole = "admin" | "manager" | "operator" | "viewer";
 
 export interface RequestUser {
   id: string;
-  orgId: string;
   email: string;
   role: UserRole;
   isPlatformAdmin: boolean;
@@ -223,7 +222,6 @@ export type AlertRuleSeverity = "low" | "medium" | "high" | "critical";
 
 export interface AlertRule {
   id: string;
-  orgId: string;
   name: string;
   metricId: string | null;
   plantId: string | null;
@@ -296,7 +294,6 @@ export async function deleteAlertRule(
 
 export interface ApiUser {
   id: string;
-  orgId: string;
   email: string;
   fullName: string;
   role: UserRole;
@@ -306,7 +303,6 @@ export interface ApiUser {
 }
 
 export interface CreateUserPayload {
-  orgId?: string;
   email: string;
   password: string;
   fullName: string;
@@ -315,7 +311,6 @@ export interface CreateUserPayload {
 }
 
 export interface UpdateUserPayload {
-  orgId?: string;
   email?: string;
   password?: string;
   fullName?: string;
@@ -368,7 +363,6 @@ export async function deleteUser(
 
 export interface ApiMachine {
   id: string;
-  orgId: string;
   name: string;
   code: string | null;
   status: "running" | "idle" | "stopped" | "maintenance" | "offline";
@@ -386,25 +380,12 @@ export async function getMachines(accessToken: string): Promise<ApiMachine[]> {
 
 // --- Orgs (solo platform admin, para dropdown al crear usuario) ---
 
-export interface ApiOrg {
-  id: string;
-  name: string;
-  code: string | null;
-  createdAt: string;
-}
-
-export async function getOrgs(accessToken: string): Promise<ApiOrg[]> {
-  const res = await fetchWithAuth("/orgs", { accessToken });
-  return parseResponse<ApiOrg[]>(res);
-}
-
 // --- Employees ---
 
 export type ApiEmployeeStatus = "active" | "inactive" | "terminated";
 
 export interface ApiEmployee {
   id: string;
-  orgId: string;
   employeeCode: string | null;
   fullName: string;
   email: string | null;
@@ -417,7 +398,6 @@ export interface ApiEmployee {
 }
 
 export interface CreateEmployeePayload {
-  orgId: string;
   fullName: string;
   employeeCode?: string | null;
   email?: string | null;
@@ -474,7 +454,6 @@ export type ApiAlertStatus = "open" | "acknowledged" | "closed";
 
 export interface ApiAlert {
   id: string;
-  orgId: string;
   ruleId: string | null;
   plantId: string | null;
   lineId: string | null;
@@ -498,7 +477,6 @@ export interface UpdateAlertPayload {
   plantId?: string | null;
   lineId?: string | null;
   machineId?: string | null;
-  orgId?: string;
 }
 
 export async function getAlerts(accessToken: string): Promise<ApiAlert[]> {
@@ -531,7 +509,6 @@ export async function deleteAlert(accessToken: string, id: string): Promise<ApiA
 
 export interface ApiProductionEvent {
   id: string;
-  orgId: string;
   machineId: string | null;
   runId: string | null;
   eventType: string;
@@ -542,10 +519,9 @@ export interface ApiProductionEvent {
 
 export async function getProductionEvents(
   accessToken: string,
-  params: { orgId?: string; runId?: string; machineId?: string; limit?: number } = {},
+  params: { runId?: string; machineId?: string; limit?: number } = {},
 ): Promise<ApiProductionEvent[]> {
   const q = new URLSearchParams();
-  if (params.orgId) q.set("orgId", params.orgId);
   if (params.runId) q.set("runId", params.runId);
   if (params.machineId) q.set("machineId", params.machineId);
   if (params.limit != null) q.set("limit", String(params.limit));
@@ -558,7 +534,6 @@ export async function getProductionEvents(
 
 export interface ApiMetricPoint {
   id: string;
-  orgId: string;
   metricId: string;
   plantId: string | null;
   lineId: string | null;
@@ -570,7 +545,6 @@ export interface ApiMetricPoint {
 export async function getMetricPoints(
   accessToken: string,
   params: {
-    orgId?: string;
     metricId?: string;
     plantId?: string;
     lineId?: string;
@@ -581,7 +555,6 @@ export async function getMetricPoints(
   } = {},
 ): Promise<ApiMetricPoint[]> {
   const q = new URLSearchParams();
-  if (params.orgId) q.set("orgId", params.orgId);
   if (params.metricId) q.set("metricId", params.metricId);
   if (params.plantId) q.set("plantId", params.plantId);
   if (params.lineId) q.set("lineId", params.lineId);

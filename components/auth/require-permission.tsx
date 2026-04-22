@@ -50,7 +50,7 @@ export function RequirePermission({
           <CardTitle>Acceso restringido</CardTitle>
           <CardDescription>
             No tienes permisos para acceder a esta sección.
-            Contacta al administrador de tu organización si necesitas acceso.
+            Contacta al administrador si necesitas acceso.
           </CardDescription>
           <Button
             variant="outline"

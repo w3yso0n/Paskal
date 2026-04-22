@@ -28,9 +28,7 @@ import {
   getUsers,
   createUser,
   deleteUser,
-  getOrgs,
   type ApiUser,
-  type ApiOrg,
   type UserRole,
 } from "@/lib/api"
 import { toast } from "sonner"
@@ -46,10 +44,8 @@ const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
 export default function GestionUsuariosPage() {
   const { user, getAccessToken } = useAuth()
   const canManageUsers = hasPermission(user, "users.list")
-  const canChooseOrg = hasPermission(user, "users.assign-org")
 
   const [users, setUsers] = useState<ApiUser[]>([])
-  const [orgs, setOrgs] = useState<ApiOrg[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -58,7 +54,6 @@ export default function GestionUsuariosPage() {
     password: "",
     fullName: "",
     role: "viewer" as UserRole,
-    orgId: "",
   })
 
   const loadUsers = async () => {
@@ -78,27 +73,13 @@ export default function GestionUsuariosPage() {
     }
   }
 
-  const loadOrgs = async () => {
-    if (!canChooseOrg) return
-    try {
-      const token = await getAccessToken()
-      if (token) {
-        const list = await getOrgs(token)
-        setOrgs(list)
-      }
-    } catch (e) {
-      console.error("[Usuarios] Load orgs failed", e)
-    }
-  }
-
   useEffect(() => {
     if (canManageUsers) {
       loadUsers()
-      if (canChooseOrg) loadOrgs()
     } else {
       setLoading(false)
     }
-  }, [canManageUsers, canChooseOrg])
+  }, [canManageUsers])
 
   const handleCreate = async () => {
     const email = form.email.trim().toLowerCase()
@@ -126,11 +107,10 @@ export default function GestionUsuariosPage() {
         fullName,
         role: form.role,
       }
-      if (canChooseOrg && form.orgId) payload.orgId = form.orgId
       await createUser(token, payload)
       toast.success("Usuario creado.")
       setDialogOpen(false)
-      setForm({ email: "", password: "", fullName: "", role: "viewer", orgId: "" })
+      setForm({ email: "", password: "", fullName: "", role: "viewer" })
       loadUsers()
     } catch (e) {
       console.error("[Usuarios] Create failed", e)
@@ -154,8 +134,6 @@ export default function GestionUsuariosPage() {
     }
   }
 
-  const getOrgName = (orgId: string) => orgs.find((o) => o.id === orgId)?.name ?? orgId
-
   return (
     <DashboardLayout
       breadcrumbs={[
@@ -170,9 +148,7 @@ export default function GestionUsuariosPage() {
           <div>
             <h1 className="text-2xl font-bold text-foreground">Gestión de usuarios</h1>
             <p className="text-sm text-muted-foreground">
-              {canChooseOrg
-                ? "Como administrador de plataforma puedes añadir usuarios y asignar su organización. Los administradores de cada organización solo pueden añadir usuarios a su propia org."
-                : "Añade usuarios a tu organización. Se asignarán automáticamente a tu organización."}
+              Añade usuarios a la plataforma.
             </p>
           </div>
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -186,33 +162,10 @@ export default function GestionUsuariosPage() {
               <DialogHeader>
                 <DialogTitle>Nuevo usuario</DialogTitle>
                 <DialogDescription>
-                  {canChooseOrg
-                    ? "Elige la organización del usuario. Los admins de organización no pueden elegir org."
-                    : "El usuario se creará en tu organización."}
+                  Crea un nuevo usuario para la plataforma.
                 </DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">
-                {canChooseOrg && orgs.length > 0 && (
-                  <div className="grid gap-2">
-                    <Label>Organización</Label>
-                    <Select
-                      value={form.orgId || undefined}
-                      onValueChange={(v) => setForm((f) => ({ ...f, orgId: v }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Seleccionar organización" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {orgs.map((org) => (
-                          <SelectItem key={org.id} value={org.id}>
-                            {org.name}
-                            {org.code ? ` (${org.code})` : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
                 <div className="grid gap-2">
                   <Label htmlFor="user-email">Email</Label>
                   <Input
@@ -284,7 +237,7 @@ export default function GestionUsuariosPage() {
           <CardHeader>
             <CardTitle>Usuarios</CardTitle>
             <CardDescription>
-              Listado de usuarios de {canChooseOrg ? "todas las organizaciones" : "tu organización"}.
+              Listado de usuarios.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -305,9 +258,6 @@ export default function GestionUsuariosPage() {
                       <th className="pb-3 text-left font-medium text-muted-foreground">Nombre</th>
                       <th className="pb-3 text-left font-medium text-muted-foreground">Rol</th>
                       <th className="pb-3 text-left font-medium text-muted-foreground">Estado</th>
-                      {canChooseOrg && (
-                        <th className="pb-3 text-left font-medium text-muted-foreground">Organización</th>
-                      )}
                       <th className="pb-3 text-right font-medium text-muted-foreground">Acciones</th>
                     </tr>
                   </thead>
@@ -318,9 +268,6 @@ export default function GestionUsuariosPage() {
                         <td className="py-3 text-muted-foreground">{u.fullName}</td>
                         <td className="py-3">{ROLE_OPTIONS.find((r) => r.value === u.role)?.label ?? u.role}</td>
                         <td className="py-3 capitalize">{u.status}</td>
-                        {canChooseOrg && (
-                          <td className="py-3 text-muted-foreground">{getOrgName(u.orgId)}</td>
-                        )}
                         <td className="py-3 text-right">
                           <Button
                             size="sm"

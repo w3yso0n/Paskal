@@ -10,15 +10,12 @@ export type Permission =
   | "users.list"
   | "users.create"
   | "users.delete"
-  | "users.assign-org"
   | "alert-rules.list"
   | "alert-rules.create"
   | "alert-rules.delete"
   | "alerts.dismiss"
   | "alerts.clear"
   | "production.edit-threshold"
-  | "org-config.view"
-  | "org-config.edit"
   | "employees.manage"
   | "platform-config.view"
   | "platform-config.edit"
@@ -34,8 +31,8 @@ const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "alerts.dismiss",
     "alerts.clear",
     "production.edit-threshold",
-    "org-config.view",
-    "org-config.edit",
+    "platform-config.view",
+    "platform-config.edit",
     "employees.manage",
   ],
   manager: [
@@ -82,7 +79,7 @@ export function hasAllPermissions(
  */
 export const ROUTE_PERMISSIONS: Record<string, Permission[]> = {
   "/administracion/usuarios": ["users.list"],
-  "/administracion/configuracion-organizacion": ["org-config.view"],
+  "/administracion/configuracion-organizacion": ["platform-config.view"],
   "/configuracion": ["platform-config.view"],
 }
 
@@ -114,7 +111,7 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 export function showAdminSection(user: RequestUser | null | undefined): boolean {
   return hasAnyPermission(user, [
     "users.list",
-    "org-config.view",
+    "platform-config.view",
     "employees.manage",
     "alert-rules.list",
   ])

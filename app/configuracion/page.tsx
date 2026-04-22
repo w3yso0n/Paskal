@@ -13,20 +13,16 @@ import { useAuth } from "@/contexts/auth-context"
 import {
   getEmailConfig,
   setEmailConfig,
-  getOrgs,
   type EmailConfigResponse,
-  type ApiOrg,
 } from "@/lib/api"
 import { toast } from "sonner"
-import { Mail, Building2, Loader2, CheckCircle2, XCircle } from "lucide-react"
+import { Mail, Loader2, CheckCircle2, XCircle } from "lucide-react"
 
 export default function ConfiguracionPlataformaPage() {
   const { getAccessToken } = useAuth()
 
   const [emailConfig, setEmailConfigState] = useState<EmailConfigResponse | null>(null)
-  const [orgs, setOrgs] = useState<ApiOrg[]>([])
   const [loadingEmail, setLoadingEmail] = useState(true)
-  const [loadingOrgs, setLoadingOrgs] = useState(true)
   const [savingEmail, setSavingEmail] = useState(false)
 
   const [emailForm, setEmailForm] = useState({
@@ -59,15 +55,6 @@ export default function ConfiguracionPlataformaPage() {
         toast.error("No se pudo cargar la configuración de email.")
       } finally {
         setLoadingEmail(false)
-      }
-
-      try {
-        const orgList = await getOrgs(token)
-        setOrgs(orgList)
-      } catch (e) {
-        console.error("[Config] Load orgs failed", e)
-      } finally {
-        setLoadingOrgs(false)
       }
     }
     load()
@@ -118,7 +105,7 @@ export default function ConfiguracionPlataformaPage() {
               Configuración de plataforma
             </h1>
             <p className="text-muted-foreground">
-              Ajustes globales que afectan a todas las organizaciones de la plataforma.
+              Ajustes globales de la plataforma.
             </p>
           </div>
 
@@ -127,10 +114,6 @@ export default function ConfiguracionPlataformaPage() {
               <TabsTrigger value="email" className="gap-2">
                 <Mail className="h-4 w-4" />
                 Email SMTP
-              </TabsTrigger>
-              <TabsTrigger value="orgs" className="gap-2">
-                <Building2 className="h-4 w-4" />
-                Organizaciones
               </TabsTrigger>
             </TabsList>
 
@@ -264,69 +247,6 @@ export default function ConfiguracionPlataformaPage() {
                           "Guardar configuración"
                         )}
                       </Button>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="orgs" className="space-y-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Organizaciones registradas</CardTitle>
-                  <CardDescription>
-                    Lista de organizaciones activas en la plataforma.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {loadingOrgs ? (
-                    <div className="flex items-center justify-center py-12">
-                      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                    </div>
-                  ) : orgs.length === 0 ? (
-                    <p className="py-8 text-center text-sm text-muted-foreground">
-                      No hay organizaciones registradas.
-                    </p>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="border-b border-border">
-                            <th className="pb-3 text-left font-medium text-muted-foreground">
-                              Nombre
-                            </th>
-                            <th className="pb-3 text-left font-medium text-muted-foreground">
-                              Código
-                            </th>
-                            <th className="pb-3 text-left font-medium text-muted-foreground">
-                              Creada
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {orgs.map((org) => (
-                            <tr
-                              key={org.id}
-                              className="border-b border-border/50"
-                            >
-                              <td className="py-3 font-medium">{org.name}</td>
-                              <td className="py-3 text-muted-foreground">
-                                {org.code ?? "—"}
-                              </td>
-                              <td className="py-3 text-muted-foreground">
-                                {new Date(org.createdAt).toLocaleDateString(
-                                  "es-MX",
-                                  {
-                                    year: "numeric",
-                                    month: "short",
-                                    day: "numeric",
-                                  },
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
                     </div>
                   )}
                 </CardContent>

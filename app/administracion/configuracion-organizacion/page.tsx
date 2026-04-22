@@ -17,7 +17,7 @@ import { toast } from "sonner"
 export default function ConfiguracionOrganizacionPage() {
   const { user } = useAuth()
   const [saving, setSaving] = useState(false)
-  const canEdit = hasPermission(user, "org-config.edit")
+  const canEdit = hasPermission(user, "platform-config.edit")
   const [platformTitle, setPlatformTitle] = useState("Paskal")
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [logoPreview, setLogoPreview] = useState<string | null>(null)
@@ -77,15 +77,15 @@ export default function ConfiguracionOrganizacionPage() {
       breadcrumbs={[
         { label: "Inicio", href: "/" },
         { label: "Administración" },
-        { label: "Configuración de la organización" },
+        { label: "Configuración de la plataforma" },
       ]}
     >
-      <RequirePermission permissions={["org-config.view"]}>
+      <RequirePermission permissions={["platform-config.view"]}>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Configuración de la organización</h1>
+          <h1 className="text-2xl font-bold text-foreground">Configuración de la plataforma</h1>
           <p className="text-muted-foreground">
-            Personaliza la apariencia de la plataforma para tu organización.
+            Personaliza la apariencia de la plataforma.
           </p>
         </div>
 
@@ -110,7 +110,7 @@ export default function ConfiguracionOrganizacionPage() {
               <CardHeader>
                 <CardTitle>Colores de la plataforma</CardTitle>
                 <CardDescription>
-                  Define los colores principales que verán los usuarios de tu organización (tema claro/oscuro, acento).
+                  Define los colores principales que verán los usuarios (tema claro/oscuro, acento).
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-3 max-w-md">
@@ -130,9 +130,9 @@ export default function ConfiguracionOrganizacionPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <Switch defaultChecked />
-                  <Label>Forzar tema oscuro para la organización</Label>
+                  <Label>Forzar tema oscuro</Label>
                 </div>
-                <Button onClick={handleSaveColors} disabled={saving}>
+                <Button onClick={handleSaveColors} disabled={saving || !canEdit}>
                   Guardar
                 </Button>
               </CardContent>
@@ -144,7 +144,7 @@ export default function ConfiguracionOrganizacionPage() {
               <CardHeader>
                 <CardTitle>Imagen y título de la plataforma</CardTitle>
                 <CardDescription>
-                  Logo e imagen que se muestran en la cabecera y en el inicio de sesión para tu organización.
+                  Logo e imagen que se muestran en la cabecera y en el inicio de sesión.
                 </CardDescription>
               </CardHeader>
               <CardContent className="max-w-md space-y-3 pt-6">
@@ -160,12 +160,13 @@ export default function ConfiguracionOrganizacionPage() {
                 </div>
 
                 <div className="grid gap-3 py-2">
-                  <Label htmlFor="logo-upload">Logo de la organización</Label>
+                  <Label htmlFor="logo-upload">Logo</Label>
                   <Input
                     id="logo-upload"
                     type="file"
                     accept="image/png,.png,image/jpeg,.jpg,.jpeg"
                     onChange={handleLogoChange}
+                    disabled={!canEdit}
                     className="cursor-pointer file:mr-4 file:rounded-md file:bg-primary file:px-5  file:text-sm file:font-medium file:text-primary-foreground file:cursor-pointer hover:file:bg-primary/90"
                   />
                   <p className="text-xs text-muted-foreground">
@@ -186,6 +187,7 @@ export default function ConfiguracionOrganizacionPage() {
                     type="file"
                     accept="image/png,.png,image/jpeg,.jpg,.jpeg"
                     onChange={handleFloorImageChange}
+                    disabled={!canEdit}
                     className="cursor-pointer file:mr-4 file:rounded-md file:border-0 file:bg-primary file:px-5  file:text-sm file:font-medium file:text-primary-foreground file:cursor-pointer hover:file:bg-primary/90"
                   />
                   <p className="text-xs text-muted-foreground">
@@ -200,7 +202,7 @@ export default function ConfiguracionOrganizacionPage() {
                 </div>
 
                 <div className="pt-4">
-                  <Button onClick={handleSaveImage} disabled={saving} size="lg" className="min-h-11 px-8">
+                  <Button onClick={handleSaveImage} disabled={saving || !canEdit} size="lg" className="min-h-11 px-8">
                     Guardar
                   </Button>
                 </div>
@@ -213,7 +215,7 @@ export default function ConfiguracionOrganizacionPage() {
               <CardHeader>
                 <CardTitle>Cambiar contraseña</CardTitle>
                 <CardDescription>
-                  Actualiza la contraseña de tu cuenta de administrador de la organización.
+                  Actualiza la contraseña de tu cuenta.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4 max-w-md">
@@ -229,7 +231,7 @@ export default function ConfiguracionOrganizacionPage() {
                   <Label>Confirmar nueva contraseña</Label>
                   <Input type="password" placeholder="••••••••" />
                 </div>
-                <Button onClick={handleSavePassword} disabled={saving}>
+                <Button onClick={handleSavePassword} disabled={saving || !canEdit}>
                   Cambiar contraseña
                 </Button>
               </CardContent>
