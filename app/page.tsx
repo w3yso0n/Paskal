@@ -18,7 +18,85 @@ import {
 } from "recharts"
 import { TooltipProps } from "recharts"
 import { useAuth } from "@/contexts/auth-context"
-import { getMachines, getProductionEvents, type ApiMachine, type ApiProductionEvent } from "@/lib/api"
+import {
+  getEmployees,
+  getMachines,
+  getProductionEvents,
+  type ApiEmployee,
+  type ApiMachine,
+  type ApiProductionEvent,
+} from "@/lib/api"
+
+const DASHBOARD_TIMEZONE = "America/Mexico_City"
+
+function getPartsInTimeZone(date: Date, timeZone: string) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+    hour12: false,
+  })
+  const parts = dtf.formatToParts(date)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value
+  return {
+    year: Number(get("year")),
+    month: Number(get("month")),
+    day: Number(get("day")),
+    hour: (Number(get("hour")) || 0) % 24,
+    minute: Number(get("minute")),
+    second: Number(get("second")),
+  }
+}
+
+function getTimeZoneOffsetMinutes(date: Date, timeZone: string): number {
+  const p = getPartsInTimeZone(date, timeZone)
+  const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second)
+  return (asUtc - date.getTime()) / 60_000
+}
+
+function makeZonedDate(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string,
+): Date {
+  // Convert "wall time" in `timeZone` to a real UTC Date.
+  // We do a small iterative refinement to handle DST transitions.
+  let utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0, 0))
+  let offset = getTimeZoneOffsetMinutes(utcGuess, timeZone)
+  let corrected = new Date(utcGuess.getTime() - offset * 60_000)
+  offset = getTimeZoneOffsetMinutes(corrected, timeZone)
+  corrected = new Date(utcGuess.getTime() - offset * 60_000)
+  return corrected
+}
+
+function getDayBoundsInTimeZone(now: Date, timeZone: string): { start: Date; end: Date } {
+  const p = getPartsInTimeZone(now, timeZone)
+  const start = makeZonedDate(p.year, p.month, p.day, 0, 0, timeZone)
+
+  // Para calcular el "siguiente día" respetando DST, usamos un punto seguro (mediodía) y le sumamos 24h.
+  const noon = makeZonedDate(p.year, p.month, p.day, 12, 0, timeZone)
+  const tomorrowNoon = new Date(noon.getTime() + 24 * 60 * 60 * 1000)
+  const tp = getPartsInTimeZone(tomorrowNoon, timeZone)
+  const end = makeZonedDate(tp.year, tp.month, tp.day, 0, 0, timeZone)
+  return { start, end }
+}
+
+function formatHmInTimeZone(date: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date)
+}
 
 const CustomTooltip = ({ active, payload, label }: TooltipProps<number, string>) => {
   if (active && payload && payload.length) {
@@ -98,8 +176,11 @@ const machineColors = [
 export default function HomePage() {
   const { user, getAccessToken } = useAuth()
   const [loading, setLoading] = useState(true)
-  const [machineProductionData, setMachineProductionData] = useState<Record<string, string | number>[]>([])
+  const [operatorProductionData, setOperatorProductionData] = useState<Record<string, string | number>[]>([])
   const [machines, setMachines] = useState<ApiMachine[]>([])
+  const [employees, setEmployees] = useState<ApiEmployee[]>([])
+  const [totalProduced, setTotalProduced] = useState(0)
+  const [producedToday, setProducedToday] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -107,24 +188,41 @@ export default function HomePage() {
       setLoading(true)
       try {
         const token = await getAccessToken()
-        if (!token || !user?.orgId) {
+        if (!token) {
           if (!cancelled) {
-            setMachineProductionData([])
+            setOperatorProductionData([])
             setMachines([])
+            setEmployees([])
+            setTotalProduced(0)
+            setProducedToday(0)
           }
           return
         }
 
-        const [apiMachines, events] = await Promise.all([
+        const [apiMachines, apiEmployees, events] = await Promise.all([
           getMachines(token),
-          getProductionEvents(token, { orgId: user.orgId, limit: 2500 }),
+          getEmployees(token),
+          getProductionEvents(token, { limit: 2500 }),
         ])
         if (cancelled) return
         setMachines(apiMachines)
+        setEmployees(apiEmployees)
 
-        const machineNameById = new Map(apiMachines.map((m) => [m.id, m.code ?? m.name]))
+        const employeeNameByCode = new Map(
+          apiEmployees
+            .filter((e) => e.employeeCode)
+            .map((e) => [String(e.employeeCode), e.fullName] as const),
+        )
 
         const byBucket = new Map<string, Record<string, string | number>>()
+        let total = 0
+        let today = 0
+        const now = new Date()
+        const { start: startOfTodayTz, end: endOfTodayTz } = getDayBoundsInTimeZone(
+          now,
+          DASHBOARD_TIMEZONE,
+        )
+
         for (const e of events) {
           const payload = e.payload ?? {}
           const rawEvent =
@@ -132,7 +230,7 @@ export default function HomePage() {
             (payload["event"] as string | undefined) ??
             e.eventType
           const event = String(rawEvent ?? "").toLowerCase()
-          const isProduction = event.includes("produ")
+          const isProduction = event.includes("produ") || event === "prod" || event.includes("prod")
           if (!isProduction) continue
 
           const rawCount =
@@ -145,21 +243,32 @@ export default function HomePage() {
           const ts = new Date(e.occurredAt)
           if (Number.isNaN(ts.getTime())) continue
 
+          total += count
+          const isToday = ts >= startOfTodayTz && ts < endOfTodayTz
+          if (isToday) today += count
+
           const minutes = Math.floor(ts.getMinutes() / 10) * 10
           const bucket = new Date(ts)
           bucket.setMinutes(minutes, 0, 0)
-          const label = bucket.toTimeString().slice(0, 5) // HH:MM
+          const label = formatHmInTimeZone(bucket, DASHBOARD_TIMEZONE) // HH:MM
 
-          const machineKey = String(machineNameById.get(e.machineId ?? "") ?? payload["MACHINE_ID"] ?? "—")
+          const rawOperator =
+            (payload["OPERATOR"] as string | undefined) ??
+            (payload["operator"] as string | undefined) ??
+            "—"
+          const opCode = String(rawOperator ?? "—").trim() || "—"
+          const operatorKey = employeeNameByCode.get(opCode) ?? opCode
           const row = byBucket.get(label) ?? { time: label }
-          row[machineKey] = (Number(row[machineKey]) || 0) + count
+          row[operatorKey] = (Number(row[operatorKey]) || 0) + count
           byBucket.set(label, row)
         }
 
         const rows = [...byBucket.values()].sort((a, b) =>
           String(a.time).localeCompare(String(b.time))
         )
-        setMachineProductionData(rows)
+        setOperatorProductionData(rows)
+        setTotalProduced(total)
+        setProducedToday(today)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -170,49 +279,39 @@ export default function HomePage() {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [getAccessToken, user?.orgId])
+  }, [getAccessToken])
 
-  const hasProductionData = machineProductionData.length > 0
-  const machineKeys = useMemo(
+  const hasProductionData = operatorProductionData.length > 0
+  const operatorKeys = useMemo(
     () =>
       hasProductionData
-        ? Object.keys(machineProductionData[0]).filter((key) => key !== "time")
+        ? Object.keys(operatorProductionData[0]).filter((key) => key !== "time")
         : [],
-    [hasProductionData, machineProductionData],
+    [hasProductionData, operatorProductionData],
   )
 
   const [visibleMachines, setVisibleMachines] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
-    setVisibleMachines(Object.fromEntries(machineKeys.map((key) => [key, true])))
-  }, [machineKeys])
+    setVisibleMachines(Object.fromEntries(operatorKeys.map((key) => [key, true])))
+  }, [operatorKeys])
 
-  const toggleMachine = (machineName: string) => {
+  const toggleMachine = (name: string) => {
     setVisibleMachines((prev) => ({
       ...prev,
-      [machineName]: !prev[machineName],
+      [name]: !prev[name],
     }))
   }
 
   const toggleAllMachines = (checked: boolean) => {
     setVisibleMachines(
-      Object.fromEntries(machineKeys.map((key) => [key, checked]))
+      Object.fromEntries(operatorKeys.map((key) => [key, checked]))
     )
   }
 
-  const allVisible = machineKeys.length === 0 || machineKeys.every((key) => visibleMachines[key])
-  const someVisible = machineKeys.length === 0 || machineKeys.some((key) => visibleMachines[key])
+  const allVisible = operatorKeys.length === 0 || operatorKeys.every((key) => visibleMachines[key])
+  const someVisible = operatorKeys.length === 0 || operatorKeys.some((key) => visibleMachines[key])
   const machinesActive = machines.filter((m) => m.status === "running").length
-  const producedToday = useMemo(() => {
-    return machineProductionData.reduce((acc, row) => {
-      for (const [k, v] of Object.entries(row)) {
-        if (k === "time") continue
-        acc += Number(v) || 0
-      }
-      return acc
-    }, 0)
-  }, [machineProductionData])
-
   return (
     <DashboardLayout breadcrumbs={[{ label: "Inicio" }]}>
       <div className="space-y-6">
@@ -228,7 +327,7 @@ export default function HomePage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <KpiCard
             title="Producción Total"
-            value="—"
+            value={loading ? "—" : totalProduced.toLocaleString()}
             subtitle="Los datos se cargan desde el PLC"
             icon={Package}
             iconColor="text-primary"
@@ -256,7 +355,7 @@ export default function HomePage() {
         {/* Production Chart */}
         <div className="rounded-xl border border-border bg-card p-6">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-card-foreground">Producción de Máquinas</h2>
+            <h2 className="text-lg font-semibold text-card-foreground">Producción por Operador</h2>
           </div>
 
           {loading ? (
@@ -281,22 +380,22 @@ export default function HomePage() {
                     htmlFor="select-all"
                     className="cursor-pointer text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                   >
-                    Seleccionar/Deseleccionar todas
+                    Seleccionar/Deseleccionar todos
                   </label>
                 </div>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-                  {machineKeys.map((machineName) => (
-                    <div key={machineName} className="flex items-center gap-2">
+                  {operatorKeys.map((name) => (
+                    <div key={name} className="flex items-center gap-2">
                       <Checkbox
-                        id={machineName}
-                        checked={visibleMachines[machineName]}
-                        onCheckedChange={() => toggleMachine(machineName)}
+                        id={name}
+                        checked={visibleMachines[name]}
+                        onCheckedChange={() => toggleMachine(name)}
                       />
                       <label
-                        htmlFor={machineName}
+                        htmlFor={name}
                         className="cursor-pointer text-xs leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                       >
-                        {machineName}
+                        {name}
                       </label>
                     </div>
                   ))}
@@ -305,7 +404,7 @@ export default function HomePage() {
 
               <div className="h-[400px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={machineProductionData}>
+                  <LineChart data={operatorProductionData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                     <XAxis
                       dataKey="time"
@@ -323,7 +422,7 @@ export default function HomePage() {
                     />
                     <YAxis tick={{ fontSize: 12 }} domain={[0, 600]} />
                     <Tooltip content={<CustomTooltip />} />
-                    {machineKeys.map((key, index) =>
+                    {operatorKeys.map((key, index) =>
                       visibleMachines[key] ? (
                         <Line
                           key={key}

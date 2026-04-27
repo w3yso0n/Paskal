@@ -366,6 +366,14 @@ export interface ApiMachine {
   name: string;
   code: string | null;
   status: "running" | "idle" | "stopped" | "maintenance" | "offline";
+  currentSku?: string | null;
+  operatorCode?: string | null;
+  operator2Code?: string | null;
+  packager1Code?: string | null;
+  packager2Code?: string | null;
+  packager3Code?: string | null;
+  packager4Code?: string | null;
+  configuredAt?: string | null;
   workstationId?: string | null;
   model?: string | null;
   serialNumber?: string | null;
@@ -376,6 +384,114 @@ export interface ApiMachine {
 export async function getMachines(accessToken: string): Promise<ApiMachine[]> {
   const res = await fetchWithAuth("/machine", { accessToken });
   return parseResponse<ApiMachine[]>(res);
+}
+
+export interface UpdateMachinePayload {
+  status?: ApiMachine["status"]
+  currentSku?: string | null
+  operatorCode?: string | null
+  operator2Code?: string | null
+  packager1Code?: string | null
+  packager2Code?: string | null
+  packager3Code?: string | null
+  packager4Code?: string | null
+}
+
+export async function updateMachine(
+  accessToken: string,
+  id: string,
+  payload: UpdateMachinePayload,
+): Promise<ApiMachine> {
+  const res = await fetchWithAuth(`/machine/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+    accessToken,
+  })
+  return parseResponse<ApiMachine>(res)
+}
+
+// --- Goals (metas) ---
+
+export type ApiGoalPeriod = "daily" | "weekly" | "monthly" | "quarterly" | "yearly"
+
+export interface ApiGoal {
+  id: string
+  orgId: string
+  metricId: string
+  plantId: string | null
+  lineId: string | null
+  machineId: string | null
+  targetValue: number
+  period: ApiGoalPeriod
+  startDate: string
+  endDate: string
+  createdAt: string
+  updatedAt: string
+}
+
+export async function getGoals(accessToken: string): Promise<ApiGoal[]> {
+  const res = await fetchWithAuth("/goal", { accessToken })
+  return parseResponse<ApiGoal[]>(res)
+}
+
+export interface CreateGoalPayload {
+  metricId: string
+  plantId?: string | null
+  lineId?: string | null
+  machineId?: string | null
+  targetValue: number
+  period: ApiGoalPeriod
+  startDate: string | Date
+  endDate: string | Date
+}
+
+export interface UpdateGoalPayload extends Partial<CreateGoalPayload> {}
+
+export async function createGoal(accessToken: string, payload: CreateGoalPayload): Promise<ApiGoal> {
+  const res = await fetchWithAuth("/goal", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    accessToken,
+  })
+  return parseResponse<ApiGoal>(res)
+}
+
+export async function updateGoal(
+  accessToken: string,
+  id: string,
+  payload: UpdateGoalPayload,
+): Promise<ApiGoal> {
+  const res = await fetchWithAuth(`/goal/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+    accessToken,
+  })
+  return parseResponse<ApiGoal>(res)
+}
+
+export async function deleteGoal(accessToken: string, id: string): Promise<void> {
+  const res = await fetchWithAuth(`/goal/${id}`, {
+    method: "DELETE",
+    accessToken,
+  })
+  await parseResponse<void>(res)
+}
+
+// --- Metrics ---
+
+export interface ApiMetric {
+  id: string
+  orgId: string
+  name: string
+  unit: string | null
+  description: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export async function getMetrics(accessToken: string): Promise<ApiMetric[]> {
+  const res = await fetchWithAuth("/metric", { accessToken })
+  return parseResponse<ApiMetric[]>(res)
 }
 
 // --- Orgs (solo platform admin, para dropdown al crear usuario) ---
@@ -515,6 +631,28 @@ export interface ApiProductionEvent {
   message: string | null;
   occurredAt: string;
   payload: Record<string, unknown>;
+}
+
+// --- Machine check-ins (NFC) ---
+
+export interface ApiMachineCheckin {
+  id: string
+  machineId: string
+  machineCode: string
+  operatorCode: string
+  operator2Code: string | null
+  packager1Code: string | null
+  packager2Code: string | null
+  packager3Code: string | null
+  packager4Code: string | null
+  isActive: boolean
+  checkedInAt: string
+  checkedOutAt: string | null
+}
+
+export async function getActiveMachineCheckins(accessToken: string): Promise<ApiMachineCheckin[]> {
+  const res = await fetchWithAuth("/machine-checkin/active", { accessToken })
+  return parseResponse<ApiMachineCheckin[]>(res)
 }
 
 export async function getProductionEvents(
