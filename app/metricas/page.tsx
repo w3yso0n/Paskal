@@ -13,12 +13,6 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs"
 import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion"
-import {
   Table,
   TableBody,
   TableCell,
@@ -158,6 +152,66 @@ function nthStringFromArray(
   return s || undefined
 }
 
+/** Igual que nthStringFromArray pero acepta números u otros tipos en el array (PLC a veces manda así). */
+function nthStringFromArrayLoose(
+  payload: Record<string, unknown>,
+  key: string,
+  index: number,
+): string | undefined {
+  const raw = payload[key]
+  if (!Array.isArray(raw) || raw.length <= index) return undefined
+  const el = raw[index]
+  const s = typeof el === "string" ? el.trim() : String(el ?? "").trim()
+  if (!s || s.toLowerCase() === "null" || s === "undefined") return undefined
+  return s
+}
+
+function isMetricasDebugEnabled(): boolean {
+  if (typeof window === "undefined") return false
+  try {
+    return (
+      window.localStorage.getItem("METRICAS_DEBUG") === "1" ||
+      process.env.NEXT_PUBLIC_METRICAS_DEBUG === "1"
+    )
+  } catch {
+    return process.env.NEXT_PUBLIC_METRICAS_DEBUG === "1"
+  }
+}
+
+/** Check-in NFC más plausible para una máquina y un instante (ventana o activo). */
+function findBestCheckinForMachineAndTime(
+  machineId: string | null | undefined,
+  occurredAtMs: number,
+  checkins: ApiMachineCheckin[],
+): ApiMachineCheckin | null {
+  const id = machineId?.trim()
+  if (!id) return null
+  const inWindow = (ch: ApiMachineCheckin) => {
+    const start = new Date(ch.checkedInAt).getTime()
+    const end = ch.checkedOutAt ? new Date(ch.checkedOutAt).getTime() : Number.POSITIVE_INFINITY
+    return occurredAtMs >= start && occurredAtMs <= end
+  }
+  const byMachine = checkins
+    .filter((ch) => ch.machineId === id)
+    .sort((a, b) => new Date(b.checkedInAt).getTime() - new Date(a.checkedInAt).getTime())
+  return byMachine.find(inWindow) ?? byMachine.find((c) => c.isActive) ?? null
+}
+
+/** Nombre a mostrar del operador principal si el evento no trae OPERATOR en payload. */
+function primaryOperatorLabelFromCheckin(
+  machineId: string | null | undefined,
+  occurredAtMs: number,
+  checkins: ApiMachineCheckin[],
+  resolvePerson: (raw: string | undefined) => string,
+): string | null {
+  const ch = findBestCheckinForMachineAndTime(machineId, occurredAtMs, checkins)
+  if (!ch) return null
+  const oc = ch.operatorCode?.trim()
+  if (!oc) return null
+  const label = resolvePerson(oc)
+  return label && label !== "—" ? label : null
+}
+
 function dedupeTrimmedPreserveOrder(values: string[]): string[] {
   const seen = new Set<string>()
   const out: string[] = []
@@ -198,20 +252,7 @@ function packerDisplayNamesFromCheckin(
   checkins: ApiMachineCheckin[],
   resolvePerson: (raw: string | undefined) => string,
 ): string[] {
-  const id = machineId?.trim()
-  if (!id) return []
-
-  const inWindow = (ch: ApiMachineCheckin) => {
-    const start = new Date(ch.checkedInAt).getTime()
-    const end = ch.checkedOutAt ? new Date(ch.checkedOutAt).getTime() : Number.POSITIVE_INFINITY
-    return occurredAtMs >= start && occurredAtMs <= end
-  }
-
-  const byMachine = checkins
-    .filter((ch) => ch.machineId === id)
-    .sort((a, b) => new Date(b.checkedInAt).getTime() - new Date(a.checkedInAt).getTime())
-
-  const ch = byMachine.find(inWindow) ?? byMachine.find((c) => c.isActive) ?? null
+  const ch = findBestCheckinForMachineAndTime(machineId, occurredAtMs, checkins)
   if (!ch) return []
 
   const raw = [ch.packager1Code, ch.packager2Code, ch.packager3Code, ch.packager4Code]
@@ -507,9 +548,27 @@ export default function MetricsPage() {
           const machine_id =
             (mid && machineLabelById.get(mid)) || fromPayload || mid || "—"
 
-          const operatorCode =
-            payloadString(payload, "OPERATOR", "operator") ??
-            nthStringFromArray(payload, "operators", 0)
+          const operatorCodeRaw =
+            payloadString(
+              payload,
+              "OPERATOR",
+              "operator",
+              "OPERATOR_1",
+              "operator_1",
+            ) ??
+            nthStringFromArray(payload, "operators", 0) ??
+            nthStringFromArrayLoose(payload, "operators", 0)
+
+          let operatorLabel = resolvePerson(operatorCodeRaw)
+          if (operatorLabel === "—" && e.machineId?.trim()) {
+            const fromChk = primaryOperatorLabelFromCheckin(
+              e.machineId,
+              new Date(ts).getTime(),
+              checkins,
+              resolvePerson,
+            )
+            if (fromChk) operatorLabel = fromChk
+          }
 
           const skuResolved =
             payloadString(
@@ -543,7 +602,7 @@ export default function MetricsPage() {
             machine_id,
             machineIdRaw: e.machineId?.trim() ?? null,
             timestamp: ts,
-            operator: resolvePerson(operatorCode),
+            operator: operatorLabel,
             packer_1,
             packer_2,
             packersAttributed,
@@ -554,6 +613,42 @@ export default function MetricsPage() {
             sku: skuResolved ?? "—",
           }
         })
+
+        if (isMetricasDebugEnabled()) {
+          const prodRows = mapped.filter((r) => r.event === "Producción")
+          const byOp = new Map<string, number>()
+          for (const r of prodRows) {
+            byOp.set(r.operator, (byOp.get(r.operator) ?? 0) + r.count)
+          }
+          const sinOp = prodRows.filter((r) => r.operator === "—").length
+          const conMaquina = prodRows.filter((r) => Boolean(r.machineIdRaw)).length
+          const tiposEvento = new Map<string, number>()
+          for (const e of events) {
+            const t = (e.eventType ?? "").trim() || "(vacío)"
+            tiposEvento.set(t, (tiposEvento.get(t) ?? 0) + 1)
+          }
+          console.info("[Métricas] METRICAS_DEBUG=1 — producción / operadores", {
+            rango: { desde: filterStartDate, hasta: filterEndDate },
+            eventosApi: events.length,
+            posibleCortePorLimiteApi: events.length >= 119_000,
+            filasMapeadas: mapped.length,
+            eventosProduccionFilas: prodRows.length,
+            produccionSinOperadorResuelto: sinOp,
+            produccionConMachineId: conMaquina,
+            checkinsEnRango: checkins.length,
+            empleadosMaestro: employees.length,
+            codigosEmpleadoEnMapa: codeToName.size,
+            operadoresDistintosEnAgg: byOp.size,
+            topOperadoresPorUnidades: [...byOp.entries()]
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 20),
+            eventTypesEnApi: Object.fromEntries(tiposEvento),
+            hintSiPocosOperadores:
+              sinOp > 0
+                ? "Muchos PROD sin OPERATOR en payload: ya se intenta check-in NFC por máquina/fecha. Verifica check-ins en el rango."
+                : "Si operadoresDistintosEnAgg es bajo, revisa que los códigos OPERATOR coincidan con employeeCode en maestro.",
+          })
+        }
 
         setProductionBaseRows(mapped)
       } catch (err) {
@@ -704,7 +799,6 @@ export default function MetricsPage() {
   ]
 
   const analytics = useMemo(() => {
-    type RecentEvent = ProductionBaseRow & { tsLabel: string }
     type DistRow = { event: ProductionEventType; count: number; color: string }
 
     // Parse filter dates
@@ -760,7 +854,6 @@ export default function MetricsPage() {
       }
     >()
     const operatorAgg = new Map<string, { units: number; downtime: number }>()
-    const operatorEventAgg = new Map<string, Map<ProductionEventType, number>>()
     const packerAgg = new Map<string, { units: number; jobs: number }>()
     const skuAgg = new Map<string, number>()
     const eventAgg = new Map<ProductionEventType, number>()
@@ -820,10 +913,6 @@ export default function MetricsPage() {
       }
 
       eventAgg.set(r.event, (eventAgg.get(r.event) ?? 0) + 1)
-
-      const opEvent = operatorEventAgg.get(r.operator) ?? new Map<ProductionEventType, number>()
-      opEvent.set(r.event, (opEvent.get(r.event) ?? 0) + 1)
-      operatorEventAgg.set(r.operator, opEvent)
 
       const op = operatorAgg.get(r.operator) ?? { units: 0, downtime: 0 }
       if (r.event === "Producción") op.units += r.count
@@ -897,14 +986,6 @@ export default function MetricsPage() {
       .map(([name, v]) => ({ name, units: Number(v.units.toFixed(1)), jobs: v.jobs }))
       .sort((a, b) => b.units - a.units)
 
-    const operatorEventDistributions = [...operatorEventAgg.entries()]
-      .map(([operator, map]) => {
-        const dist = buildDist(map)
-        const total = dist.reduce((acc, e) => acc + e.count, 0)
-        return { operator, total, dist }
-      })
-      .sort((a, b) => b.total - a.total)
-
     const shiftComparisonMetrics = [
       {
         metric: "Producción",
@@ -945,15 +1026,6 @@ export default function MetricsPage() {
       }))
       .sort((a, b) => b.produced - a.produced)
 
-    const recentNonProductionEvents: RecentEvent[] = [...rows14d]
-      .filter((r) => r.event !== "Producción")
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-      .slice(0, 12)
-      .map((r) => ({
-        ...r,
-        tsLabel: new Date(r.timestamp).toISOString().replace("T", " ").slice(0, 16),
-      }))
-
     return {
       produced14d,
       changeovers14d,
@@ -969,10 +1041,8 @@ export default function MetricsPage() {
       topSkus,
       skuDistribution,
       packerDistribution,
-      operatorEventDistributions,
       eventBreakdown,
       machineScatter,
-      recentNonProductionEvents,
     }
   }, [productionBaseRows, filterStartDate, filterEndDate])
 
@@ -1838,38 +1908,6 @@ export default function MetricsPage() {
               </div>
             </div>
 
-            {/* Eventos por Operador */}
-            <div className="rounded-xl border border-border bg-card p-6">
-              <h3 className="font-semibold text-foreground mb-4">Distribución de Eventos por Operador</h3>
-              <Accordion type="single" collapsible>
-                {analytics.operatorEventDistributions.map((op) => (
-                  <AccordionItem key={op.operator} value={op.operator}>
-                    <AccordionTrigger>{op.operator}</AccordionTrigger>
-                    <AccordionContent>
-                      <div className="grid gap-4 lg:grid-cols-3">
-                        <div className="lg:col-span-1">
-                          <p className="text-sm text-muted-foreground">Total eventos</p>
-                          <p className="text-2xl font-bold text-foreground">{op.total.toLocaleString()}</p>
-                        </div>
-                        <div className="lg:col-span-2 h-[220px]">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <PieChart>
-                              <Pie data={op.dist} dataKey="count" nameKey="event" cx="50%" cy="50%" innerRadius={55} outerRadius={85} paddingAngle={2}>
-                                {op.dist.map((d) => (
-                                  <Cell key={d.event} fill={d.color} />
-                                ))}
-                              </Pie>
-                              <Tooltip />
-                            </PieChart>
-                          </ResponsiveContainer>
-                        </div>
-                      </div>
-                    </AccordionContent>
-                  </AccordionItem>
-                ))}
-              </Accordion>
-            </div>
-
             {/* Detalle Operadores & Empacadores */}
             <div className="grid gap-6 lg:grid-cols-2">
               {/* Operadores Detalle */}
@@ -1920,37 +1958,6 @@ export default function MetricsPage() {
                     </TableBody>
                   </Table>
                 </div>
-              </div>
-            </div>
-
-            {/* Últimos Eventos Relevantes */}
-            <div className="rounded-xl border border-border bg-card p-6">
-              <h3 className="font-semibold text-foreground mb-4">Últimos Eventos  </h3>
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Fecha</TableHead>
-                      <TableHead>Máquina</TableHead>
-                      <TableHead>Evento</TableHead>
-                      <TableHead>SKU</TableHead>
-                      <TableHead>Operador</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {analytics.recentNonProductionEvents.map((r) => (
-                      <TableRow key={`${r.machine_id}-${r.timestamp}-${r.event}`}>
-                        <TableCell className="text-muted-foreground">{r.tsLabel}</TableCell>
-                        <TableCell className="font-medium text-primary">{r.machine_id}</TableCell>
-                        <TableCell>
-                          <Badge variant={eventBadgeVariant(r.event)}>{r.event}</Badge>
-                        </TableCell>
-                        <TableCell>{r.sku}</TableCell>
-                        <TableCell className="text-muted-foreground">{r.operator}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
               </div>
             </div>
           </TabsContent>
