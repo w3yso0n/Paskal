@@ -152,6 +152,14 @@ function nthStringFromArray(
   return s || undefined
 }
 
+/** Mensaje típico del backend: `SKU: SKU-001, count: 12`. */
+function skuFromMessage(message: string | null | undefined): string | undefined {
+  if (!message?.trim()) return undefined
+  const m = message.match(/SKU\s*:\s*([^,]+)/i)
+  const raw = m?.[1]?.trim()
+  return raw || undefined
+}
+
 export default function MetricsPage() {
   const { getAccessToken } = useAuth()
   const [activeTab, setActiveTab] = useState("produccion")
@@ -244,9 +252,12 @@ export default function MetricsPage() {
         setEmployeeRows(employees)
 
         const machineLabelById = new Map<string, string>()
+        const machineSkuById = new Map<string, string>()
         for (const m of apiMachines) {
           const label = (m.code ?? m.name).trim() || m.name
           machineLabelById.set(m.id, label)
+          const curSku = m.currentSku?.trim()
+          if (curSku) machineSkuById.set(m.id, curSku)
         }
 
         const codeToName = buildEmployeeCodeToNameMap(employees)
@@ -295,6 +306,19 @@ export default function MetricsPage() {
             payloadString(payload, "OPERATOR", "operator") ??
             nthStringFromArray(payload, "operators", 0)
 
+          const skuResolved =
+            payloadString(
+              payload,
+              "SKU",
+              "sku",
+              "PRODUCT",
+              "product",
+              "PRODUCT_CODE",
+              "product_code",
+            ) ??
+            (mid ? machineSkuById.get(mid) : undefined) ??
+            skuFromMessage(e.message)
+
           return {
             machine_id,
             timestamp: ts,
@@ -311,7 +335,7 @@ export default function MetricsPage() {
             parameter_2: Number((payload["PARAMETER_2"] as unknown) ?? 0) || 0,
             count: Number.isFinite(count) ? count : 0,
             event,
-            sku: String(payloadString(payload, "SKU", "sku") ?? "—"),
+            sku: skuResolved ?? "—",
           }
         })
 

@@ -38,7 +38,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Maximize2, Minimize2, Plus, Settings2, RotateCcw, X } from "lucide-react"
 import { toast } from "sonner"
 
-/** Mapeo c?digo m?quina -> posici?n en diagrama (row, col).
+/** Mapeo código máquina -> posición en diagrama (row, col).
  * Nota: las columnas son 0-indexed (col: 0 es la primera columna visual).
  * La 2da columna visual es col: 1 y aqu? solo debe tener M7 y M8.
  */
@@ -157,7 +157,7 @@ export default function ProductionFloorPage() {
         setMachineData(mapped)
       } catch (e) {
         if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Error al cargar m?quinas")
+          setError(e instanceof Error ? e.message : "Error al cargar máquinas")
           setMachineData([])
         }
       } finally {
@@ -313,7 +313,7 @@ export default function ProductionFloorPage() {
 
   const applyAndSaveAssignments = () => {
     setError(null)
-    // Permitir guardar informaci?n incompleta. Solo bloquear si hay empleados repetidos.
+    // Permitir guardar información incompleta. Solo bloquear si hay empleados repetidos.
     const normalize = (v?: string) => (v ?? "").trim()
     const usedByEmployee = new Map<string, string>() // employee -> machineName
     for (const m of machineData) {
@@ -324,9 +324,9 @@ export default function ProductionFloorPage() {
         ...(m.packers ?? []).map(normalize),
       ].filter(Boolean)
 
-      // Duplicado dentro de la misma m?quina
+      // Duplicado dentro de la misma máquina
       if (new Set(codes).size !== codes.length) {
-        setError(`El empleado est? duplicado dentro de la m?quina "${machineName}".`)
+        setError(`El empleado está duplicado dentro de la máquina "${machineName}".`)
         toast.error("No se pudo guardar: empleado duplicado.")
         return
       }
@@ -335,7 +335,7 @@ export default function ProductionFloorPage() {
         const prev = usedByEmployee.get(c)
         if (prev && prev !== machineName) {
           setError(
-            `El empleado "${c}" ya est? asignado en "${prev}". No puede estar en dos m?quinas a la vez.`,
+            `El empleado "${c}" ya está asignado en "${prev}". No puede estar en dos máquinas a la vez.`,
           )
           toast.error("No se pudo guardar: empleado repetido.")
           return
@@ -347,7 +347,7 @@ export default function ProductionFloorPage() {
     ;(async () => {
       const token = await getAccessToken()
       if (!token) {
-        toast.error("Sesi?n inv?lida. Vuelve a iniciar sesi?n.")
+        toast.error("Sesión inválida. Vuelve a iniciar sesión.")
         return
       }
 
@@ -542,8 +542,7 @@ export default function ProductionFloorPage() {
     const current = machineData.find((m) => m.id === machineId)?.packers ?? []
     const currentUnique = new Set(current.filter(Boolean))
     const uniqueTotal = selectedPackers.size
-    // Si el packer no est? ya seleccionado en otra maquina, solo permitir si no excede 4 ?nicos,
-    // considerando que esta m?quina podr?a estar reemplazando uno existente.
+
     return uniqueTotal - currentUnique.size + (currentUnique.has(packerName) ? 0 : 1) <= 4
   }
 
@@ -600,16 +599,16 @@ export default function ProductionFloorPage() {
     <DashboardLayout 
       breadcrumbs={[
         { label: "Inicio", href: "/" },
-        { label: "Piso de producci?n" }
+        { label: "Piso de producción" }
       ]}
     >
       <div className="space-y-6">
         {/* Header */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">Piso de Producci?n</h1>
+            <h1 className="text-2xl font-bold text-foreground">Piso de Producción</h1>
             <p className="text-muted-foreground">
-              Vista general de las m?quinas y su estado actual de operaci?n.
+              Vista general de las máquinas y su estado actual de operación.
             </p>
           </div>
         </div>
@@ -621,14 +620,14 @@ export default function ProductionFloorPage() {
         )}
         {loading && (
           <div className="rounded-lg border border-border bg-muted/30 p-4 text-muted-foreground">
-            Cargando m?quinas
+            Cargando máquinas
           </div>
         )}
 
         {/* Stats Cards */}
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <div className="rounded-lg border border-border bg-card p-4">
-            <p className="text-xs font-medium uppercase text-muted-foreground">Total M?quinas</p>
+            <p className="text-xs font-medium uppercase text-muted-foreground">Total Máquinas</p>
             <p className="text-2xl font-bold text-card-foreground">{machineData.length}</p>
           </div>
           <div className="rounded-lg border border-green-200 bg-green-50 p-4">
@@ -695,8 +694,8 @@ export default function ProductionFloorPage() {
         {/* Instructions */}
         <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
           <p className="text-sm text-primary">
-            <strong>Tip:</strong> Pasa el cursor sobre cada m?quina para ver su informaci?n detallada.
-            Haz click en una m?quina para asignarle SKU, operador y empacador.
+            <strong>Tip:</strong> Pasa el cursor sobre cada máquina para ver su información detallada.
+            Haz click en una máquina para asignarle SKU, operador y empacador.
           </p>
         </div>
 
@@ -704,9 +703,9 @@ export default function ProductionFloorPage() {
         <div className="rounded-xl border border-border bg-card p-6">
           <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-card-foreground">Asignaci?n r?pida</h2>
+              <h2 className="text-lg font-semibold text-card-foreground">Asignación rápida</h2>
               <p className="text-sm text-muted-foreground">
-                Captura SKU por m?quina. Presiona Enter para ir a la siguiente.
+                Captura SKU por máquina. Presiona Enter para ir a la siguiente.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -726,12 +725,12 @@ export default function ProductionFloorPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>M?quina</TableHead>
+                <TableHead>Máquina</TableHead>
                 <TableHead>SKU</TableHead>
                 <TableHead>Operador 1</TableHead>
                 <TableHead>Empacador 1</TableHead>
                 <TableHead className="min-w-44">Más personal</TableHead>
-                <TableHead>Validaci?n</TableHead>
+                <TableHead>Validación</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1150,7 +1149,7 @@ export default function ProductionFloorPage() {
               </Button>
             </DialogTitle>
             <DialogDescription className="text-xs sm:text-sm">
-              Click en una m?quina para asignar SKU y personal.
+              Click en una máquina para asignar SKU y personal.
             </DialogDescription>
           </DialogHeader>
 
@@ -1166,7 +1165,7 @@ export default function ProductionFloorPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Settings2 className="h-5 w-5 text-primary" />
-              Configurar M?quina {selectedMachine?.name}
+              Configurar Máquina {selectedMachine?.name}
             </DialogTitle>
             <DialogDescription>
               SKU, hasta {MAX_OPERATORS_PER_MACHINE} operadores y hasta {MAX_PACKERS_PER_MACHINE} empacadores
@@ -1193,7 +1192,7 @@ export default function ProductionFloorPage() {
               </div>
               {selectedMachine?.production !== undefined && (
                 <div className="flex items-center justify-between text-sm mt-2">
-                  <span className="text-muted-foreground">Producci?n hoy:</span>
+                  <span className="text-muted-foreground">Producción hoy:</span>
                   <span className="font-medium text-foreground">{selectedMachine.production} unidades</span>
                 </div>
               )}

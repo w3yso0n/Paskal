@@ -174,7 +174,7 @@ const machineColors = [
 ]
 
 export default function HomePage() {
-  const { user, getAccessToken } = useAuth()
+  const { getAccessToken } = useAuth()
   const [loading, setLoading] = useState(true)
   const [operatorProductionData, setOperatorProductionData] = useState<Record<string, string | number>[]>([])
   const [machines, setMachines] = useState<ApiMachine[]>([])
@@ -208,11 +208,13 @@ export default function HomePage() {
         setMachines(apiMachines)
         setEmployees(apiEmployees)
 
-        const employeeNameByCode = new Map(
-          apiEmployees
-            .filter((e) => e.employeeCode)
-            .map((e) => [String(e.employeeCode), e.fullName] as const),
-        )
+        const employeeNameByCode = new Map<string, string>()
+        for (const emp of apiEmployees) {
+          const c = emp.employeeCode?.trim()
+          if (!c) continue
+          employeeNameByCode.set(c, emp.fullName)
+          employeeNameByCode.set(c.toLowerCase(), emp.fullName)
+        }
 
         const byBucket = new Map<string, Record<string, string | number>>()
         let total = 0
@@ -252,20 +254,39 @@ export default function HomePage() {
           bucket.setMinutes(minutes, 0, 0)
           const label = formatHmInTimeZone(bucket, DASHBOARD_TIMEZONE) // HH:MM
 
+          const rawOperators = payload["operators"]
+          const fromOperatorsArray =
+            Array.isArray(rawOperators) && rawOperators.length > 0 && typeof rawOperators[0] === "string"
+              ? (rawOperators[0] as string).trim()
+              : undefined
           const rawOperator =
             (payload["OPERATOR"] as string | undefined) ??
             (payload["operator"] as string | undefined) ??
+            fromOperatorsArray ??
             "—"
           const opCode = String(rawOperator ?? "—").trim() || "—"
-          const operatorKey = employeeNameByCode.get(opCode) ?? opCode
+          const operatorKey =
+            employeeNameByCode.get(opCode) ?? employeeNameByCode.get(opCode.toLowerCase()) ?? opCode
           const row = byBucket.get(label) ?? { time: label }
           row[operatorKey] = (Number(row[operatorKey]) || 0) + count
           byBucket.set(label, row)
         }
 
-        const rows = [...byBucket.values()].sort((a, b) =>
-          String(a.time).localeCompare(String(b.time))
-        )
+        const allOperatorKeys = new Set<string>()
+        for (const row of byBucket.values()) {
+          for (const k of Object.keys(row)) {
+            if (k !== "time") allOperatorKeys.add(k)
+          }
+        }
+        const rows = [...byBucket.values()]
+          .sort((a, b) => String(a.time).localeCompare(String(b.time)))
+          .map((row) => {
+            const next: Record<string, string | number> = { ...row }
+            for (const k of allOperatorKeys) {
+              if (next[k] === undefined) next[k] = 0
+            }
+            return next
+          })
         setOperatorProductionData(rows)
         setTotalProduced(total)
         setProducedToday(today)
@@ -282,13 +303,16 @@ export default function HomePage() {
   }, [getAccessToken])
 
   const hasProductionData = operatorProductionData.length > 0
-  const operatorKeys = useMemo(
-    () =>
-      hasProductionData
-        ? Object.keys(operatorProductionData[0]).filter((key) => key !== "time")
-        : [],
-    [hasProductionData, operatorProductionData],
-  )
+  const operatorKeys = useMemo(() => {
+    if (!hasProductionData) return []
+    const keys = new Set<string>()
+    for (const row of operatorProductionData) {
+      for (const k of Object.keys(row)) {
+        if (k !== "time") keys.add(k)
+      }
+    }
+    return [...keys].sort((a, b) => a.localeCompare(b))
+  }, [hasProductionData, operatorProductionData])
 
   const [visibleMachines, setVisibleMachines] = useState<Record<string, boolean>>({})
 
