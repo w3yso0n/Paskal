@@ -33,6 +33,47 @@ export interface ApiError {
   statusCode?: number;
 }
 
+/** Mensaje legible desde la respuesta Nest / fetch (para toast y logs). */
+export function getApiErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) return error.trim()
+  if (error instanceof Error && error.message.trim()) return error.message.trim()
+  if (error && typeof error === "object") {
+    const o = error as Record<string, unknown>
+    const m = o.message
+    if (typeof m === "string" && m.trim()) return m.trim()
+    if (Array.isArray(m) && m.length > 0) {
+      const parts = m.map((x) => String(x)).filter((s) => s.trim())
+      if (parts.length) return parts.join(". ")
+    }
+    const errStr = o.error
+    if (typeof errStr === "string" && errStr.trim()) return errStr.trim()
+    const code = o.statusCode
+    if (code === 503) {
+      return (
+        (typeof m === "string" && m) ||
+        "Servicio no disponible. Si creas usuarios, el backend necesita Firebase Admin configurado."
+      )
+    }
+    if (code === 403) return "No tienes permiso para esta acción."
+    if (code === 401) return "Sesión no válida o expirada."
+    if (code === 400) return "Datos inválidos o email ya registrado."
+    if (code === 409) return "Conflicto: el recurso ya existe."
+  }
+  return ""
+}
+
+function extractErrorBodyMessage(body: Record<string, unknown>, res: Response): string {
+  const m = body.message
+  if (typeof m === "string" && m.trim()) return m.trim()
+  if (Array.isArray(m) && m.length > 0) {
+    const parts = m.map((x) => String(x)).filter((s) => s.trim())
+    if (parts.length) return parts.join(". ")
+  }
+  const err = body.error
+  if (typeof err === "string" && err.trim()) return err.trim()
+  return res.statusText?.trim() || `HTTP ${res.status}`
+}
+
 /**
  * Mensaje seguro para mostrar al usuario (sin revelar detalles que ayuden a ataques).
  * El error real debe registrarse en consola o backend.
@@ -63,20 +104,30 @@ export function getSafeLoginMessage(error: unknown): string {
 
 async function parseResponse<T>(res: Response): Promise<T> {
   const text = await res.text();
-  let body: { message?: string; statusCode?: number } = {};
+  let parseFailed = false;
+  let body: Record<string, unknown> = {};
   try {
-    body = text ? JSON.parse(text) : {};
+    body = text ? (JSON.parse(text) as Record<string, unknown>) : {};
   } catch {
+    parseFailed = true;
     body = { message: text || res.statusText };
   }
   if (!res.ok) {
+    const msg = extractErrorBodyMessage(body, res);
     const err: ApiError = {
-      message: Array.isArray(body.message) ? body.message[0] : body.message || res.statusText,
-      statusCode: body.statusCode ?? res.status,
+      message: msg || `HTTP ${res.status}`,
+      statusCode: (typeof body.statusCode === "number" ? body.statusCode : undefined) ?? res.status,
     };
     throw err;
   }
-  return (text ? JSON.parse(text) : {}) as T;
+  if (parseFailed) {
+    const err: ApiError = {
+      message: "Respuesta del servidor no es JSON válido.",
+      statusCode: res.status,
+    };
+    throw err;
+  }
+  return body as T;
 }
 
 /**

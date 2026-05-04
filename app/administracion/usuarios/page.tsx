@@ -28,6 +28,7 @@ import {
   getUsers,
   createUser,
   deleteUser,
+  getApiErrorMessage,
   type ApiUser,
   type UserRole,
 } from "@/lib/api"
@@ -66,8 +67,8 @@ export default function GestionUsuariosPage() {
         setUsers(list)
       }
     } catch (e) {
-      console.error("[Usuarios] Load failed", e)
-      toast.error("No se pudieron cargar los usuarios.")
+      console.error("[Usuarios] Load failed", { message: getApiErrorMessage(e), raw: e })
+      toast.error(getApiErrorMessage(e) || "No se pudieron cargar los usuarios.")
     } finally {
       setLoading(false)
     }
@@ -113,8 +114,16 @@ export default function GestionUsuariosPage() {
       setForm({ email: "", password: "", fullName: "", role: "viewer" })
       loadUsers()
     } catch (e) {
-      console.error("[Usuarios] Create failed", e)
-      toast.error("No se pudo crear el usuario. Revisa que el email no exista.")
+      const msg = getApiErrorMessage(e)
+      console.error("[Usuarios] Create failed", {
+        message: msg || "(sin mensaje)",
+        statusCode: e && typeof e === "object" && "statusCode" in e ? (e as { statusCode?: number }).statusCode : undefined,
+        raw: e,
+      })
+      toast.error(
+        msg ||
+          "No se pudo crear el usuario. Revisa que el email no exista o que Firebase Admin esté configurado en el servidor.",
+      )
     } finally {
       setSubmitting(false)
     }
@@ -129,8 +138,9 @@ export default function GestionUsuariosPage() {
       toast.success("Usuario eliminado.")
       loadUsers()
     } catch (e) {
-      console.error("[Usuarios] Delete failed", e)
-      toast.error("No se pudo eliminar el usuario.")
+      const msg = getApiErrorMessage(e)
+      console.error("[Usuarios] Delete failed", { message: msg || "(sin mensaje)", raw: e })
+      toast.error(msg || "No se pudo eliminar el usuario.")
     }
   }
 
