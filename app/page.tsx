@@ -29,6 +29,54 @@ import {
 
 const DASHBOARD_TIMEZONE = "America/Mexico_City"
 
+type ShiftId = "shift1" | "shift2"
+
+function getShiftBoundsInTimeZone(now: Date, shift: ShiftId, timeZone: string): { start: Date; end: Date } {
+  const p = getPartsInTimeZone(now, timeZone)
+
+  if (shift === "shift1") {
+    // 06:00 -> 17:00 (mismo día)
+    const start = makeZonedDate(p.year, p.month, p.day, 6, 0, timeZone)
+    const end = makeZonedDate(p.year, p.month, p.day, 17, 0, timeZone)
+    return { start, end }
+  }
+
+  // shift2: 15:00 -> 00:30 (cruza medianoche)
+  const nowMinutes = p.hour * 60 + p.minute
+  const isAfterMidnightBefore0030 = nowMinutes < 30
+
+  if (isAfterMidnightBefore0030) {
+    // Si estamos entre 00:00-00:29, el turno vigente empezó ayer 15:00 y termina hoy 00:30.
+    const yesterdayAnchor = makeZonedDate(p.year, p.month, p.day, 12, 0, timeZone)
+    const yesterday = new Date(yesterdayAnchor.getTime() - 24 * 60 * 60 * 1000)
+    const yp = getPartsInTimeZone(yesterday, timeZone)
+    const start = makeZonedDate(yp.year, yp.month, yp.day, 15, 0, timeZone)
+    const end = makeZonedDate(p.year, p.month, p.day, 0, 30, timeZone)
+    return { start, end }
+  }
+
+  const start = makeZonedDate(p.year, p.month, p.day, 15, 0, timeZone)
+  const tomorrowAnchor = makeZonedDate(p.year, p.month, p.day, 12, 0, timeZone)
+  const tomorrow = new Date(tomorrowAnchor.getTime() + 24 * 60 * 60 * 1000)
+  const tp = getPartsInTimeZone(tomorrow, timeZone)
+  const end = makeZonedDate(tp.year, tp.month, tp.day, 0, 30, timeZone)
+  return { start, end }
+}
+
+function buildHourBuckets(startInclusive: Date, endExclusive: Date, timeZone: string): string[] {
+  const start = new Date(startInclusive)
+  // Alineamos al inicio de la hora, pero sin salirnos del rango.
+  start.setMinutes(0, 0, 0)
+
+  const labels: string[] = []
+  for (let t = start.getTime(); t < endExclusive.getTime(); t += 60 * 60 * 1000) {
+    const d = new Date(t)
+    const label = formatHmInTimeZone(d, timeZone)
+    if (labels.length === 0 || labels[labels.length - 1] !== label) labels.push(label)
+  }
+  return labels
+}
+
 function getPartsInTimeZone(date: Date, timeZone: string) {
   const dtf = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -181,6 +229,7 @@ export default function HomePage() {
   const [employees, setEmployees] = useState<ApiEmployee[]>([])
   const [totalProduced, setTotalProduced] = useState(0)
   const [producedToday, setProducedToday] = useState(0)
+  const [selectedShift, setSelectedShift] = useState<ShiftId>("shift1")
 
   useEffect(() => {
     let cancelled = false
@@ -224,6 +273,15 @@ export default function HomePage() {
           now,
           DASHBOARD_TIMEZONE,
         )
+        const { start: shiftStart, end: shiftEnd } = getShiftBoundsInTimeZone(
+          now,
+          selectedShift,
+          DASHBOARD_TIMEZONE,
+        )
+        const bucketLabels = buildHourBuckets(shiftStart, shiftEnd, DASHBOARD_TIMEZONE)
+        for (const label of bucketLabels) {
+          byBucket.set(label, { time: label })
+        }
 
         for (const e of events) {
           const payload = e.payload ?? {}
@@ -249,10 +307,13 @@ export default function HomePage() {
           const isToday = ts >= startOfTodayTz && ts < endOfTodayTz
           if (isToday) today += count
 
-          const minutes = Math.floor(ts.getMinutes() / 10) * 10
+          // La gráfica por turno debe mostrar SOLO el rango del turno seleccionado.
+          if (ts < shiftStart || ts >= shiftEnd) continue
+
           const bucket = new Date(ts)
-          bucket.setMinutes(minutes, 0, 0)
+          bucket.setMinutes(0, 0, 0)
           const label = formatHmInTimeZone(bucket, DASHBOARD_TIMEZONE) // HH:MM
+          if (!byBucket.has(label)) continue
 
           const rawOperators = payload["operators"]
           const fromOperatorsArray =
@@ -278,15 +339,14 @@ export default function HomePage() {
             if (k !== "time") allOperatorKeys.add(k)
           }
         }
-        const rows = [...byBucket.values()]
-          .sort((a, b) => String(a.time).localeCompare(String(b.time)))
-          .map((row) => {
-            const next: Record<string, string | number> = { ...row }
-            for (const k of allOperatorKeys) {
-              if (next[k] === undefined) next[k] = 0
-            }
-            return next
-          })
+        const rows = bucketLabels.map((label) => {
+          const row = byBucket.get(label) ?? { time: label }
+          const next: Record<string, string | number> = { ...row }
+          for (const k of allOperatorKeys) {
+            if (next[k] === undefined) next[k] = 0
+          }
+          return next
+        })
         setOperatorProductionData(rows)
         setTotalProduced(total)
         setProducedToday(today)
@@ -300,7 +360,7 @@ export default function HomePage() {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [getAccessToken])
+  }, [getAccessToken, selectedShift])
 
   const hasProductionData = operatorProductionData.length > 0
   const operatorKeys = useMemo(() => {
@@ -380,6 +440,15 @@ export default function HomePage() {
         <div className="rounded-xl border border-border bg-card p-6">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-lg font-semibold text-card-foreground">Producción por Operador</h2>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setSelectedShift((s) => (s === "shift1" ? "shift2" : "shift1"))}
+              >
+                {selectedShift === "shift1" ? "Turno 1 (06:00–17:00)" : "Turno 2 (15:00–00:30)"}
+              </Button>
+            </div>
           </div>
 
           {loading ? (
