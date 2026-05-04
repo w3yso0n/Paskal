@@ -6,7 +6,16 @@ import { OperatorCard, OperatorRow } from "@/components/operations/operator-card
 import { Trophy, Maximize2, Minimize2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/contexts/auth-context"
-import { getProductionEvents, type ApiProductionEvent } from "@/lib/api"
+import {
+  getActiveMachineCheckins,
+  getEmployees,
+  getMachines,
+  getProductionEvents,
+  type ApiEmployee,
+  type ApiMachine,
+  type ApiMachineCheckin,
+  type ApiProductionEvent,
+} from "@/lib/api"
 
 type UiOperator = {
   id: number
@@ -24,16 +33,18 @@ function initialsFromName(name: string): string {
   return ini || "?"
 }
 
+/** Alineado con ingesta PLC/ESP: PROD, PRODUCCION, etc. */
 function isProductionIncrementEvent(e: ApiProductionEvent): boolean {
   const payload = e.payload ?? {}
   const rawEvent =
     (payload["EVENT"] as string | undefined) ??
     (payload["event"] as string | undefined) ??
     e.eventType
-  const event = String(rawEvent ?? "").toLowerCase()
-  if (!event) return false
-  if (event.includes("produ")) return true
-  return event === "producción" || event === "produccion"
+  const v = String(rawEvent ?? "").trim().toLowerCase()
+  if (!v) return false
+  if (v === "prod") return true
+  if (v.includes("produ")) return true
+  return v === "producción" || v === "produccion"
 }
 
 function getEventCount(e: ApiProductionEvent): number {
@@ -46,10 +57,116 @@ function getEventCount(e: ApiProductionEvent): number {
   return Number.isFinite(n) ? n : 0
 }
 
+/** Mapa código NFC / employee_code → nombre para mostrar en UI (PLC manda códigos). */
+function buildEmployeeCodeToNameMap(employees: ApiEmployee[]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const emp of employees) {
+    const code = emp.employeeCode?.trim()
+    const name = emp.fullName?.trim()
+    if (code && name) map.set(code.toLowerCase(), name)
+  }
+  return map
+}
+
+function resolveOperatorDisplayName(
+  operatorKey: string,
+  codeToName: Map<string, string>,
+): string {
+  const raw = operatorKey.trim()
+  if (!raw || raw === "SIN_OPERADOR") return "Sin operador"
+  const byCode = codeToName.get(raw.toLowerCase())
+  if (byCode) return byCode
+  return raw
+}
+
+/** Código operador por máquina: prioriza check-in activo, luego configuración de máquina. */
+function buildMachineOperatorCodeIndex(
+  machines: ApiMachine[],
+  checkins: ApiMachineCheckin[],
+): {
+  operatorByMachineId: Map<string, string>
+  machineByCodeLower: Map<string, ApiMachine>
+} {
+  const machineByCodeLower = new Map<string, ApiMachine>()
+  for (const m of machines) {
+    const c = m.code?.trim()
+    if (c) machineByCodeLower.set(c.toLowerCase(), m)
+  }
+  const operatorByMachineId = new Map<string, string>()
+  for (const ch of checkins) {
+    const oc = ch.operatorCode?.trim()
+    if (oc) operatorByMachineId.set(ch.machineId, oc)
+  }
+  for (const m of machines) {
+    const oc = m.operatorCode?.trim()
+    if (oc && !operatorByMachineId.has(m.id)) operatorByMachineId.set(m.id, oc)
+  }
+  return { operatorByMachineId, machineByCodeLower }
+}
+
+type OperatorResolveSource = "payload" | "machineId" | "machineCode" | "sin"
+
+/** UUID de máquina en el evento (camelCase o snake_case según serialización). */
+function getEventMachineId(e: ApiProductionEvent): string | null {
+  if (e.machineId?.trim()) return e.machineId.trim()
+  const raw = e as unknown as Record<string, unknown>
+  const sn = raw["machine_id"]
+  if (typeof sn === "string" && sn.trim()) return sn.trim()
+  return null
+}
+
+/**
+ * PLC a veces no rellena OPERATOR en cada tick; usamos máquina (UUID o código M14) para inferir employee_code.
+ */
+function getOperatorCodeForProductionEvent(
+  e: ApiProductionEvent,
+  idx: ReturnType<typeof buildMachineOperatorCodeIndex>,
+): { code: string; source: OperatorResolveSource } {
+  const p = e.payload ?? {}
+  const fromPayload =
+    String((p["OPERATOR"] as string | undefined) ?? "").trim() ||
+    String((p["operator"] as string | undefined) ?? "").trim()
+  if (fromPayload) return { code: fromPayload, source: "payload" }
+
+  const mid = getEventMachineId(e)
+  if (mid) {
+    const oc = idx.operatorByMachineId.get(mid)
+    if (oc) return { code: oc, source: "machineId" }
+  }
+
+  const machineKey = String(
+    (p["MACHINE_ID"] as string | undefined) ?? (p["machine"] as string | undefined) ?? "",
+  )
+    .trim()
+    .toLowerCase()
+  if (machineKey) {
+    const m = idx.machineByCodeLower.get(machineKey)
+    if (m) {
+      const oc = idx.operatorByMachineId.get(m.id)
+      if (oc) return { code: oc, source: "machineCode" }
+    }
+  }
+
+  return { code: "SIN_OPERADOR", source: "sin" }
+}
+
+function isTableroDebugEnabled(): boolean {
+  if (typeof window === "undefined") return false
+  try {
+    return (
+      window.localStorage.getItem("TABLERO_DEBUG") === "1" ||
+      process.env.NEXT_PUBLIC_TABLERO_DEBUG === "1"
+    )
+  } catch {
+    return process.env.NEXT_PUBLIC_TABLERO_DEBUG === "1"
+  }
+}
+
 export default function OperationsBoardPage() {
-  const { user, getAccessToken } = useAuth()
+  const { getAccessToken } = useAuth()
   const [isFullscreen, setIsFullscreen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const sinOperadorHintLogged = useRef(false)
   const [operators, setOperators] = useState<UiOperator[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -72,19 +189,37 @@ export default function OperationsBoardPage() {
       setLoading(true)
       try {
         const token = await getAccessToken()
-        if (!token || !user?.orgId) {
+        if (!token) {
           if (!cancelled) setOperators([])
           return
         }
 
-        const events = await getProductionEvents(token, { orgId: user.orgId, limit: 2000 })
+        const [events, employees, machines, checkins] = await Promise.all([
+          getProductionEvents(token, { limit: 2000 }),
+          getEmployees(token),
+          getMachines(token),
+          getActiveMachineCheckins(token),
+        ])
         if (cancelled) return
 
+        const codeToName = buildEmployeeCodeToNameMap(employees)
+        const machineIdx = buildMachineOperatorCodeIndex(machines, checkins)
         const bonusGoal = 400
-        const byOperator = new Map<
+        const byOperatorCode = new Map<
           string,
           { units: number; machine: string; sku: string }
         >()
+
+        const debug = isTableroDebugEnabled()
+        const resolveStats = {
+          prodEventsWithUnits: 0,
+          fromPayload: 0,
+          fromMachineId: 0,
+          fromMachineCode: 0,
+          sinOperador: 0,
+          unitsSinOperador: 0,
+        }
+        let sampleSin: ApiProductionEvent | null = null
 
         for (const e of events) {
           if (!isProductionIncrementEvent(e)) continue
@@ -92,37 +227,108 @@ export default function OperationsBoardPage() {
           if (count <= 0) continue
 
           const payload = e.payload ?? {}
-          const op =
-            String((payload["OPERATOR"] as string | undefined) ?? "").trim() || "SIN_OPERADOR"
+          const { code: opCode, source } = getOperatorCodeForProductionEvent(e, machineIdx)
+          if (debug) {
+            resolveStats.prodEventsWithUnits += 1
+            if (source === "payload") resolveStats.fromPayload += 1
+            else if (source === "machineId") resolveStats.fromMachineId += 1
+            else if (source === "machineCode") resolveStats.fromMachineCode += 1
+            else {
+              resolveStats.sinOperador += 1
+              resolveStats.unitsSinOperador += count
+              if (!sampleSin) sampleSin = e
+            }
+          }
           const machine =
             String(
               (payload["MACHINE_ID"] as string | undefined) ??
                 (payload["machine"] as string | undefined) ??
-                e.machineId ??
+                getEventMachineId(e) ??
                 "—",
             ).trim() || "—"
           const sku =
             String((payload["SKU"] as string | undefined) ?? "").trim() || "—"
 
-          const current = byOperator.get(op) ?? { units: 0, machine, sku }
-          byOperator.set(op, {
+          const current = byOperatorCode.get(opCode) ?? { units: 0, machine, sku }
+          byOperatorCode.set(opCode, {
             units: current.units + count,
             machine: current.machine || machine,
             sku: current.sku !== "—" ? current.sku : sku,
           })
         }
 
-        const rows: UiOperator[] = [...byOperator.entries()]
-          .map(([name, v], idx) => ({
-            id: idx + 1,
-            initials: initialsFromName(name),
-            name,
-            machine: v.machine,
-            sku: v.sku,
-            units: v.units,
-            percentage: bonusGoal > 0 ? (v.units / bonusGoal) * 100 : 0,
-          }))
+        const rows: UiOperator[] = [...byOperatorCode.entries()]
+          .map(([opCode, v], idx) => {
+            const displayName = resolveOperatorDisplayName(opCode, codeToName)
+            return {
+              id: idx + 1,
+              initials: initialsFromName(displayName),
+              name: displayName,
+              machine: v.machine,
+              sku: v.sku,
+              units: v.units,
+              percentage: bonusGoal > 0 ? (v.units / bonusGoal) * 100 : 0,
+            }
+          })
           .sort((a, b) => b.units - a.units)
+
+        if (
+          !debug &&
+          !sinOperadorHintLogged.current &&
+          rows[0]?.name === "Sin operador"
+        ) {
+          sinOperadorHintLogged.current = true
+          console.info(
+            '[TableroOperativo] El #1 sale como "Sin operador". Para ver diagnóstico: localStorage.setItem("TABLERO_DEBUG","1") y recarga (F5).',
+          )
+        }
+
+        if (debug) {
+          const employeeCodesSample = employees
+            .filter((emp) => emp.employeeCode?.trim())
+            .slice(0, 12)
+            .map((emp) => ({ code: emp.employeeCode, name: emp.fullName }))
+          const machineOpSample = [...machineIdx.operatorByMachineId.entries()].slice(0, 8)
+          const topRow = rows[0]
+          const topEntry = [...byOperatorCode.entries()].sort((a, b) => b[1].units - a[1].units)[0]
+          console.info("[TableroOperativo] debug ciclo", {
+            counts: {
+              eventsTotal: events.length,
+              employees: employees.length,
+              machines: machines.length,
+              checkins: checkins.length,
+              resolveStats,
+            },
+            maps: {
+              employeeCodeToNameSize: codeToName.size,
+              operatorByMachineIdSize: machineIdx.operatorByMachineId.size,
+              machineByCodeKeys: [...machineIdx.machineByCodeLower.keys()].slice(0, 15),
+              machineOpSample,
+            },
+            rankingTop: topRow
+              ? {
+                  displayName: topRow.name,
+                  units: topRow.units,
+                  opCodeAgregado: topEntry?.[0] ?? null,
+                  tieneNombreEnMaestro:
+                    topEntry?.[0] != null ? codeToName.has(topEntry[0].toLowerCase()) : null,
+                }
+              : null,
+            employeeCodesSample,
+            sinOperadorSampleEvent: sampleSin
+              ? {
+                  id: sampleSin.id,
+                  machineId: sampleSin.machineId,
+                  machineIdResuelto: getEventMachineId(sampleSin),
+                  eventTopLevelKeys: Object.keys(sampleSin as unknown as Record<string, unknown>),
+                  eventType: sampleSin.eventType,
+                  payloadKeys: Object.keys(sampleSin.payload ?? {}),
+                  payloadSnippet: sampleSin.payload,
+                }
+              : null,
+            hint: "Desactiva con localStorage.removeItem('TABLERO_DEBUG')",
+          })
+        }
 
         setOperators(rows)
       } finally {
@@ -135,7 +341,7 @@ export default function OperationsBoardPage() {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [getAccessToken, user?.orgId])
+  }, [getAccessToken])
 
   const sortedOperators = useMemo(
     () => [...operators].sort((a, b) => b.units - a.units),

@@ -84,8 +84,16 @@ import {
   Cell,
 } from "recharts"
 import { cn } from "@/lib/utils"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import type { AttendanceRecord } from "@/lib/types"
 import { useAuth } from "@/contexts/auth-context"
-import { getEmployees, getProductionEvents, type ApiEmployee, type ApiProductionEvent } from "@/lib/api"
+import {
+  getEmployees,
+  getMachines,
+  getProductionEvents,
+  type ApiEmployee,
+  type ApiProductionEvent,
+} from "@/lib/api"
 
 type ProductionEventType =
   | "Producción"
@@ -109,8 +117,43 @@ interface ProductionBaseRow {
 
 const clampPercent = (value: number) => Math.max(0, Math.min(100, value))
 
+function buildEmployeeCodeToNameMap(employees: ApiEmployee[]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const emp of employees) {
+    const code = emp.employeeCode?.trim()
+    if (!code) continue
+    map.set(code, emp.fullName)
+    map.set(code.toLowerCase(), emp.fullName)
+  }
+  return map
+}
+
+/** PLC ingest persiste claves en minúsculas; el seed/demo usa mayúsculas estilo ESP. */
+function payloadString(payload: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = payload[k]
+    if (v == null) continue
+    const s = String(v).trim()
+    if (s) return s
+  }
+  return undefined
+}
+
+function nthStringFromArray(
+  payload: Record<string, unknown>,
+  key: string,
+  index: number,
+): string | undefined {
+  const raw = payload[key]
+  if (!Array.isArray(raw) || raw.length <= index) return undefined
+  const el = raw[index]
+  if (typeof el !== "string") return undefined
+  const s = el.trim()
+  return s || undefined
+}
+
 export default function MetricsPage() {
-  const { user, getAccessToken } = useAuth()
+  const { getAccessToken } = useAuth()
   const [activeTab, setActiveTab] = useState("produccion")
   const [filterStartDate, setFilterStartDate] = useState(() => {
     const d = new Date()
@@ -161,65 +204,126 @@ export default function MetricsPage() {
 
   const [productionBaseRows, setProductionBaseRows] = useState<ProductionBaseRow[]>([])
   const [employeeRows, setEmployeeRows] = useState<ApiEmployee[]>([])
-  const attendanceRecords = useMemo(() => [], [])
-  const attendanceStats = useMemo(() => [], [])
+  const [dataLoading, setDataLoading] = useState(true)
+  const [dataError, setDataError] = useState<string | null>(null)
+  const [reloadNonce, setReloadNonce] = useState(0)
+  /** Reservado para API de asistencia. */
+  const attendanceRecords = useMemo<AttendanceRecord[]>(() => [], [])
+  const attendanceStats = useMemo(() => [] as unknown[], [])
 
   useEffect(() => {
     let cancelled = false
     const load = async () => {
       const token = await getAccessToken()
-      if (!token || !user?.orgId) {
+      if (!token) {
         if (!cancelled) {
           setProductionBaseRows([])
           setEmployeeRows([])
+          setDataLoading(false)
+          setDataError(null)
         }
         return
       }
 
-      const [events, employees] = await Promise.all([
-        getProductionEvents(token, { orgId: user.orgId, limit: 5000 }),
-        getEmployees(token),
-      ])
-      if (cancelled) return
+      if (!cancelled) {
+        setDataLoading(true)
+        setDataError(null)
+      }
 
-      setEmployeeRows(employees.filter((e) => e.orgId === user.orgId))
+      try {
+        const fromIso = new Date(`${filterStartDate}T00:00:00`).toISOString()
+        const toIso = new Date(`${filterEndDate}T23:59:59.999`).toISOString()
 
-      const mapped: ProductionBaseRow[] = events.map((e: ApiProductionEvent) => {
-        const payload = e.payload ?? {}
-        const eventRaw = String((payload["EVENT"] as string | undefined) ?? e.eventType ?? "")
-        const event =
-          eventRaw === "Cambio SKU" || eventRaw === "Parada" || eventRaw === "Producción"
-            ? (eventRaw as ProductionEventType)
-            : eventRaw.toLowerCase().includes("cambio")
-              ? "Cambio SKU"
-              : eventRaw.toLowerCase().includes("paro")
-                ? "Parada"
-                : "Producción"
+        const [events, employees, apiMachines] = await Promise.all([
+          getProductionEvents(token, { from: fromIso, to: toIso, limit: 20_000 }),
+          getEmployees(token),
+          getMachines(token),
+        ])
+        if (cancelled) return
 
-        const countRaw =
-          (payload["COUNT"] as unknown) ??
-          (payload["count"] as unknown) ??
-          (payload["units"] as unknown)
-        const count = typeof countRaw === "number" ? countRaw : Number(countRaw)
+        setEmployeeRows(employees)
 
-        const ts =
-          String((payload["TIMESTAMP"] as string | undefined) ?? e.occurredAt ?? new Date().toISOString())
-
-        return {
-          machine_id: String((payload["MACHINE_ID"] as string | undefined) ?? e.machineId ?? "—"),
-          timestamp: ts,
-          operator: String((payload["OPERATOR"] as string | undefined) ?? "—"),
-          packer_1: String((payload["PACKAGER_1"] as string | undefined) ?? "—"),
-          packer_2: String((payload["PACKAGER_2"] as string | undefined) ?? "—"),
-          parameter_1: Number((payload["PARAMETER_1"] as unknown) ?? 0) || 0,
-          parameter_2: Number((payload["PARAMETER_2"] as unknown) ?? 0) || 0,
-          count: Number.isFinite(count) ? count : 0,
-          event,
-          sku: String((payload["SKU"] as string | undefined) ?? "—"),
+        const machineLabelById = new Map<string, string>()
+        for (const m of apiMachines) {
+          const label = (m.code ?? m.name).trim() || m.name
+          machineLabelById.set(m.id, label)
         }
-      })
 
-      setProductionBaseRows(mapped)
+        const codeToName = buildEmployeeCodeToNameMap(employees)
+        const resolvePerson = (raw: string | undefined) => {
+          const code = String(raw ?? "").trim()
+          if (!code || code === "—") return "—"
+          return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
+        }
+
+        const mapped: ProductionBaseRow[] = events.map((e: ApiProductionEvent) => {
+          const payload = e.payload ?? {}
+          const eventRaw = String(
+            payloadString(payload, "EVENT", "event") ?? e.eventType ?? "",
+          )
+          const lower = eventRaw.toLowerCase()
+          const event: ProductionEventType =
+            eventRaw === "Cambio SKU" || eventRaw === "Parada" || eventRaw === "Producción"
+              ? (eventRaw as ProductionEventType)
+              : lower.includes("cambio") || lower.includes("sku")
+                ? "Cambio SKU"
+                : lower.includes("paro") || lower.includes("down")
+                  ? "Parada"
+                  : lower === "prod" || lower.includes("produ")
+                    ? "Producción"
+                    : "Producción"
+
+          const countRaw =
+            (payload["COUNT"] as unknown) ??
+            (payload["count"] as unknown) ??
+            (payload["units"] as unknown)
+          const count = typeof countRaw === "number" ? countRaw : Number(countRaw)
+
+          const ts =
+            String(
+              payloadString(payload, "TIMESTAMP", "timestamp") ??
+                e.occurredAt ??
+                new Date().toISOString(),
+            )
+
+          const mid = e.machineId?.trim()
+          const fromPayload = payloadString(payload, "MACHINE_ID", "machine_id") ?? ""
+          const machine_id =
+            (mid && machineLabelById.get(mid)) || fromPayload || mid || "—"
+
+          const operatorCode =
+            payloadString(payload, "OPERATOR", "operator") ??
+            nthStringFromArray(payload, "operators", 0)
+
+          return {
+            machine_id,
+            timestamp: ts,
+            operator: resolvePerson(operatorCode),
+            packer_1: resolvePerson(
+              payloadString(payload, "PACKAGER_1", "packager_1") ??
+                nthStringFromArray(payload, "packagers", 0),
+            ),
+            packer_2: resolvePerson(
+              payloadString(payload, "PACKAGER_2", "packager_2") ??
+                nthStringFromArray(payload, "packagers", 1),
+            ),
+            parameter_1: Number((payload["PARAMETER_1"] as unknown) ?? 0) || 0,
+            parameter_2: Number((payload["PARAMETER_2"] as unknown) ?? 0) || 0,
+            count: Number.isFinite(count) ? count : 0,
+            event,
+            sku: String(payloadString(payload, "SKU", "sku") ?? "—"),
+          }
+        })
+
+        setProductionBaseRows(mapped)
+      } catch (err) {
+        if (!cancelled) {
+          setProductionBaseRows([])
+          setDataError(err instanceof Error ? err.message : "No se pudieron cargar los datos")
+        }
+      } finally {
+        if (!cancelled) setDataLoading(false)
+      }
     }
 
     load()
@@ -228,7 +332,7 @@ export default function MetricsPage() {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [getAccessToken, user?.orgId])
+  }, [getAccessToken, filterStartDate, filterEndDate, reloadNonce])
 
   const [isReportDialogOpen, setIsReportDialogOpen] = useState(false)
   const [reportStartDate, setReportStartDate] = useState(() => {
@@ -493,17 +597,24 @@ export default function MetricsPage() {
       if (r.event === "Producción") {
         skuAgg.set(r.sku, (skuAgg.get(r.sku) ?? 0) + r.count)
 
-        // Atribución simple: dividir unidades del lote entre ambos empacadores
-        const half = r.count / 2
-        const p1 = packerAgg.get(r.packer_1) ?? { units: 0, jobs: 0 }
-        p1.units += half
-        p1.jobs += 1
-        packerAgg.set(r.packer_1, p1)
-
-        const p2 = packerAgg.get(r.packer_2) ?? { units: 0, jobs: 0 }
-        p2.units += half
-        p2.jobs += 1
-        packerAgg.set(r.packer_2, p2)
+        const p1Valid = r.packer_1 && r.packer_1 !== "—"
+        const p2Valid = r.packer_2 && r.packer_2 !== "—"
+        const nPack = (p1Valid ? 1 : 0) + (p2Valid ? 1 : 0)
+        if (nPack > 0) {
+          const share = r.count / nPack
+          if (p1Valid) {
+            const p1 = packerAgg.get(r.packer_1) ?? { units: 0, jobs: 0 }
+            p1.units += share
+            p1.jobs += 1
+            packerAgg.set(r.packer_1, p1)
+          }
+          if (p2Valid) {
+            const p2 = packerAgg.get(r.packer_2) ?? { units: 0, jobs: 0 }
+            p2.units += share
+            p2.jobs += 1
+            packerAgg.set(r.packer_2, p2)
+          }
+        }
       }
     }
 
@@ -658,14 +769,33 @@ export default function MetricsPage() {
   }, [analytics.eventBreakdown])
 
   const topMachinesData = useMemo(() => {
+    const start = new Date(filterStartDate)
+    start.setHours(0, 0, 0, 0)
+    const end = new Date(filterEndDate)
+    end.setHours(23, 59, 59, 999)
+    const daysInRange = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000))
+    const hoursApprox = Math.max(1, daysInRange * 16)
+
+    const operatorByMachine = new Map<string, string>()
+    for (const r of productionBaseRows) {
+      if (r.event !== "Producción") continue
+      const op = r.operator?.trim()
+      if (op && op !== "—") operatorByMachine.set(r.machine_id, op)
+    }
+
     return analytics.machineScatter.slice(0, 10).map((m) => {
       const produced = Number(m.produced) || 0
-      const avgPerHour = Math.round(produced / (14 * 16)) // aprox 2 turnos (16h) en 14 días
+      const avgPerHour = Math.round(produced / hoursApprox)
       const downtimeEvents = Number(m.downtimeEvents) || 0
       const uptime = Math.max(0, Math.min(100, Math.round(100 - downtimeEvents * 2)))
-      return { machine: m.machine, operator: "—", avgPerHour, uptime }
+      return {
+        machine: m.machine,
+        operator: operatorByMachine.get(m.machine) ?? "—",
+        avgPerHour,
+        uptime,
+      }
     })
-  }, [analytics.machineScatter])
+  }, [analytics.machineScatter, productionBaseRows, filterStartDate, filterEndDate])
 
   const topSkusData = useMemo(() => {
     const total = analytics.produced14d > 0 ? analytics.produced14d : 1
@@ -775,6 +905,14 @@ export default function MetricsPage() {
           <p className="text-muted-foreground">
             Monitoreo integral de producción, operadores, asistencia y rotación de personal
           </p>
+          {dataError ? (
+            <Alert variant="destructive" className="mt-4">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription>{dataError}</AlertDescription>
+            </Alert>
+          ) : dataLoading ? (
+            <p className="mt-3 text-sm text-muted-foreground">Cargando eventos de producción y empleados…</p>
+          ) : null}
         </div>
 
         {/* Date Range Filter */}
@@ -804,19 +942,15 @@ export default function MetricsPage() {
                 )}
               />
             </div>
-            <Button 
-              onClick={() => {
-                // Filtro aplicado automáticamente al cambiar las fechas
-                setActiveTab(activeTab) // Trigger re-render
-              }}
-              className="gap-2"
-            >
-              <Clock className="h-4 w-4" />
-              Aplicar
+            <Button type="button" variant="secondary" className="gap-2" onClick={() => setReloadNonce((n) => n + 1)}>
+              <RefreshCw className="h-4 w-4" />
+              Actualizar
             </Button>
           </div>
           <p className="text-xs text-muted-foreground mt-3">
-            Rango seleccionado: <span className="font-medium">{filterStartDate}</span> a <span className="font-medium">{filterEndDate}</span>
+            Rango seleccionado: <span className="font-medium">{filterStartDate}</span> a{" "}
+            <span className="font-medium">{filterEndDate}</span>. Los datos se vuelven a cargar al cambiar las fechas
+            (y cada 30 s mientras la página está abierta).
           </p>
         </div>
 
