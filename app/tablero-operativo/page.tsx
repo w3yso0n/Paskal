@@ -421,6 +421,7 @@ export default function OperationsBoardPage() {
         const rows: UiOperator[] = [...byOperatorCode.entries()]
           .map(([opCode, v], idx) => {
             const displayName = resolveOperatorDisplayName(opCode, codeToName)
+            const rawPct = bonusGoal > 0 ? (v.units / bonusGoal) * 100 : 0
             return {
               id: idx + 1,
               initials: initialsFromName(displayName),
@@ -428,7 +429,7 @@ export default function OperationsBoardPage() {
               machine: v.machine,
               sku: v.sku,
               units: v.units,
-              percentage: bonusGoal > 0 ? (v.units / bonusGoal) * 100 : 0,
+              percentage: Math.max(0, Math.min(100, rawPct)),
             }
           })
           .sort((a, b) => b.units - a.units)
