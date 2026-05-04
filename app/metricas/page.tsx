@@ -90,8 +90,10 @@ import { useAuth } from "@/contexts/auth-context"
 import {
   getEmployees,
   getMachines,
+  getMachineCheckins,
   getProductionEvents,
   type ApiEmployee,
+  type ApiMachineCheckin,
   type ApiProductionEvent,
 } from "@/lib/api"
 
@@ -104,10 +106,14 @@ type ShiftType = "matutino" | "vespertino"
 
 interface ProductionBaseRow {
   machine_id: string
+  /** UUID de máquina en API (para enriquecer empacadores desde check-in). */
+  machineIdRaw: string | null
   timestamp: string // ISO
   operator: string
   packer_1: string
   packer_2: string
+  /** Nombres únicos de empacadores atribuidos al evento (payload + fallback check-in). */
+  packersAttributed: string[]
   parameter_1: number
   parameter_2: number
   count: number
@@ -152,12 +158,209 @@ function nthStringFromArray(
   return s || undefined
 }
 
+function dedupeTrimmedPreserveOrder(values: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const v of values) {
+    const t = v.trim()
+    if (!t) continue
+    const k = t.toLowerCase()
+    if (seen.has(k)) continue
+    seen.add(k)
+    out.push(t)
+  }
+  return out
+}
+
+/** Códigos empacador en payload (PLC/seed o ingesta normalizada con `packagers[]`). */
+function collectPackerCodesFromPayload(payload: Record<string, unknown>): string[] {
+  const fromExplicit = [
+    payloadString(payload, "PACKAGER_1", "packager_1", "PACKAGER1", "packager1"),
+    payloadString(payload, "PACKAGER_2", "packager_2", "PACKAGER2", "packager2"),
+    payloadString(payload, "PACKAGER_3", "packager_3", "PACKAGER3", "packager3"),
+    payloadString(payload, "PACKAGER_4", "packager_4", "PACKAGER4", "packager4"),
+  ].filter((x): x is string => Boolean(x?.trim()))
+  if (fromExplicit.length > 0) return dedupeTrimmedPreserveOrder(fromExplicit)
+
+  const raw = payload["packagers"]
+  if (!Array.isArray(raw)) return []
+  const fromArr: string[] = []
+  for (const el of raw) {
+    const s = typeof el === "string" ? el.trim() : String(el ?? "").trim()
+    if (s && s.toLowerCase() !== "null" && s !== "undefined") fromArr.push(s)
+  }
+  return dedupeTrimmedPreserveOrder(fromArr)
+}
+
+function packerDisplayNamesFromCheckin(
+  machineId: string | null | undefined,
+  occurredAtMs: number,
+  checkins: ApiMachineCheckin[],
+  resolvePerson: (raw: string | undefined) => string,
+): string[] {
+  const id = machineId?.trim()
+  if (!id) return []
+
+  const inWindow = (ch: ApiMachineCheckin) => {
+    const start = new Date(ch.checkedInAt).getTime()
+    const end = ch.checkedOutAt ? new Date(ch.checkedOutAt).getTime() : Number.POSITIVE_INFINITY
+    return occurredAtMs >= start && occurredAtMs <= end
+  }
+
+  const byMachine = checkins
+    .filter((ch) => ch.machineId === id)
+    .sort((a, b) => new Date(b.checkedInAt).getTime() - new Date(a.checkedInAt).getTime())
+
+  const ch = byMachine.find(inWindow) ?? byMachine.find((c) => c.isActive) ?? null
+  if (!ch) return []
+
+  const raw = [ch.packager1Code, ch.packager2Code, ch.packager3Code, ch.packager4Code]
+  const names = raw
+    .map((x) => resolvePerson(x == null ? undefined : x))
+    .filter((p): p is string => Boolean(p && p !== "—"))
+  return dedupeTrimmedPreserveOrder(names)
+}
+
 /** Mensaje típico del backend: `SKU: SKU-001, count: 12`. */
 function skuFromMessage(message: string | null | undefined): string | undefined {
   if (!message?.trim()) return undefined
   const m = message.match(/SKU\s*:\s*([^,]+)/i)
   const raw = m?.[1]?.trim()
   return raw || undefined
+}
+
+/** Asistencia proxy: una fila por persona asignada en el check-in NFC (entrada/salida de máquina). */
+function machineCheckinsToAttendanceRecords(
+  checkins: ApiMachineCheckin[],
+  employees: ApiEmployee[],
+): AttendanceRecord[] {
+  const codeToName = buildEmployeeCodeToNameMap(employees)
+  const resolveName = (code: string) =>
+    codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
+  const employeeIdByCode = new Map<string, string>()
+  for (const e of employees) {
+    const c = e.employeeCode?.trim()
+    if (!c) continue
+    employeeIdByCode.set(c, e.id)
+    employeeIdByCode.set(c.toLowerCase(), e.id)
+  }
+  const timeFmt = new Intl.DateTimeFormat("es-MX", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+
+  const out: AttendanceRecord[] = []
+  for (const c of checkins) {
+    const checkedIn = new Date(c.checkedInAt)
+    const checkedOut = c.checkedOutAt ? new Date(c.checkedOutAt) : null
+    const dayDate = new Date(checkedIn.getFullYear(), checkedIn.getMonth(), checkedIn.getDate())
+
+    const slots: { code: string; role: string }[] = []
+    const op1 = c.operatorCode?.trim()
+    if (op1) slots.push({ code: op1, role: "Operador" })
+    if (c.operator2Code?.trim()) slots.push({ code: c.operator2Code.trim(), role: "Operador 2" })
+    const pk = [c.packager1Code, c.packager2Code, c.packager3Code, c.packager4Code]
+    pk.forEach((code, idx) => {
+      const t = code?.trim()
+      if (t) slots.push({ code: t, role: `Empacador ${idx + 1}` })
+    })
+
+    for (const slot of slots) {
+      const empId =
+        employeeIdByCode.get(slot.code) ??
+        employeeIdByCode.get(slot.code.toLowerCase()) ??
+        `chk-${c.id}-${slot.code}`
+      let hoursWorked: number | undefined
+      if (checkedOut) {
+        const ms = checkedOut.getTime() - checkedIn.getTime()
+        if (ms > 0) hoursWorked = Math.round((ms / 3_600_000) * 10) / 10
+      }
+      const activeNote = c.isActive && !c.checkedOutAt ? " · check-in activo" : ""
+      out.push({
+        id: `${c.id}-${slot.role}-${slot.code}`,
+        employeeId: empId,
+        employeeName: resolveName(slot.code),
+        date: dayDate,
+        checkInTime: timeFmt.format(checkedIn),
+        checkOutTime: checkedOut ? timeFmt.format(checkedOut) : undefined,
+        status: "Asistente",
+        hoursWorked,
+        notes: `${c.machineCode} · ${slot.role}${activeNote}`,
+      })
+    }
+  }
+  return out.sort((a, b) => {
+    const d = b.date.getTime() - a.date.getTime()
+    if (d !== 0) return d
+    return (b.checkInTime || "").localeCompare(a.checkInTime || "")
+  })
+}
+
+type PersonnelMovementItem = {
+  id: string
+  kind: "ingreso" | "salida"
+  employeeName: string
+  subtitle: string
+  at: number
+}
+
+/** Movimientos para pestaña Rotación: ingreso/salida por persona según check-in en máquina. */
+function buildPersonnelMovementsFromCheckins(
+  checkins: ApiMachineCheckin[],
+  employees: ApiEmployee[],
+): PersonnelMovementItem[] {
+  const codeToName = buildEmployeeCodeToNameMap(employees)
+  const posByCode = new Map<string, string>()
+  for (const e of employees) {
+    const c = e.employeeCode?.trim()
+    if (!c) continue
+    const p = (e.position ?? "").trim() || "Colaborador"
+    posByCode.set(c, p)
+    posByCode.set(c.toLowerCase(), p)
+  }
+  const resolve = (code: string) =>
+    codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
+  const roleLine = (code: string) =>
+    posByCode.get(code) ?? posByCode.get(code.toLowerCase()) ?? "Colaborador"
+  const fmtShort = (d: Date) =>
+    d.toLocaleDateString("es-MX", { year: "numeric", month: "short", day: "2-digit" })
+
+  const out: PersonnelMovementItem[] = []
+  for (const c of checkins) {
+    const people: { code: string }[] = []
+    const op1 = c.operatorCode?.trim()
+    if (op1) people.push({ code: op1 })
+    if (c.operator2Code?.trim()) people.push({ code: c.operator2Code.trim() })
+    const pks = [c.packager1Code, c.packager2Code, c.packager3Code, c.packager4Code]
+    pks.forEach((pk) => {
+      const t = pk?.trim()
+      if (t) people.push({ code: t })
+    })
+    const checkedIn = new Date(c.checkedInAt)
+    const checkedOut = c.checkedOutAt ? new Date(c.checkedOutAt) : null
+    for (const p of people) {
+      const name = resolve(p.code)
+      const role = roleLine(p.code)
+      out.push({
+        id: `${c.id}-in-${p.code}`,
+        kind: "ingreso",
+        employeeName: name,
+        subtitle: `Ingreso • ${fmtShort(checkedIn)} • ${role} · ${c.machineCode}`,
+        at: checkedIn.getTime(),
+      })
+      if (checkedOut) {
+        out.push({
+          id: `${c.id}-out-${p.code}`,
+          kind: "salida",
+          employeeName: name,
+          subtitle: `Salida • ${fmtShort(checkedOut)} · ${c.machineCode} (fin asignación)`,
+          at: checkedOut.getTime(),
+        })
+      }
+    }
+  }
+  return out.sort((a, b) => b.at - a.at)
 }
 
 export default function MetricsPage() {
@@ -215,8 +418,7 @@ export default function MetricsPage() {
   const [dataLoading, setDataLoading] = useState(true)
   const [dataError, setDataError] = useState<string | null>(null)
   const [reloadNonce, setReloadNonce] = useState(0)
-  /** Reservado para API de asistencia. */
-  const attendanceRecords = useMemo<AttendanceRecord[]>(() => [], [])
+  const [machineCheckinsLoaded, setMachineCheckinsLoaded] = useState<ApiMachineCheckin[]>([])
   const attendanceStats = useMemo(() => [] as unknown[], [])
 
   useEffect(() => {
@@ -227,6 +429,7 @@ export default function MetricsPage() {
         if (!cancelled) {
           setProductionBaseRows([])
           setEmployeeRows([])
+          setMachineCheckinsLoaded([])
           setDataLoading(false)
           setDataError(null)
         }
@@ -242,14 +445,16 @@ export default function MetricsPage() {
         const fromIso = new Date(`${filterStartDate}T00:00:00`).toISOString()
         const toIso = new Date(`${filterEndDate}T23:59:59.999`).toISOString()
 
-        const [events, employees, apiMachines] = await Promise.all([
+        const [events, employees, apiMachines, checkins] = await Promise.all([
           getProductionEvents(token, { from: fromIso, to: toIso, limit: 20_000 }),
           getEmployees(token),
           getMachines(token),
+          getMachineCheckins(token, { from: fromIso, to: toIso, limit: 8000 }),
         ])
         if (cancelled) return
 
         setEmployeeRows(employees)
+        setMachineCheckinsLoaded(checkins)
 
         const machineLabelById = new Map<string, string>()
         const machineSkuById = new Map<string, string>()
@@ -319,18 +524,29 @@ export default function MetricsPage() {
             (mid ? machineSkuById.get(mid) : undefined) ??
             skuFromMessage(e.message)
 
+          const rawPackerCodes = collectPackerCodesFromPayload(payload)
+          let packersAttributed = dedupeTrimmedPreserveOrder(
+            rawPackerCodes.map((c) => resolvePerson(c)).filter((p) => p && p !== "—"),
+          )
+          if (packersAttributed.length === 0 && e.machineId?.trim()) {
+            packersAttributed = packerDisplayNamesFromCheckin(
+              e.machineId,
+              new Date(ts).getTime(),
+              checkins,
+              resolvePerson,
+            )
+          }
+          const packer_1 = packersAttributed[0] ?? "—"
+          const packer_2 = packersAttributed[1] ?? "—"
+
           return {
             machine_id,
+            machineIdRaw: e.machineId?.trim() ?? null,
             timestamp: ts,
             operator: resolvePerson(operatorCode),
-            packer_1: resolvePerson(
-              payloadString(payload, "PACKAGER_1", "packager_1") ??
-                nthStringFromArray(payload, "packagers", 0),
-            ),
-            packer_2: resolvePerson(
-              payloadString(payload, "PACKAGER_2", "packager_2") ??
-                nthStringFromArray(payload, "packagers", 1),
-            ),
+            packer_1,
+            packer_2,
+            packersAttributed,
             parameter_1: Number((payload["PARAMETER_1"] as unknown) ?? 0) || 0,
             parameter_2: Number((payload["PARAMETER_2"] as unknown) ?? 0) || 0,
             count: Number.isFinite(count) ? count : 0,
@@ -343,6 +559,7 @@ export default function MetricsPage() {
       } catch (err) {
         if (!cancelled) {
           setProductionBaseRows([])
+          setMachineCheckinsLoaded([])
           setDataError(err instanceof Error ? err.message : "No se pudieron cargar los datos")
         }
       } finally {
@@ -621,22 +838,18 @@ export default function MetricsPage() {
       if (r.event === "Producción") {
         skuAgg.set(r.sku, (skuAgg.get(r.sku) ?? 0) + r.count)
 
-        const p1Valid = r.packer_1 && r.packer_1 !== "—"
-        const p2Valid = r.packer_2 && r.packer_2 !== "—"
-        const nPack = (p1Valid ? 1 : 0) + (p2Valid ? 1 : 0)
+        const packersList =
+          r.packersAttributed?.filter((p) => p && p !== "—").length > 0
+            ? r.packersAttributed.filter((p) => p && p !== "—")
+            : [r.packer_1, r.packer_2].filter((p) => p && p !== "—")
+        const nPack = packersList.length
         if (nPack > 0) {
           const share = r.count / nPack
-          if (p1Valid) {
-            const p1 = packerAgg.get(r.packer_1) ?? { units: 0, jobs: 0 }
-            p1.units += share
-            p1.jobs += 1
-            packerAgg.set(r.packer_1, p1)
-          }
-          if (p2Valid) {
-            const p2 = packerAgg.get(r.packer_2) ?? { units: 0, jobs: 0 }
-            p2.units += share
-            p2.jobs += 1
-            packerAgg.set(r.packer_2, p2)
+          for (const name of packersList) {
+            const ag = packerAgg.get(name) ?? { units: 0, jobs: 0 }
+            ag.units += share
+            ag.jobs += 1
+            packerAgg.set(name, ag)
           }
         }
       }
@@ -798,24 +1011,42 @@ export default function MetricsPage() {
     const end = new Date(filterEndDate)
     end.setHours(23, 59, 59, 999)
     const daysInRange = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000))
-    const hoursApprox = Math.max(1, daysInRange * 16)
 
-    const operatorByMachine = new Map<string, string>()
+    /** Operador con más unidades atribuidas en el rango (evita mostrar solo el último evento del bucle). */
+    const operatorUnitsByMachine = new Map<string, Map<string, number>>()
     for (const r of productionBaseRows) {
       if (r.event !== "Producción") continue
       const op = r.operator?.trim()
-      if (op && op !== "—") operatorByMachine.set(r.machine_id, op)
+      if (!op || op === "—") continue
+      const mid = r.machine_id
+      const inner = operatorUnitsByMachine.get(mid) ?? new Map<string, number>()
+      inner.set(op, (inner.get(op) ?? 0) + (Number(r.count) || 0))
+      operatorUnitsByMachine.set(mid, inner)
+    }
+
+    const dominantOperator = (machineLabel: string): string => {
+      const sub = operatorUnitsByMachine.get(machineLabel)
+      if (!sub || sub.size === 0) return "—"
+      let bestName = "—"
+      let bestUnits = -1
+      for (const [name, units] of sub.entries()) {
+        if (units > bestUnits) {
+          bestUnits = units
+          bestName = name
+        }
+      }
+      return bestName
     }
 
     return analytics.machineScatter.slice(0, 10).map((m) => {
       const produced = Number(m.produced) || 0
-      const avgPerHour = Math.round(produced / hoursApprox)
+      const unitsPerDay = Math.round(produced / daysInRange)
       const downtimeEvents = Number(m.downtimeEvents) || 0
       const uptime = Math.max(0, Math.min(100, Math.round(100 - downtimeEvents * 2)))
       return {
         machine: m.machine,
-        operator: operatorByMachine.get(m.machine) ?? "—",
-        avgPerHour,
+        operator: dominantOperator(m.machine),
+        unitsPerDay,
         uptime,
       }
     })
@@ -830,19 +1061,55 @@ export default function MetricsPage() {
     }))
   }, [analytics.produced14d, analytics.topSkus])
 
-  // Filter attendance records by date range
+  const attendanceFromCheckins = useMemo(
+    () => machineCheckinsToAttendanceRecords(machineCheckinsLoaded, employeeRows),
+    [machineCheckinsLoaded, employeeRows],
+  )
+
+  // Filtro por calendario (los check-ins ya vienen acotados por API, esto alinea con Desde/Hasta).
   const filteredAttendanceRecords = useMemo(() => {
     const startDate = new Date(filterStartDate)
     startDate.setHours(0, 0, 0, 0)
     const endDate = new Date(filterEndDate)
     endDate.setHours(23, 59, 59, 999)
 
-    return attendanceRecords.filter((record) => {
+    return attendanceFromCheckins.filter((record) => {
       const recordDate = new Date(record.date)
       recordDate.setHours(0, 0, 0, 0)
       return recordDate >= startDate && recordDate <= endDate
     })
-  }, [filterStartDate, filterEndDate])
+  }, [filterStartDate, filterEndDate, attendanceFromCheckins])
+
+  const personnelMovements = useMemo(
+    () => buildPersonnelMovementsFromCheckins(machineCheckinsLoaded, employeeRows).slice(0, 40),
+    [machineCheckinsLoaded, employeeRows],
+  )
+
+  const personnelMonthSummary = useMemo(() => {
+    const now = new Date()
+    const inCurrentMonth = (ts: number) => {
+      const d = new Date(ts)
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()
+    }
+    const all = buildPersonnelMovementsFromCheckins(machineCheckinsLoaded, employeeRows)
+    let ingresos = 0
+    let salidas = 0
+    for (const m of all) {
+      if (!inCurrentMonth(m.at)) continue
+      if (m.kind === "ingreso") ingresos++
+      else salidas++
+    }
+    const net = ingresos - salidas
+    const max = Math.max(ingresos, salidas, 1)
+    return {
+      ingresos,
+      salidas,
+      net,
+      ingPct: Math.round((ingresos / max) * 100),
+      salPct: Math.round((salidas / max) * 100),
+      monthLabel: now.toLocaleDateString("es-MX", { month: "long", year: "numeric" }),
+    }
+  }, [machineCheckinsLoaded, employeeRows])
 
   const handleGenerateProductionReport = async () => {
     const blob = await buildProductionReportWorkbook({
@@ -1168,13 +1435,17 @@ export default function MetricsPage() {
               {/* Machines */}
               <div className="rounded-xl border border-border bg-card p-6">
                 <h3 className="font-semibold text-foreground mb-4">Top Máquinas</h3>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  Uds/día = unidades producidas en el rango de fechas ÷ días del rango. Operador = quien acumula más
+                  unidades en PROD para esa máquina en el mismo periodo.
+                </p>
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[560px]">
                     <thead>
                       <tr className="border-b border-border text-left text-sm text-muted-foreground">
                         <th className="pb-3 font-medium">Máquina</th>
                         <th className="pb-3 font-medium">Operador</th>
-                        <th className="pb-3 font-medium text-right">Prom/Hr</th>
+                        <th className="pb-3 font-medium text-right">Uds/día</th>
                         <th className="pb-3 font-medium text-right">Uptime</th>
                       </tr>
                     </thead>
@@ -1183,7 +1454,7 @@ export default function MetricsPage() {
                         <tr key={machine.machine} className="border-b border-border last:border-0">
                           <td className="py-3 font-medium text-primary">{machine.machine}</td>
                           <td className="py-3 text-foreground">{machine.operator}</td>
-                          <td className="py-3 text-right font-medium">{machine.avgPerHour}</td>
+                          <td className="py-3 text-right font-medium">{machine.unitsPerDay}</td>
                           <td className="py-3 text-right">
                             <span
                               className={cn(
@@ -1484,17 +1755,52 @@ export default function MetricsPage() {
               {/* Distribución de Empacadores */}
               <div className="rounded-xl border border-border bg-card p-6">
                 <h3 className="font-semibold text-foreground mb-4">Distribución de Empacadores</h3>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Unidades atribuidas por evento de producción (reparto entre empacadores listados en el evento o en el check-in de la máquina).
+                </p>
                 <div className="h-[300px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={analytics.packerDistribution.slice(0, 8)} dataKey="units" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2}>
-                        {analytics.packerDistribution.slice(0, 8).map((p, index) => (
-                          <Cell key={p.name} fill={skuPalette[index % skuPalette.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
+                  {analytics.packerDistribution.length === 0 ? (
+                    <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+                      Sin unidades atribuidas a empacadores en este rango. Revisa que los eventos PROD incluyan PACKAGER_1/2 o el array
+                      <code className="mx-1 rounded bg-muted px-1">packagers</code>, o que exista check-in con empacadores en la máquina.
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={analytics.packerDistribution.slice(0, 8)}
+                          dataKey="units"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={55}
+                          outerRadius={90}
+                          paddingAngle={2}
+                          label={({ name, value }) => {
+                            const u = typeof value === "number" ? value : Number(value)
+                            if (!Number.isFinite(u) || u <= 0) return ""
+                            const n = String(name ?? "")
+                            const short = n.length > 14 ? `${n.slice(0, 14)}…` : n
+                            const uTxt = u % 1 !== 0 ? u.toFixed(1) : String(Math.round(u))
+                            return `${short}: ${uTxt}`
+                          }}
+                        >
+                          {analytics.packerDistribution.slice(0, 8).map((p, index) => (
+                            <Cell key={p.name} fill={skuPalette[index % skuPalette.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          formatter={(value: number | string) => {
+                            const u = typeof value === "number" ? value : Number(value)
+                            const txt = Number.isFinite(u)
+                              ? `${u.toLocaleString("es-MX", { maximumFractionDigits: 1 })} uds`
+                              : String(value)
+                            return [txt, "Unidades atribuidas"]
+                          }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  )}
                 </div>
               </div>
             </div>
@@ -1620,6 +1926,10 @@ export default function MetricsPage() {
           <TabsContent value="asistencia" className="space-y-6">
             <div className="rounded-xl border border-border bg-card p-6">
               <h3 className="font-semibold text-foreground mb-4">Registros de asistencias</h3>
+              <p className="mb-4 text-sm text-muted-foreground">
+                Generado a partir de <strong>check-in en máquina</strong> (entrada/salida y equipo asignado en{" "}
+                <code className="text-xs">machine_checkins</code>). No sustituye un módulo de asistencia de RR.HH.
+              </p>
               <AttendanceTable records={filteredAttendanceRecords} onDelete={() => {}} />
             </div>
           </TabsContent>
@@ -1637,123 +1947,117 @@ export default function MetricsPage() {
               />
               <KpiCard
                 title="Ingresos"
-                value="6"
-                subtitle="Este mes"
+                value={String(personnelMonthSummary.ingresos)}
+                subtitle={`Check-in máquina · ${personnelMonthSummary.monthLabel}`}
                 icon={UserPlus}
                 iconColor="text-green-600"
               />
               <KpiCard
                 title="Salidas"
-                value="2"
-                subtitle="Este mes"
+                value={String(personnelMonthSummary.salidas)}
+                subtitle={`Fin asignación · ${personnelMonthSummary.monthLabel}`}
                 icon={UserMinus}
                 iconColor="text-red-600"
               />
               <KpiCard
-                title="Tasa Rotación"
-                value="3.7%"
-                subtitle="Anualizado"
+                title="Balance (mes)"
+                value={
+                  personnelMonthSummary.net > 0
+                    ? `+${personnelMonthSummary.net}`
+                    : String(personnelMonthSummary.net)
+                }
+                subtitle="Ingresos − salidas (movimientos)"
                 icon={RefreshCw}
                 iconColor="text-yellow-600"
               />
             </div>
 
-            {/* Historial y Resumen */}
+            {/* Historial y Resumen (datos reales: machine_checkins) */}
             <div className="grid gap-6 lg:grid-cols-3">
               <div className="lg:col-span-2 rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-4">Movimientos de Personal</h3>
-                <div className="space-y-3">
-                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 shrink-0">
-                      <UserPlus className="h-4 w-4 text-green-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-foreground">Roberto Cortés</p>
-                      <p className="text-xs text-muted-foreground">Ingreso • 2026-01-20 • Operador</p>
-                    </div>
-                  </div>
-                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 shrink-0">
-                      <UserPlus className="h-4 w-4 text-green-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-foreground">Patricia Díaz</p>
-                      <p className="text-xs text-muted-foreground">Ingreso • 2026-01-15 • Empacadora</p>
-                    </div>
-                  </div>
-                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 shrink-0">
-                      <UserMinus className="h-4 w-4 text-red-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-foreground">Luis Fernández</p>
-                      <p className="text-xs text-muted-foreground">Salida • 2026-01-10 • Renuncia</p>
-                    </div>
-                  </div>
-                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 shrink-0">
-                      <UserPlus className="h-4 w-4 text-green-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-foreground">Gabriel Mendez</p>
-                      <p className="text-xs text-muted-foreground">Ingreso • 2026-01-05 • Operador</p>
-                    </div>
-                  </div>
-                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 shrink-0">
-                      <UserPlus className="h-4 w-4 text-green-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-foreground">Marcela Vega</p>
-                      <p className="text-xs text-muted-foreground">Ingreso • 2026-01-18 • Empacadora</p>
-                    </div>
-                  </div>
-                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-red-100 shrink-0">
-                      <UserMinus className="h-4 w-4 text-red-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-foreground">Tomás Ruiz</p>
-                      <p className="text-xs text-muted-foreground">Salida • 2026-01-08 • Traslado</p>
-                    </div>
-                  </div>
-                  <div className="border border-border rounded-lg p-3 flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-green-100 shrink-0">
-                      <UserPlus className="h-4 w-4 text-green-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-foreground">Alejandro López</p>
-                      <p className="text-xs text-muted-foreground">Ingreso • 2026-01-22 • Supervisor</p>
-                    </div>
-                  </div>
+                <h3 className="font-semibold text-foreground mb-2">Movimientos de Personal</h3>
+                <p className="mb-4 text-xs text-muted-foreground">
+                  Derivado de check-in / check-out en máquina (mismo origen que la pestaña Asistencia).
+                </p>
+                <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
+                  {personnelMovements.length === 0 ? (
+                    <p className="text-sm text-muted-foreground py-6 text-center">
+                      Sin movimientos en el rango cargado. Amplía fechas o registra check-ins NFC.
+                    </p>
+                  ) : (
+                    personnelMovements.map((mov) => (
+                      <div
+                        key={mov.id}
+                        className="border border-border rounded-lg p-3 flex items-center gap-3"
+                      >
+                        <div
+                          className={cn(
+                            "flex h-8 w-8 items-center justify-center rounded-full shrink-0",
+                            mov.kind === "ingreso" ? "bg-green-100" : "bg-red-100",
+                          )}
+                        >
+                          {mov.kind === "ingreso" ? (
+                            <UserPlus className="h-4 w-4 text-green-600" />
+                          ) : (
+                            <UserMinus className="h-4 w-4 text-red-600" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-foreground truncate">{mov.employeeName}</p>
+                          <p className="text-xs text-muted-foreground wrap-break-word">{mov.subtitle}</p>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
 
               <div className="rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-4">Resumen del Mes</h3>
+                <h3 className="font-semibold text-foreground mb-1">Resumen del Mes</h3>
+                <p className="mb-4 text-xs text-muted-foreground">
+                  <span className="capitalize">{personnelMonthSummary.monthLabel}</span>
+                  <span className="block mt-1 text-[11px]">
+                    Cuenta movimientos del mes dentro del rango Desde/Hasta (si el rango no cubre el mes, verás 0).
+                  </span>
+                </p>
                 <div className="space-y-4">
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm text-muted-foreground">Ingresos</span>
-                      <span className="font-bold text-green-600">+6</span>
+                      <span className="font-bold text-green-600">+{personnelMonthSummary.ingresos}</span>
                     </div>
                     <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-green-500" style={{ width: "75%" }} />
+                      <div
+                        className="h-full bg-green-500 transition-[width]"
+                        style={{ width: `${personnelMonthSummary.ingPct}%` }}
+                      />
                     </div>
                   </div>
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm text-muted-foreground">Salidas</span>
-                      <span className="font-bold text-red-600">-2</span>
+                      <span className="font-bold text-red-600">-{personnelMonthSummary.salidas}</span>
                     </div>
                     <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-red-500" style={{ width: "25%" }} />
+                      <div
+                        className="h-full bg-red-500 transition-[width]"
+                        style={{ width: `${personnelMonthSummary.salPct}%` }}
+                      />
                     </div>
                   </div>
                   <div className="pt-2 border-t border-border">
                     <div className="flex items-center justify-between">
                       <span className="text-sm font-medium text-foreground">Neto</span>
-                      <span className="text-lg font-bold text-primary">+4</span>
+                      <span
+                        className={cn(
+                          "text-lg font-bold",
+                          personnelMonthSummary.net >= 0 ? "text-primary" : "text-destructive",
+                        )}
+                      >
+                        {personnelMonthSummary.net > 0
+                          ? `+${personnelMonthSummary.net}`
+                          : personnelMonthSummary.net}
+                      </span>
                     </div>
                   </div>
                 </div>

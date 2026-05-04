@@ -115,6 +115,148 @@ function getEventMachineId(e: ApiProductionEvent): string | null {
   return null
 }
 
+function isLikelyUuid(s: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim())
+}
+
+function buildMachinesByIdMap(machines: ApiMachine[]): Map<string, ApiMachine> {
+  return new Map(machines.map((m) => [m.id, m]))
+}
+
+function checkinMatchesEmployeeCode(c: ApiMachineCheckin, codeLower: string): boolean {
+  const parts = [
+    c.operatorCode,
+    c.operator2Code,
+    c.packager1Code,
+    c.packager2Code,
+    c.packager3Code,
+    c.packager4Code,
+  ]
+  return parts.some((p) => p?.trim().toLowerCase() === codeLower)
+}
+
+/**
+ * machineId de catálogo para el evento (UUID de máquina, código Mxx, o UUID de empleado mal puesto en MACHINE_ID).
+ */
+function tableroCatalogMachineIdForEvent(
+  rawFromPayload: string,
+  eventMachineId: string | null,
+  byId: Map<string, ApiMachine>,
+  byCodeLower: Map<string, ApiMachine>,
+  employees: ApiEmployee[],
+  checkins: ApiMachineCheckin[],
+): string | null {
+  const mid = eventMachineId?.trim()
+  if (mid && byId.has(mid)) return mid
+
+  const raw = rawFromPayload.trim()
+  if (raw && byId.has(raw)) return raw
+
+  if (raw) {
+    const m = byCodeLower.get(raw.toLowerCase())
+    if (m) return m.id
+  }
+
+  if (raw && isLikelyUuid(raw)) {
+    const emp = employees.find((e) => e.id === raw)
+    const ec = emp?.employeeCode?.trim().toLowerCase()
+    if (ec) {
+      const ch = checkins.find((c) => checkinMatchesEmployeeCode(c, ec))
+      if (ch?.machineId && byId.has(ch.machineId)) return ch.machineId
+    }
+  }
+
+  return null
+}
+
+/** Etiqueta para UI: código de máquina o nombre; no muestra UUIDs crudos si hay catálogo / check-in. */
+function tableroResolveMachineLabel(
+  rawFromPayload: string,
+  eventMachineId: string | null,
+  byId: Map<string, ApiMachine>,
+  byCodeLower: Map<string, ApiMachine>,
+  employees: ApiEmployee[],
+  checkins: ApiMachineCheckin[],
+): string {
+  const tryKey = (key: string): string | null => {
+    const t = key.trim()
+    if (!t) return null
+    const byUuid = byId.get(t)
+    if (byUuid) return byUuid.code?.trim() || byUuid.name?.trim() || t
+    const byCode = byCodeLower.get(t.toLowerCase())
+    if (byCode) return byCode.code?.trim() || byCode.name?.trim() || t
+    return null
+  }
+
+  const catalogId = tableroCatalogMachineIdForEvent(
+    rawFromPayload,
+    eventMachineId,
+    byId,
+    byCodeLower,
+    employees,
+    checkins,
+  )
+  if (catalogId) {
+    const m = byId.get(catalogId)
+    if (m) return m.code?.trim() || m.name?.trim() || m.id
+  }
+
+  const fromPayload = tryKey(rawFromPayload)
+  if (fromPayload) return fromPayload
+  const mid = eventMachineId?.trim()
+  if (mid) {
+    const fromEvent = tryKey(mid)
+    if (fromEvent) return fromEvent
+  }
+
+  const tail = rawFromPayload.trim() || eventMachineId?.trim() || ""
+  if (tail && !isLikelyUuid(tail)) return tail
+  return "—"
+}
+
+function tableroResolveSkuFromMachine(
+  rawFromPayload: string,
+  eventMachineId: string | null,
+  byId: Map<string, ApiMachine>,
+  byCodeLower: Map<string, ApiMachine>,
+  employees: ApiEmployee[],
+  checkins: ApiMachineCheckin[],
+): string | null {
+  const skuFrom = (m: ApiMachine | undefined): string | null => {
+    const s = m?.currentSku?.trim()
+    return s || null
+  }
+  const catalogId = tableroCatalogMachineIdForEvent(
+    rawFromPayload,
+    eventMachineId,
+    byId,
+    byCodeLower,
+    employees,
+    checkins,
+  )
+  if (catalogId) {
+    const s = skuFrom(byId.get(catalogId))
+    if (s) return s
+  }
+  return null
+}
+
+function pickMoreReadableMachineLabel(prev: string, next: string): string {
+  const norm = (s: string) => (s.trim() ? s.trim() : "—")
+  const A = norm(prev)
+  const B = norm(next)
+  const rank = (s: string) => {
+    if (s === "—") return 0
+    if (isLikelyUuid(s)) return 1
+    return 2
+  }
+  const rA = rank(A)
+  const rB = rank(B)
+  if (rB > rA) return B
+  if (rA > rB) return A
+  return A !== "—" ? A : B
+}
+
 /**
  * PLC a veces no rellena OPERATOR en cada tick; usamos máquina (UUID o código M14) para inferir employee_code.
  */
@@ -204,6 +346,7 @@ export default function OperationsBoardPage() {
 
         const codeToName = buildEmployeeCodeToNameMap(employees)
         const machineIdx = buildMachineOperatorCodeIndex(machines, checkins)
+        const machinesById = buildMachinesByIdMap(machines)
         const bonusGoal = 400
         const byOperatorCode = new Map<
           string,
@@ -239,20 +382,38 @@ export default function OperationsBoardPage() {
               if (!sampleSin) sampleSin = e
             }
           }
-          const machine =
-            String(
-              (payload["MACHINE_ID"] as string | undefined) ??
-                (payload["machine"] as string | undefined) ??
-                getEventMachineId(e) ??
-                "—",
-            ).trim() || "—"
+          const eventMid = getEventMachineId(e)
+          const machineRaw = String(
+            (payload["MACHINE_ID"] as string | undefined) ??
+              (payload["machine"] as string | undefined) ??
+              eventMid ??
+              "",
+          ).trim()
+          const payloadSku = String((payload["SKU"] as string | undefined) ?? "").trim()
+          const machine = tableroResolveMachineLabel(
+            machineRaw,
+            eventMid,
+            machinesById,
+            machineIdx.machineByCodeLower,
+            employees,
+            checkins,
+          )
+          const skuFromPayload = payloadSku || "—"
+          const skuFromMachine = tableroResolveSkuFromMachine(
+            machineRaw,
+            eventMid,
+            machinesById,
+            machineIdx.machineByCodeLower,
+            employees,
+            checkins,
+          )
           const sku =
-            String((payload["SKU"] as string | undefined) ?? "").trim() || "—"
+            skuFromPayload !== "—" ? skuFromPayload : skuFromMachine ?? "—"
 
           const current = byOperatorCode.get(opCode) ?? { units: 0, machine, sku }
           byOperatorCode.set(opCode, {
             units: current.units + count,
-            machine: current.machine || machine,
+            machine: pickMoreReadableMachineLabel(current.machine, machine),
             sku: current.sku !== "—" ? current.sku : sku,
           })
         }

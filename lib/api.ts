@@ -655,6 +655,19 @@ export async function getActiveMachineCheckins(accessToken: string): Promise<Api
   return parseResponse<ApiMachineCheckin[]>(res)
 }
 
+export async function getMachineCheckins(
+  accessToken: string,
+  params: { from?: string; to?: string; limit?: number } = {},
+): Promise<ApiMachineCheckin[]> {
+  const q = new URLSearchParams()
+  if (params.from) q.set("from", params.from)
+  if (params.to) q.set("to", params.to)
+  if (params.limit != null) q.set("limit", String(params.limit))
+  const qs = q.toString()
+  const res = await fetchWithAuth(`/machine-checkin${qs ? `?${qs}` : ""}`, { accessToken })
+  return parseResponse<ApiMachineCheckin[]>(res)
+}
+
 export async function getProductionEvents(
   accessToken: string,
   params: { runId?: string; machineId?: string; limit?: number; from?: string; to?: string } = {},
