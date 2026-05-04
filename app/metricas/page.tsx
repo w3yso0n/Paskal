@@ -446,10 +446,10 @@ export default function MetricsPage() {
         const toIso = new Date(`${filterEndDate}T23:59:59.999`).toISOString()
 
         const [events, employees, apiMachines, checkins] = await Promise.all([
-          getProductionEvents(token, { from: fromIso, to: toIso, limit: 20_000 }),
+          getProductionEvents(token, { from: fromIso, to: toIso, limit: 120_000 }),
           getEmployees(token),
           getMachines(token),
-          getMachineCheckins(token, { from: fromIso, to: toIso, limit: 8000 }),
+          getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
         ])
         if (cancelled) return
 
@@ -870,7 +870,14 @@ export default function MetricsPage() {
         downtime: v.downtime,
       }))
       .sort((a, b) => b.units - a.units)
-      .slice(0, 8)
+      .slice(0, 14)
+
+    /** Pie de distribución: todos los que tienen unidades > 0 (hasta 20), no solo el top del bar chart. */
+    const operatorDistributionPie = [...operatorAgg.entries()]
+      .map(([name, v]) => ({ name, units: v.units, downtime: v.downtime }))
+      .filter((x) => x.units > 0)
+      .sort((a, b) => b.units - a.units)
+      .slice(0, 20)
 
     const topPackers = [...packerAgg.entries()]
       .map(([name, v]) => ({ name, units: Number(v.units.toFixed(1)), jobs: v.jobs }))
@@ -957,6 +964,7 @@ export default function MetricsPage() {
       shiftComparisonMetrics,
       shiftEventDistributions,
       topOperators,
+      operatorDistributionPie,
       topPackers,
       topSkus,
       skuDistribution,
@@ -1729,26 +1737,51 @@ export default function MetricsPage() {
               {/* Distribución de Operadores */}
               <div className="rounded-xl border border-border bg-card p-6">
                 <h3 className="font-semibold text-foreground mb-4">Distribución de Operadores</h3>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Por unidades de producción en el rango; incluye hasta 20 operadores con producción &gt; 0.
+                </p>
                 <div className="h-[300px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie 
-                        data={analytics.topOperators} 
-                        dataKey="units" 
-                        nameKey="name" 
-                        cx="50%" 
-                        cy="50%" 
-                        innerRadius={55} 
-                        outerRadius={90} 
-                        paddingAngle={2}
-                      >
-                        {analytics.topOperators.map((op, index) => (
-                          <Cell key={op.name} fill={operatorBarPalette[index % operatorBarPalette.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
+                  {analytics.operatorDistributionPie.length === 0 ? (
+                    <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+                      Sin unidades por operador en este rango de fechas.
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={analytics.operatorDistributionPie}
+                          dataKey="units"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={55}
+                          outerRadius={90}
+                          paddingAngle={2}
+                          minAngle={2}
+                          label={({ name, value }) => {
+                            const u = typeof value === "number" ? value : Number(value)
+                            if (!Number.isFinite(u) || u <= 0) return ""
+                            const n = String(name ?? "")
+                            const short = n.length > 12 ? `${n.slice(0, 12)}…` : n
+                            return `${short}`
+                          }}
+                        >
+                          {analytics.operatorDistributionPie.map((op, index) => (
+                            <Cell key={op.name} fill={operatorBarPalette[index % operatorBarPalette.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          formatter={(value: number | string) => {
+                            const u = typeof value === "number" ? value : Number(value)
+                            const txt = Number.isFinite(u)
+                              ? `${u.toLocaleString("es-MX", { maximumFractionDigits: 0 })} uds`
+                              : String(value)
+                            return [txt, "Producción"]
+                          }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  )}
                 </div>
               </div>
 
