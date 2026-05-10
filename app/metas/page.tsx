@@ -36,6 +36,7 @@ import {
   updateGoal,
   type ApiGoal,
   type ApiGoalPeriod,
+  type ApiGoalShift,
   type ApiMetric,
 } from "@/lib/api"
 
@@ -47,6 +48,19 @@ const periodLabels: Record<ApiGoalPeriod, string> = {
   monthly: "Mensual",
   quarterly: "Trimestral",
   yearly: "Anual",
+}
+
+/** Misma ventana que en `app/metricas`: 06:00–13:59 matutino, 14:00–21:59 vespertino (hora local del navegador). */
+function productionShiftFromMeasuredAt(iso: string): ApiGoalShift | null {
+  const hour = new Date(iso).getHours()
+  if (hour >= 6 && hour < 14) return "matutino"
+  if (hour >= 14 && hour < 22) return "vespertino"
+  return null
+}
+
+const shiftLabels: Record<ApiGoalShift, string> = {
+  matutino: "Matutino (06:00–13:59)",
+  vespertino: "Vespertino (14:00–21:59)",
 }
 
 function toDateTimeRange(dateOnlyStart: string, dateOnlyEnd: string) {
@@ -137,10 +151,19 @@ function GoalCard({
       <CardContent className="pt-6">
         <div className="mb-4 flex items-start justify-between">
           <div className="flex-1">
-            <div className="mb-1 flex items-center gap-2">
+            <div className="mb-1 flex flex-wrap items-center gap-2">
               <Badge variant="outline" className="text-xs">
                 {periodLabels[goal.period]}
               </Badge>
+              {goal.shift ? (
+                <Badge variant="secondary" className="text-xs">
+                  {shiftLabels[goal.shift]}
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-xs">
+                  Sin turno (todo el rango)
+                </Badge>
+              )}
               <Badge className={`${cfg.bgColor} ${cfg.color} gap-1`}>
                 <StatusIcon className="h-3 w-3" />
                 {cfg.label}
@@ -225,12 +248,14 @@ export default function MetasPage() {
   const [metrics, setMetrics] = useState<ApiMetric[]>([])
   const [actualByGoalId, setActualByGoalId] = useState<Record<string, number>>({})
   const [filterPeriod, setFilterPeriod] = useState<ApiGoalPeriod | "all">("all")
+  const [filterShift, setFilterShift] = useState<ApiGoalShift | "all">("all")
 
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingGoal, setEditingGoal] = useState<ApiGoal | null>(null)
   const [formData, setFormData] = useState({
     metricId: "",
     period: "daily" as ApiGoalPeriod,
+    shift: "matutino" as ApiGoalShift | "none",
     targetValue: "",
     startDate: "",
     endDate: "",
@@ -252,36 +277,39 @@ export default function MetasPage() {
     [goals, actualByGoalId],
   )
 
-  const filtered = useMemo(
-    () =>
+  const filtered = useMemo(() => {
+    let list =
       filterPeriod === "all"
         ? enriched
-        : enriched.filter((e) => e.goal.period === filterPeriod),
-    [enriched, filterPeriod],
-  )
+        : enriched.filter((e) => e.goal.period === filterPeriod)
+    if (filterShift !== "all") {
+      list = list.filter((e) => (e.goal.shift ?? null) === filterShift)
+    }
+    return list
+  }, [enriched, filterPeriod, filterShift])
 
   const stats = useMemo(
     () => ({
-      total: enriched.length,
-      onTrack: enriched.filter((e) => e.status === "on-track").length,
-      exceeded: enriched.filter(
+      total: filtered.length,
+      onTrack: filtered.filter((e) => e.status === "on-track").length,
+      exceeded: filtered.filter(
         (e) => e.status === "exceeded" || e.status === "completed",
       ).length,
-      atRisk: enriched.filter(
+      atRisk: filtered.filter(
         (e) => e.status === "at-risk" || e.status === "behind",
       ).length,
     }),
-    [enriched],
+    [filtered],
   )
 
   const overallProgress = useMemo(() => {
-    if (enriched.length === 0) return 0
-    const sum = enriched.reduce(
+    if (filtered.length === 0) return 0
+    const sum = filtered.reduce(
       (acc, e) => acc + (e.target > 0 ? Math.min(100, (e.actual / e.target) * 100) : 0),
       0,
     )
-    return sum / enriched.length
-  }, [enriched])
+    return sum / filtered.length
+  }, [filtered])
 
   // ── data fetching ──────────────────────────────────────────────────────────
   const load = async () => {
@@ -332,12 +360,18 @@ export default function MetasPage() {
       const actual: Record<string, number> = {}
       for (const g of goalsData) {
         const { from, to } = toDateTimeRange(g.startDate, g.endDate)
+        const shift = g.shift ?? null
         const sum = points
           .filter((p) => p.metricId === g.metricId)
           .filter((p) => (g.plantId ? p.plantId === g.plantId : true))
           .filter((p) => (g.lineId ? p.lineId === g.lineId : true))
           .filter((p) => (g.machineId ? p.machineId === g.machineId : true))
           .filter((p) => p.measuredAt >= from && p.measuredAt <= to)
+          .filter((p) => {
+            if (!shift) return true
+            const s = productionShiftFromMeasuredAt(p.measuredAt)
+            return s === shift
+          })
           .reduce((acc, p) => acc + Number(p.value ?? 0), 0)
         actual[g.id] = sum
       }
@@ -367,6 +401,7 @@ export default function MetasPage() {
     setFormData({
       metricId: metrics[0]?.id ?? "",
       period: "daily",
+      shift: "matutino",
       targetValue: "",
       startDate: "",
       endDate: "",
@@ -379,6 +414,7 @@ export default function MetasPage() {
     setFormData({
       metricId: g.metricId,
       period: g.period,
+      shift: g.shift ?? "none",
       targetValue: String(g.targetValue),
       startDate: g.startDate,
       endDate: g.endDate,
@@ -393,6 +429,7 @@ export default function MetasPage() {
     const payload = {
       metricId: formData.metricId,
       period: formData.period,
+      shift: formData.shift === "none" ? null : formData.shift,
       targetValue: Number(formData.targetValue),
       startDate: formData.startDate,
       endDate: formData.endDate,
@@ -510,6 +547,29 @@ export default function MetasPage() {
                       placeholder="3500"
                     />
                   </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Turno (cumplimiento)</Label>
+                  <Select
+                    value={formData.shift}
+                    onValueChange={(v) =>
+                      setFormData((s) => ({ ...s, shift: v as ApiGoalShift | "none" }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="matutino">{shiftLabels.matutino}</SelectItem>
+                      <SelectItem value="vespertino">{shiftLabels.vespertino}</SelectItem>
+                      <SelectItem value="none">Sin turno (sumar todo el rango de fechas)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Con turno, solo cuentan puntos cuya hora local cae en esa ventana (igual que en
+                    Métricas).
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
@@ -648,9 +708,41 @@ export default function MetasPage() {
               </CardContent>
             </Card>
 
-            {/* Tabs + Grid */}
+            {/* Filtro por turno + periodo */}
+            <div className="space-y-3">
+              <div>
+                <p className="mb-2 text-sm font-medium text-foreground">Turno</p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={filterShift === "all" ? "default" : "outline"}
+                    onClick={() => setFilterShift("all")}
+                  >
+                    Todos los turnos
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={filterShift === "matutino" ? "default" : "outline"}
+                    onClick={() => setFilterShift("matutino")}
+                  >
+                    Matutino
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={filterShift === "vespertino" ? "default" : "outline"}
+                    onClick={() => setFilterShift("vespertino")}
+                  >
+                    Vespertino
+                  </Button>
+                </div>
+              </div>
+            </div>
+
             <Tabs defaultValue="all" className="space-y-4">
-              <TabsList>
+              <TabsList className="h-auto min-h-10 flex-wrap">
                 <TabsTrigger value="all" onClick={() => setFilterPeriod("all")}>
                   Todas
                 </TabsTrigger>
@@ -668,8 +760,11 @@ export default function MetasPage() {
                       <CardContent className="flex flex-col items-center justify-center text-center">
                         <Target className="mb-4 h-12 w-12 text-muted-foreground" />
                         <h3 className="text-lg font-semibold text-foreground">
-                          No hay metas en este periodo
+                          No hay metas con los filtros seleccionados
                         </h3>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          Prueba otro turno o periodo.
+                        </p>
                       </CardContent>
                     </Card>
                   ) : (

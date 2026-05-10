@@ -464,16 +464,18 @@ export async function updateMachine(
 // --- Goals (metas) ---
 
 export type ApiGoalPeriod = "daily" | "weekly" | "monthly" | "quarterly" | "yearly"
+export type ApiGoalShift = "matutino" | "vespertino"
 
 export interface ApiGoal {
   id: string
-  orgId: string
   metricId: string
   plantId: string | null
   lineId: string | null
   machineId: string | null
   targetValue: number
   period: ApiGoalPeriod
+  /** null / ausente: cumplimiento con todos los registros del rango (sin filtrar por hora). */
+  shift?: ApiGoalShift | null
   startDate: string
   endDate: string
   createdAt: string
@@ -492,6 +494,7 @@ export interface CreateGoalPayload {
   machineId?: string | null
   targetValue: number
   period: ApiGoalPeriod
+  shift?: ApiGoalShift | null
   startDate: string | Date
   endDate: string | Date
 }
@@ -532,7 +535,6 @@ export async function deleteGoal(accessToken: string, id: string): Promise<void>
 
 export interface ApiMetric {
   id: string
-  orgId: string
   name: string
   unit: string | null
   description: string | null

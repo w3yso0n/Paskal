@@ -62,6 +62,7 @@ import {
   type ApiProductionEvent,
 } from "@/lib/api"
 import { useAlertRules } from "./hooks/use-alert-rules"
+import { EspIdleAlertConfigCard } from "./EspIdleAlertConfigCard"
 
 // --- Constants ---
 
@@ -256,9 +257,9 @@ export default function AlertasClient() {
     let cancelled = false
     const run = async () => {
       const token = await getAccessToken()
-      if (!token || !user?.orgId) return
+      if (!token || !user) return
 
-      const events = await getProductionEvents(token, { orgId: user.orgId, limit: 1500 })
+      const events = await getProductionEvents(token, { limit: 1500 })
       if (cancelled) return
 
       const lastByMachine: Record<string, number> = {}
@@ -284,7 +285,7 @@ export default function AlertasClient() {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [getAccessToken, user?.orgId, view])
+  }, [getAccessToken, view])
 
   // --- Derived state ---
   const scopedAlerts = useMemo(
@@ -415,6 +416,11 @@ export default function AlertasClient() {
             </Tabs>
           </CardContent>
         </Card>
+
+        <EspIdleAlertConfigCard
+          machines={machineRows}
+          canConfigure={hasPermission(user, "production.esp-idle-config")}
+        />
 
         {/* Alert Rules (admin only) */}
         {canManageRules && (

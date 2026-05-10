@@ -71,14 +71,13 @@ export default function EmployeesPage() {
   const handleAddEmployee = async () => {
     const fullName = newEmployee.fullName.trim()
     if (!fullName) return
-    if (!user?.orgId) return
+    if (!user) return
 
     const token = await getAccessToken()
     if (!token) return
 
     const created = await createEmployee(token, {
-      orgId: user.orgId,
-      fullName,
+      fullName, 
       employeeCode: newEmployee.employeeCode.trim() || null,
       email: newEmployee.email.trim() || null,
       phone: newEmployee.phone.trim() || null,

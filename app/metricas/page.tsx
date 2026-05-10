@@ -20,7 +20,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Badge } from "@/components/ui/badge"
 import {
   ChartContainer,
   ChartTooltip,
@@ -622,17 +621,12 @@ export default function MetricsPage() {
           }
           const sinOp = prodRows.filter((r) => r.operator === "—").length
           const conMaquina = prodRows.filter((r) => Boolean(r.machineIdRaw)).length
-          const tiposEvento = new Map<string, number>()
-          for (const e of events) {
-            const t = (e.eventType ?? "").trim() || "(vacío)"
-            tiposEvento.set(t, (tiposEvento.get(t) ?? 0) + 1)
-          }
           console.info("[Métricas] METRICAS_DEBUG=1 — producción / operadores", {
             rango: { desde: filterStartDate, hasta: filterEndDate },
-            eventosApi: events.length,
+            registrosApi: events.length,
             posibleCortePorLimiteApi: events.length >= 119_000,
             filasMapeadas: mapped.length,
-            eventosProduccionFilas: prodRows.length,
+            filasProduccion: prodRows.length,
             produccionSinOperadorResuelto: sinOp,
             produccionConMachineId: conMaquina,
             checkinsEnRango: checkins.length,
@@ -642,7 +636,6 @@ export default function MetricsPage() {
             topOperadoresPorUnidades: [...byOp.entries()]
               .sort((a, b) => b[1] - a[1])
               .slice(0, 20),
-            eventTypesEnApi: Object.fromEntries(tiposEvento),
             hintSiPocosOperadores:
               sinOp > 0
                 ? "Muchos PROD sin OPERATOR en payload: ya se intenta check-in NFC por máquina/fecha. Verifica check-ins en el rango."
@@ -769,13 +762,6 @@ export default function MetricsPage() {
     })
   }
 
-  const eventBadgeVariant = (event: ProductionEventType) => {
-    if (event === "Producción") return "secondary" as const
-    if (event === "Parada") return "outline" as const
-    if (event === "Cambio SKU") return "default" as const
-    return "secondary" as const
-  }
-
   const operatorBarPalette = [
     "#22c55e", // green
     "#3b82f6", // blue
@@ -799,8 +785,6 @@ export default function MetricsPage() {
   ]
 
   const analytics = useMemo(() => {
-    type DistRow = { event: ProductionEventType; count: number; color: string }
-
     // Parse filter dates
     const startDate = new Date(filterStartDate)
     startDate.setHours(0, 0, 0, 0)
@@ -813,32 +797,10 @@ export default function MetricsPage() {
       return rowDate >= startDate && rowDate <= endDate
     })
 
-    const eventOrder: ProductionEventType[] = [
-      "Producción",
-      "Cambio SKU",
-      "Parada",
-    ]
-
-    const eventColors: Record<ProductionEventType, string> = {
-      "Producción": "#22c55e",
-      "Cambio SKU": "#3b82f6",
-      "Parada": "#f97316",
-    }
-
-    const buildDist = (m: Map<ProductionEventType, number>): DistRow[] =>
-      eventOrder
-        .map((event) => ({
-          event,
-          count: m.get(event) ?? 0,
-          color: eventColors[event],
-        }))
-        .filter((r) => r.count > 0)
-
     const produced14d = rows14d
       .filter((r) => r.event === "Producción")
       .reduce((acc, r) => acc + r.count, 0)
     const changeovers14d = rows14d.filter((r) => r.event === "Cambio SKU").length
-    const downtimeEvents14d = rows14d.filter((r) => ["Parada"].includes(r.event)).length
 
     const changeoversPer1k = produced14d > 0 ? (changeovers14d / produced14d) * 1000 : 0
 
@@ -856,7 +818,6 @@ export default function MetricsPage() {
     const operatorAgg = new Map<string, { units: number; downtime: number }>()
     const packerAgg = new Map<string, { units: number; jobs: number }>()
     const skuAgg = new Map<string, number>()
-    const eventAgg = new Map<ProductionEventType, number>()
     const machineAgg = new Map<string, { produced: number; downtime: number }>()
 
     const shiftAgg = {
@@ -864,13 +825,11 @@ export default function MetricsPage() {
         produced: 0,
         downtime: 0,
         changeovers: 0,
-        events: new Map<ProductionEventType, number>(),
       },
       vespertino: {
         produced: 0,
         downtime: 0,
         changeovers: 0,
-        events: new Map<ProductionEventType, number>(),
       },
     }
 
@@ -906,13 +865,10 @@ export default function MetricsPage() {
         dailyShiftAgg.set(dayKey, d)
 
         const s = shiftAgg[shift]
-        s.events.set(r.event, (s.events.get(r.event) ?? 0) + 1)
         if (r.event === "Producción") s.produced += r.count
         if (r.event === "Cambio SKU") s.changeovers += 1
         if (["Parada"].includes(r.event)) s.downtime += 1
       }
-
-      eventAgg.set(r.event, (eventAgg.get(r.event) ?? 0) + 1)
 
       const op = operatorAgg.get(r.operator) ?? { units: 0, downtime: 0 }
       if (r.event === "Producción") op.units += r.count
@@ -1004,20 +960,6 @@ export default function MetricsPage() {
       },
     ]
 
-    const shiftEventDistributions = {
-      matutino: buildDist(shiftAgg.matutino.events),
-      vespertino: buildDist(shiftAgg.vespertino.events),
-    }
-
-    const eventBreakdown = (Object.keys({
-      "Producción": 1,
-      "Cambio SKU": 1,
-      "Parada": 1,
-    }) as ProductionEventType[]).map((event) => ({
-      event,
-      count: eventAgg.get(event) ?? 0,
-    }))
-
     const machineScatter = [...machineAgg.entries()]
       .map(([machine, v]) => ({
         machine,
@@ -1029,19 +971,16 @@ export default function MetricsPage() {
     return {
       produced14d,
       changeovers14d,
-      downtimeEvents14d,
       changeoversPer1k,
       dailySeries,
       shiftDailySeries,
       shiftComparisonMetrics,
-      shiftEventDistributions,
       topOperators,
       operatorDistributionPie,
       topPackers,
       topSkus,
       skuDistribution,
       packerDistribution,
-      eventBreakdown,
       machineScatter,
     }
   }, [productionBaseRows, filterStartDate, filterEndDate])
@@ -1067,21 +1006,6 @@ export default function MetricsPage() {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([hour, production]) => ({ hour: `${hour}:00`, production }))
   }, [productionBaseRows])
-
-  const eventDistributionData = useMemo(() => {
-    const colors: Record<ProductionEventType, string> = {
-      "Producción": "#22c55e",
-      "Cambio SKU": "#3b82f6",
-      "Parada": "#f97316",
-    }
-    return analytics.eventBreakdown
-      .map((e) => ({
-        name: e.event,
-        value: e.count,
-        color: colors[e.event],
-      }))
-      .filter((r) => r.value > 0)
-  }, [analytics.eventBreakdown])
 
   const topMachinesData = useMemo(() => {
     const start = new Date(filterStartDate)
@@ -1280,7 +1204,7 @@ export default function MetricsPage() {
               <AlertDescription>{dataError}</AlertDescription>
             </Alert>
           ) : dataLoading ? (
-            <p className="mt-3 text-sm text-muted-foreground">Cargando eventos de producción y empleados…</p>
+            <p className="mt-3 text-sm text-muted-foreground">Cargando datos de producción y empleados…</p>
           ) : null}
         </div>
 
@@ -1465,46 +1389,18 @@ export default function MetricsPage() {
             </div>
 
             {/* Production Charts */}
-            <div className="grid gap-6 lg:grid-cols-3">
-              {/* Hourly Chart */}
-              <div className="lg:col-span-2 rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-4">Producción por Hora</h3>
-                <div className="h-[300px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={hourlyProductionData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-                      <XAxis dataKey="hour" tick={{ fontSize: 12 }} />
-                      <YAxis tick={{ fontSize: 12 }} domain={[0, 400]} />
-                      <Tooltip />
-                      <Bar dataKey="production" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              {/* Event Distribution */}
-              <div className="rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-4">Distribución de Eventos</h3>
-                <div className="h-[300px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={eventDistributionData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={50}
-                        outerRadius={80}
-                        paddingAngle={2}
-                        dataKey="value"
-                      >
-                        {eventDistributionData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="font-semibold text-foreground mb-4">Producción por Hora</h3>
+              <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={hourlyProductionData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                    <XAxis dataKey="hour" tick={{ fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 12 }} domain={[0, 400]} />
+                    <Tooltip />
+                    <Bar dataKey="production" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             </div>
 
@@ -1579,7 +1475,7 @@ export default function MetricsPage() {
             {/* Advanced Metrics - KPIs */}
             <div className="rounded-xl border border-border bg-card p-6">
               <h3 className="font-semibold text-foreground mb-4">Métricas Avanzadas</h3>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <KpiCard
                   title="Cambios SKU"
                   value={analytics.changeovers14d.toLocaleString()}
@@ -1594,19 +1490,6 @@ export default function MetricsPage() {
                   icon={TrendingUp}
                   iconColor="text-primary"
                 />
-                <KpiCard
-                  title="Eventos Paro"
-                  value={analytics.downtimeEvents14d.toLocaleString()}
-                  subtitle="Eventos de Parada"
-                  icon={AlertTriangle}
-                  iconColor="text-yellow-500"
-                />
-                <KpiCard
-                  title="Total Eventos"
-                  value={analytics.eventBreakdown.reduce((acc, e) => acc + e.count, 0).toLocaleString()}
-                  icon={Clock}
-                  iconColor="text-primary"
-                />
               </div>
             </div>
 
@@ -1614,49 +1497,35 @@ export default function MetricsPage() {
             <Tabs defaultValue="prod-vs-downtime" className="space-y-4">
               <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="prod-vs-downtime">Producción vs Paros</TabsTrigger>
-                <TabsTrigger value="sku-eventos">SKUs</TabsTrigger>
+                <TabsTrigger value="skus">SKUs</TabsTrigger>
                 <TabsTrigger value="turnos">Comparación de Turnos</TabsTrigger>
               </TabsList>
 
               {/* Producción vs Paros */}
               <TabsContent value="prod-vs-downtime" className="space-y-4">
-                <div className="grid gap-6 lg:grid-cols-3">
-                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
-                    <h3 className="text-sm font-semibold text-foreground mb-3">Producción vs Paros (Diario)</h3>
-                    <ChartContainer
-                      className="h-[300px] w-full aspect-auto"
-                      config={{
-                        produced: { label: "Producción", color: "#22c55e" },
-                        downtime: { label: "Paros", color: "#f97316" },
-                      }}
-                    >
-                      <AreaChart data={analytics.dailySeries} margin={{ left: 8, right: 8 }}>
-                        <CartesianGrid vertical={false} />
-                        <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
-                        <ChartTooltip content={<ChartTooltipContent />} />
-                        <Area type="monotone" dataKey="produced" stroke="var(--color-produced)" fill="var(--color-produced)" fillOpacity={0.18} strokeWidth={2} />
-                        <Area type="monotone" dataKey="downtime" stroke="var(--color-downtime)" fill="var(--color-downtime)" fillOpacity={0.12} strokeWidth={2} />
-                      </AreaChart>
-                    </ChartContainer>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <h3 className="text-sm font-semibold text-foreground mb-3">Resumen por Evento</h3>
-                    <div className="space-y-2">
-                      {analytics.eventBreakdown.map((e) => (
-                        <div key={e.event} className="flex items-center justify-between">
-                          <Badge variant={eventBadgeVariant(e.event)}>{e.event}</Badge>
-                          <span className="font-mono text-sm text-foreground">{e.count.toLocaleString()}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                <div className="rounded-xl border border-border bg-background p-4">
+                  <h3 className="text-sm font-semibold text-foreground mb-3">Producción vs Paros (Diario)</h3>
+                  <ChartContainer
+                    className="h-[300px] w-full aspect-auto"
+                    config={{
+                      produced: { label: "Producción", color: "#22c55e" },
+                      downtime: { label: "Paros", color: "#f97316" },
+                    }}
+                  >
+                    <AreaChart data={analytics.dailySeries} margin={{ left: 8, right: 8 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <Area type="monotone" dataKey="produced" stroke="var(--color-produced)" fill="var(--color-produced)" fillOpacity={0.18} strokeWidth={2} />
+                      <Area type="monotone" dataKey="downtime" stroke="var(--color-downtime)" fill="var(--color-downtime)" fillOpacity={0.12} strokeWidth={2} />
+                    </AreaChart>
+                  </ChartContainer>
                 </div>
               </TabsContent>
 
-              {/* SKU & Eventos */}
-              <TabsContent value="sku-eventos" className="space-y-4">
+              {/* SKUs */}
+              <TabsContent value="skus" className="space-y-4">
                 <div className="grid gap-6 lg:grid-cols-3">
                   <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
                     <h3 className="text-sm font-semibold text-foreground mb-3">Distribución por SKU</h3>
@@ -1698,58 +1567,24 @@ export default function MetricsPage() {
 
               {/* Turnos */}
               <TabsContent value="turnos" className="space-y-4">
-                <div className="grid gap-6 lg:grid-cols-3">
-                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
-                    <h3 className="text-sm font-semibold text-foreground mb-3">Matutino vs Vespertino</h3>
-                    <ChartContainer
-                      className="h-[300px] w-full aspect-auto"
-                      config={{
-                        matutino: { label: "Matutino", color: "#3b82f6" },
-                        vespertino: { label: "Vespertino", color: "#f97316" },
-                      }}
-                    >
-                      <BarChart data={analytics.shiftComparisonMetrics} margin={{ left: 8, right: 8 }}>
-                        <CartesianGrid vertical={false} />
-                        <XAxis dataKey="metric" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
-                        <ChartTooltip content={<ChartTooltipContent />} />
-                        <Bar dataKey="matutino" fill="var(--color-matutino)" radius={[4, 4, 0, 0]} />
-                        <Bar dataKey="vespertino" fill="var(--color-vespertino)" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ChartContainer>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <h3 className="text-sm font-semibold text-foreground mb-3">Eventos por Turno</h3>
-                    <div className="space-y-4">
-                      <div className="h-[140px]">
-                        <p className="mb-2 text-xs font-medium text-muted-foreground">Matutino</p>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                            <Pie data={analytics.shiftEventDistributions.matutino} dataKey="count" nameKey="event" cx="50%" cy="50%" innerRadius={30} outerRadius={55} paddingAngle={2}>
-                              {analytics.shiftEventDistributions.matutino.map((d) => (
-                                <Cell key={d.event} fill={d.color} />
-                              ))}
-                            </Pie>
-                            <Tooltip />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="h-[140px]">
-                        <p className="mb-2 text-xs font-medium text-muted-foreground">Vespertino</p>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                            <Pie data={analytics.shiftEventDistributions.vespertino} dataKey="count" nameKey="event" cx="50%" cy="50%" innerRadius={30} outerRadius={55} paddingAngle={2}>
-                              {analytics.shiftEventDistributions.vespertino.map((d) => (
-                                <Cell key={d.event} fill={d.color} />
-                              ))}
-                            </Pie>
-                            <Tooltip />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-                  </div>
+                <div className="rounded-xl border border-border bg-background p-4">
+                  <h3 className="text-sm font-semibold text-foreground mb-3">Matutino vs Vespertino</h3>
+                  <ChartContainer
+                    className="h-[300px] w-full aspect-auto"
+                    config={{
+                      matutino: { label: "Matutino", color: "#3b82f6" },
+                      vespertino: { label: "Vespertino", color: "#f97316" },
+                    }}
+                  >
+                    <BarChart data={analytics.shiftComparisonMetrics} margin={{ left: 8, right: 8 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="metric" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <Bar dataKey="matutino" fill="var(--color-matutino)" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="vespertino" fill="var(--color-vespertino)" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ChartContainer>
                 </div>
               </TabsContent>
             </Tabs>
@@ -1859,12 +1694,12 @@ export default function MetricsPage() {
               <div className="rounded-xl border border-border bg-card p-6">
                 <h3 className="font-semibold text-foreground mb-4">Distribución de Empacadores</h3>
                 <p className="mb-2 text-xs text-muted-foreground">
-                  Unidades atribuidas por evento de producción (reparto entre empacadores listados en el evento o en el check-in de la máquina).
+                  Unidades atribuidas por registro de producción (reparto entre empacadores listados en el payload o en el check-in de la máquina).
                 </p>
                 <div className="h-[300px]">
                   {analytics.packerDistribution.length === 0 ? (
                     <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
-                      Sin unidades atribuidas a empacadores en este rango. Revisa que los eventos PROD incluyan PACKAGER_1/2 o el array
+                      Sin unidades atribuidas a empacadores en este rango. Revisa que los registros PROD incluyan PACKAGER_1/2 o el array
                       <code className="mx-1 rounded bg-muted px-1">packagers</code>, o que exista check-in con empacadores en la máquina.
                     </div>
                   ) : (

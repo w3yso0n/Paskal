@@ -16,6 +16,8 @@ export type Permission =
   | "alerts.dismiss"
   | "alerts.clear"
   | "production.edit-threshold"
+  /** Configuración de temporizadores de paro hacia la ESP32 (solo rol admin en org). */
+  | "production.esp-idle-config"
   | "employees.manage"
   | "platform-config.view"
   | "platform-config.edit"
@@ -31,6 +33,7 @@ const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "alerts.dismiss",
     "alerts.clear",
     "production.edit-threshold",
+    "production.esp-idle-config",
     "platform-config.view",
     "platform-config.edit",
     "employees.manage",

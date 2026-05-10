@@ -25,7 +25,7 @@
 | `EVENT` | string | Tipo: `Producción` \| `Cambio SKU` \| `Parada` (o equivalentes del PLC) |
 | `SKU` | string? | Código del producto (ej. "SKU-001") |
 
-**Body del request:** `{ orgId: string, events: IngestPlcEventDto[] }`
+**Body del request:** `{ events: IngestPlcEventDto[] }`
 
 El frontend **no** envía datos al PLC; consume los eventos ya almacenados en el backend vía `GET /production-event` y otros endpoints.
 
