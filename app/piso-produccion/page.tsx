@@ -38,16 +38,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Maximize2, Minimize2, Plus, Settings2, RotateCcw, X } from "lucide-react"
 import { toast } from "sonner"
 
-/** Mapeo código máquina -> posición en diagrama (row, col).
+/** Mapeo código máquina (PA-05 `M-###`) -> posición en diagrama (row, col).
  * Nota: las columnas son 0-indexed (col: 0 es la primera columna visual).
- * La 2da columna visual es col: 1 y aqu? solo debe tener M7 y M8.
+ * La 2da columna visual es col: 1 y aquí solo debe tener M-007 y M-008.
  */
 const MACHINE_POSITIONS: Record<string, { row: number; col: number }> = {
-  M1: { row: 6, col: 0 }, M2: { row: 5, col: 0 }, M3: { row: 4, col: 0 }, M4: { row: 3, col: 0 },
-  M5: { row: 2, col: 0 }, M6: { row: 1, col: 0 }, M7: { row: 6, col: 1 }, M8: { row: 5, col: 1 },
-  M9: { row: 6, col: 2 }, M10: { row: 5, col: 2 }, M11: { row: 4, col: 2 }, M12: { row: 3, col: 2 },
-  M13: { row: 6, col: 3 }, M14: { row: 5, col: 3 }, M15: { row: 4, col: 3 }, M16: { row: 3, col: 3 },
-  M17: { row: 6, col: 4 }, M18: { row: 5, col: 4 }, M19: { row: 4, col: 4 }, M20: { row: 3, col: 4 },
+  "M-001": { row: 6, col: 0 }, "M-002": { row: 5, col: 0 }, "M-003": { row: 4, col: 0 }, "M-004": { row: 3, col: 0 },
+  "M-005": { row: 2, col: 0 }, "M-006": { row: 1, col: 0 }, "M-007": { row: 6, col: 1 }, "M-008": { row: 5, col: 1 },
+  "M-009": { row: 6, col: 2 }, "M-010": { row: 5, col: 2 }, "M-011": { row: 4, col: 2 }, "M-012": { row: 3, col: 2 },
+  "M-013": { row: 6, col: 3 }, "M-014": { row: 5, col: 3 }, "M-015": { row: 4, col: 3 }, "M-016": { row: 3, col: 3 },
+  "M-017": { row: 6, col: 4 }, "M-018": { row: 5, col: 4 }, "M-019": { row: 4, col: 4 }, "M-020": { row: 3, col: 4 },
 }
 
 function mapApiMachineToFrontend(m: ApiMachine): Machine {

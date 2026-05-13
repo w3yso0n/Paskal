@@ -321,6 +321,8 @@ export default function HomePage() {
               ? (rawOperators[0] as string).trim()
               : undefined
           const rawOperator =
+            (payload["OPERATOR_1"] as string | undefined) ??
+            (payload["operator_1"] as string | undefined) ??
             (payload["OPERATOR"] as string | undefined) ??
             (payload["operator"] as string | undefined) ??
             fromOperatorsArray ??

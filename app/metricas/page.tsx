@@ -196,7 +196,7 @@ function findBestCheckinForMachineAndTime(
   return byMachine.find(inWindow) ?? byMachine.find((c) => c.isActive) ?? null
 }
 
-/** Nombre a mostrar del operador principal si el evento no trae OPERATOR en payload. */
+/** Nombre a mostrar del operador principal si el evento no trae OPERATOR_1 / OPERATOR en payload. */
 function primaryOperatorLabelFromCheckin(
   machineId: string | null | undefined,
   occurredAtMs: number,
@@ -550,10 +550,10 @@ export default function MetricsPage() {
           const operatorCodeRaw =
             payloadString(
               payload,
-              "OPERATOR",
-              "operator",
               "OPERATOR_1",
               "operator_1",
+              "OPERATOR",
+              "operator",
             ) ??
             nthStringFromArray(payload, "operators", 0) ??
             nthStringFromArrayLoose(payload, "operators", 0)
@@ -638,8 +638,8 @@ export default function MetricsPage() {
               .slice(0, 20),
             hintSiPocosOperadores:
               sinOp > 0
-                ? "Muchos PROD sin OPERATOR en payload: ya se intenta check-in NFC por máquina/fecha. Verifica check-ins en el rango."
-                : "Si operadoresDistintosEnAgg es bajo, revisa que los códigos OPERATOR coincidan con employeeCode en maestro.",
+                ? "Muchos PROD sin OPERATOR_1 en payload: ya se intenta check-in NFC por máquina/fecha. Verifica check-ins en el rango."
+                : "Si operadoresDistintosEnAgg es bajo, revisa que los códigos OPERATOR_1/OPERATOR coincidan con employeeCode en maestro.",
           })
         }
 

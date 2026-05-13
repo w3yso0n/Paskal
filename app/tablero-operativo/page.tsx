@@ -258,7 +258,7 @@ function pickMoreReadableMachineLabel(prev: string, next: string): string {
 }
 
 /**
- * PLC a veces no rellena OPERATOR en cada tick; usamos máquina (UUID o código M14) para inferir employee_code.
+ * PLC puede enviar OPERATOR_1 u OPERATOR; si falta, inferimos por máquina (UUID o código M-014).
  */
 function getOperatorCodeForProductionEvent(
   e: ApiProductionEvent,
@@ -266,6 +266,8 @@ function getOperatorCodeForProductionEvent(
 ): { code: string; source: OperatorResolveSource } {
   const p = e.payload ?? {}
   const fromPayload =
+    String((p["OPERATOR_1"] as string | undefined) ?? "").trim() ||
+    String((p["operator_1"] as string | undefined) ?? "").trim() ||
     String((p["OPERATOR"] as string | undefined) ?? "").trim() ||
     String((p["operator"] as string | undefined) ?? "").trim()
   if (fromPayload) return { code: fromPayload, source: "payload" }

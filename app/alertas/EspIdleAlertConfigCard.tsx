@@ -145,10 +145,11 @@ export function EspIdleAlertConfigCard({ machines, canConfigure }: Props) {
             <CardTitle>Tiempos de alerta por paro (ESP32)</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">
               Solo administradores. Envía a la dirección del dispositivo cuántos minutos sin
-              producción deben pasar antes de notificar. Cuando se cumpla, la ESP llamará al API{" "}
-              <code className="rounded bg-muted px-1 text-xs">/machine-stop-alert</code> con los
-              minutos y si es reenvío (<code className="rounded bg-muted px-1 text-xs">IS_REPEAT</code>
-              ).
+              producción deben pasar antes de notificar. Con firmware Droven, la ESP envía{" "}
+              <code className="rounded bg-muted px-1 text-xs">ALERT_15</code> y{" "}
+              <code className="rounded bg-muted px-1 text-xs">ALERT_45</code> en el batch{" "}
+              <code className="rounded bg-muted px-1 text-xs">POST /production-event/ingest</code>{" "}
+              (ya no usa <code className="rounded bg-muted px-1 text-xs">/machine-stop-alert</code>).
             </p>
           </div>
         </div>
@@ -238,18 +239,18 @@ ${JSON.stringify(
   {
     firstAlertMinutes: Math.round(firstMinutes),
     repeatAlertMinutes: Math.round(repeatMinutes),
-    machineCode: selected?.code ?? "M1",
+    machineCode: selected?.code ?? "M-001",
   },
   null,
   2,
 )}`}
               </pre>
               <p className="mt-2">
-                La ESP debe aplicar esos temporizadores y, al dispararse, notificar al backend con{" "}
-                <code className="rounded bg-background px-1">IDLE_ALERT_MINUTES</code> igual al
-                umbral que corresponda e <code className="rounded bg-background px-1">IS_REPEAT</code>{" "}
-                <code className="rounded bg-background px-1">false</code> en la primera y{" "}
-                <code className="rounded bg-background px-1">true</code> en el reenvío.
+                La ESP debe aplicar esos temporizadores y, al dispararse, enviar al backend un
+                evento en <code className="rounded bg-background px-1">POST /production-event/ingest</code>{" "}
+                con <code className="rounded bg-background px-1">EVENT: &quot;ALERT_15&quot;</code> o{" "}
+                <code className="rounded bg-background px-1">&quot;ALERT_45&quot;</code> y{" "}
+                <code className="rounded bg-background px-1">COUNT: 0.0</code> (contrato Droven).
               </p>
             </div>
 

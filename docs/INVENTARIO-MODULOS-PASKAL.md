@@ -16,7 +16,7 @@
 
 | Campo | Tipo | Descripción |
 |-------|------|-------------|
-| `MACHINE_ID` | string | Código de máquina (ej. "M1", "L-02"). Debe coincidir con `Machine.code` en la org. |
+| `MACHINE_ID` | string | Código de máquina PA-05: `M-###` (tres dígitos, ej. `M-001`). Debe coincidir con `Machine.code` en la org. |
 | `TIMESTAMP` | string | Fecha/hora ISO 8601 del evento |
 | `OPERATOR` | string? | Código del operador (NFC ID o employee_code) |
 | `PACKAGER_1` | string? | Código del empacador 1 |
