@@ -598,7 +598,7 @@ export default function OperationsBoardPage() {
           </>
         ) : (
           <div className="flex min-h-[200px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-muted-foreground">
-            Sin datos de operadores. Los datos se cargan desde el PLC/ESP.
+            Sin datos de operadores.
           </div>
         )}
 

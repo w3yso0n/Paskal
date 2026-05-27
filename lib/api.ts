@@ -418,6 +418,7 @@ export interface ApiMachine {
   code: string | null;
   status: "running" | "idle" | "stopped" | "maintenance" | "offline";
   currentSku?: string | null;
+  unitsPerBox?: number;
   operatorCode?: string | null;
   operator2Code?: string | null;
   packager1Code?: string | null;

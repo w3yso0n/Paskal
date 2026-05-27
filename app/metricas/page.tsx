@@ -89,6 +89,19 @@ import {
   type ApiMachineCheckin,
   type ApiProductionEvent,
 } from "@/lib/api"
+import {
+  buildProductionShiftReportBlob,
+  productionShiftReportFilename,
+  type ProductionShiftReportSourceRow,
+} from "@/lib/production-shift-report-excel"
+import {
+  buildBonusAccumulatedReportBlob,
+  bonusAccumulatedReportFilename,
+} from "@/lib/bonus-accumulated-report-excel"
+import {
+  buildAnnualAccumulatedReportBlob,
+  annualAccumulatedReportFilename,
+} from "@/lib/annual-accumulated-report-excel"
 
 type ProductionEventType =
   | "Producción"
@@ -103,8 +116,10 @@ interface ProductionBaseRow {
   machineIdRaw: string | null
   timestamp: string // ISO
   operator: string
+  operator_2: string
   packer_1: string
   packer_2: string
+  unitsPerBox: number
   /** Nombres únicos de empacadores atribuidos al evento (payload + fallback check-in). */
   packersAttributed: string[]
   parameter_1: number
@@ -113,8 +128,6 @@ interface ProductionBaseRow {
   event: ProductionEventType
   sku: string
 }
-
-const clampPercent = (value: number) => Math.max(0, Math.min(100, value))
 
 function buildEmployeeCodeToNameMap(employees: ApiEmployee[]): Map<string, string> {
   const map = new Map<string, string>()
@@ -429,12 +442,6 @@ export default function MetricsPage() {
     return `${yyyy}-${mm}-${dd}`
   }
 
-  const formatYearMonth = (date: Date) => {
-    const yyyy = date.getFullYear()
-    const mm = String(date.getMonth() + 1).padStart(2, "0")
-    return `${yyyy}-${mm}`
-  }
-
   const downloadBlob = (filename: string, blob: Blob) => {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement("a")
@@ -498,11 +505,14 @@ export default function MetricsPage() {
 
         const machineLabelById = new Map<string, string>()
         const machineSkuById = new Map<string, string>()
+        const machineUpbById = new Map<string, number>()
         for (const m of apiMachines) {
           const label = (m.code ?? m.name).trim() || m.name
           machineLabelById.set(m.id, label)
           const curSku = m.currentSku?.trim()
           if (curSku) machineSkuById.set(m.id, curSku)
+          const upb = m.unitsPerBox
+          if (upb != null && Number.isFinite(upb) && upb > 0) machineUpbById.set(m.id, upb)
         }
 
         const codeToName = buildEmployeeCodeToNameMap(employees)
@@ -569,6 +579,34 @@ export default function MetricsPage() {
             if (fromChk) operatorLabel = fromChk
           }
 
+          const operator2CodeRaw =
+            payloadString(payload, "OPERATOR_2", "operator_2") ??
+            nthStringFromArray(payload, "operators", 1) ??
+            nthStringFromArrayLoose(payload, "operators", 1)
+          let operator2Label = resolvePerson(operator2CodeRaw)
+          if (operator2Label === "—" && e.machineId?.trim()) {
+            const ch = findBestCheckinForMachineAndTime(
+              e.machineId,
+              new Date(ts).getTime(),
+              checkins,
+            )
+            const oc2 = ch?.operator2Code?.trim()
+            if (oc2) operator2Label = resolvePerson(oc2)
+          }
+
+          const upbRaw =
+            (payload["units_per_box"] as unknown) ??
+            (payload["unitsPerBox"] as unknown) ??
+            (mid ? machineUpbById.get(mid) : undefined)
+          const unitsPerBox =
+            typeof upbRaw === "number" && Number.isFinite(upbRaw) && upbRaw > 0
+              ? upbRaw
+              : Number(upbRaw) > 0
+                ? Number(upbRaw)
+                : mid
+                  ? (machineUpbById.get(mid) ?? 48)
+                  : 48
+
           const skuResolved =
             payloadString(
               payload,
@@ -602,6 +640,8 @@ export default function MetricsPage() {
             machineIdRaw: e.machineId?.trim() ?? null,
             timestamp: ts,
             operator: operatorLabel,
+            operator_2: operator2Label,
+            unitsPerBox,
             packer_1,
             packer_2,
             packersAttributed,
@@ -664,103 +704,12 @@ export default function MetricsPage() {
   }, [getAccessToken, filterStartDate, filterEndDate, reloadNonce])
 
   const [isReportDialogOpen, setIsReportDialogOpen] = useState(false)
-  const [reportStartDate, setReportStartDate] = useState(() => {
-    const d = new Date()
-    d.setDate(d.getDate() - 7)
-    return formatDate(d)
-  })
-  const [reportEndDate, setReportEndDate] = useState(() => formatDate(new Date()))
-  const [includeBothShifts, setIncludeBothShifts] = useState(true)
-  const [selectedShift, setSelectedShift] = useState<ShiftType>("matutino")
+  const [reportDate, setReportDate] = useState(() => formatDate(new Date()))
+  const [reportShiftNumber, setReportShiftNumber] = useState<1 | 2>(1)
+  const [reportBothShifts, setReportBothShifts] = useState(false)
+  const [supervisorName, setSupervisorName] = useState("")
+  const [reportGenerating, setReportGenerating] = useState(false)
 
-  const buildProductionReportWorkbook = async (params: {
-    startDate: string
-    endDate: string
-    includeBothShifts: boolean
-    shift: ShiftType
-  }) => {
-    const XLSX = await import("xlsx")
-
-    const start = new Date(`${params.startDate}T00:00:00`)
-    const end = new Date(`${params.endDate}T23:59:59`)
-
-    const filtered = productionBaseRows.filter((r) => {
-      const ts = new Date(r.timestamp)
-      if (ts < start || ts > end) return false
-
-      const shift = getShift(ts)
-      if (!shift) return false
-      if (params.includeBothShifts) return true
-      return shift === params.shift
-    })
-
-    const detailRows = filtered.map((r) => {
-      const ts = new Date(r.timestamp)
-      const shift = getShift(ts)
-      return {
-        machine_id: r.machine_id,
-        timestamp: ts.toISOString().replace("T", " ").slice(0, 19),
-        shift: shift ?? "",
-        operator: r.operator,
-        packer_1: r.packer_1,
-        packer_2: r.packer_2,
-        sku: r.sku,
-        event: r.event,
-        count: r.count,
-        parameter_1: r.parameter_1,
-        parameter_2: r.parameter_2,
-      }
-    })
-
-    const dailyAgg = new Map<string, { produccion: number; paros: number; cambios_sku: number }>()
-    const monthlyAgg = new Map<string, { produccion: number; paros: number; cambios_sku: number }>()
-
-    for (const r of filtered) {
-      const ts = new Date(r.timestamp)
-      const dayKey = formatDate(ts)
-      const monthKey = formatYearMonth(ts)
-
-      const day = dailyAgg.get(dayKey) ?? { produccion: 0, paros: 0, cambios_sku: 0 }
-      const month = monthlyAgg.get(monthKey) ?? { produccion: 0, paros: 0, cambios_sku: 0 }
-
-      if (r.event === "Producción") {
-        day.produccion += r.count
-        month.produccion += r.count
-
-      } else if (r.event === "Parada") {
-        day.paros += 1
-        month.paros += 1
-      } else if (r.event === "Cambio SKU") {
-        day.cambios_sku += 1
-        month.cambios_sku += 1
-      }
-
-      dailyAgg.set(dayKey, day)
-      monthlyAgg.set(monthKey, month)
-    }
-
-    const dailyRows = [...dailyAgg.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([fecha, v]) => ({ fecha, ...v }))
-
-    const monthlyRows = [...monthlyAgg.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([periodo, v]) => ({ periodo, ...v }))
-
-    const wb = XLSX.utils.book_new()
-    const detailWs = XLSX.utils.json_to_sheet(detailRows)
-    const dailyWs = XLSX.utils.json_to_sheet(dailyRows)
-    const monthlyWs = XLSX.utils.json_to_sheet(monthlyRows)
-
-    XLSX.utils.book_append_sheet(wb, detailWs, "Detalle")
-    XLSX.utils.book_append_sheet(wb, dailyWs, "Resumen diario")
-    XLSX.utils.book_append_sheet(wb, monthlyWs, "Resumen mensual")
-
-    const buffer = XLSX.write(wb, { type: "array", bookType: "xlsx" })
-    return new Blob([buffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    })
-  }
 
   const operatorBarPalette = [
     "#22c55e", // green
@@ -1114,45 +1063,104 @@ export default function MetricsPage() {
   }, [machineCheckinsLoaded, employeeRows])
 
   const handleGenerateProductionReport = async () => {
-    const blob = await buildProductionReportWorkbook({
-      startDate: reportStartDate,
-      endDate: reportEndDate,
-      includeBothShifts,
-      shift: selectedShift,
+    const codeToName = buildEmployeeCodeToNameMap(employeeRows)
+    const resolvePerson = (raw: string | undefined) => {
+      const code = String(raw ?? "").trim()
+      if (!code) return "—"
+      return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
+    }
+    const resolveFromCheckin = (ch: ApiMachineCheckin) => ({
+      operator1: resolvePerson(ch.operatorCode),
+      operator2: resolvePerson(ch.operator2Code ?? undefined),
+      packer1: resolvePerson(ch.packager1Code ?? undefined),
+      packer2: resolvePerson(ch.packager2Code ?? undefined),
     })
+    const nameToCode = new Map<string, string>()
+    for (const emp of employeeRows) {
+      const code = emp.employeeCode?.trim()
+      const name = emp.fullName?.trim()
+      if (!code || !name) continue
+      nameToCode.set(name, code)
+      nameToCode.set(name.toLowerCase(), code)
+    }
+    const resolveEmployeeCode = (displayName: string) => {
+      const t = displayName.trim()
+      if (!t || t === "—") return ""
+      return nameToCode.get(t) ?? nameToCode.get(t.toLowerCase()) ?? ""
+    }
 
-    const shiftsLabel = includeBothShifts ? "ambos-turnos" : selectedShift
-    downloadBlob(
-      `reporte-produccion-${reportStartDate}-a-${reportEndDate}-${shiftsLabel}.xlsx`,
-      blob
-    )
-    setIsReportDialogOpen(false)
+    const sourceRows: ProductionShiftReportSourceRow[] = productionBaseRows.map((r) => ({
+      machine_id: r.machine_id,
+      machineIdRaw: r.machineIdRaw,
+      timestamp: r.timestamp,
+      operator: r.operator,
+      operator_2: r.operator_2,
+      packer_1: r.packer_1,
+      packer_2: r.packer_2,
+      count: r.count,
+      event: r.event,
+      sku: r.sku,
+      unitsPerBox: r.unitsPerBox,
+    }))
+
+    const shifts: (1 | 2)[] = reportBothShifts ? [1, 2] : [reportShiftNumber]
+    setReportGenerating(true)
+    try {
+      for (const shiftNumber of shifts) {
+        const blob = await buildProductionShiftReportBlob({
+          reportDate,
+          shiftNumber,
+          supervisorName: supervisorName.trim() || "—",
+          rows: sourceRows,
+          checkins: machineCheckinsLoaded,
+          resolveFromCheckin,
+          resolveEmployeeCode,
+        })
+        downloadBlob(productionShiftReportFilename(shiftNumber, reportDate), blob)
+      }
+      setIsReportDialogOpen(false)
+    } finally {
+      setReportGenerating(false)
+    }
   }
 
   const handleDownloadBonusReportXlsx = async () => {
-    const XLSX = await import("xlsx")
-    const today = new Date()
-    const yearMonth = formatYearMonth(today)
-
-    const bonusRatePerUnit = 0.25
-    const rows = analytics.topOperators.map((op) => ({
-      periodo: yearMonth,
-      colaborador: op.name,
-      maquina: "—",
-      sku: "—",
-      unidades: op.units,
-      avance_bono_pct: clampPercent((op.units / 400) * 100),
-      bono_estimado: Number((op.units * bonusRatePerUnit).toFixed(2)),
+    const targetDate = reportDate || filterEndDate || formatDate(new Date())
+    const sourceRows: ProductionShiftReportSourceRow[] = productionBaseRows.map((r) => ({
+      machine_id: r.machine_id,
+      machineIdRaw: r.machineIdRaw,
+      timestamp: r.timestamp,
+      operator: r.operator,
+      operator_2: r.operator_2,
+      packer_1: r.packer_1,
+      packer_2: r.packer_2,
+      count: r.count,
+      event: r.event,
+      sku: r.sku,
+      unitsPerBox: r.unitsPerBox,
     }))
+    const blob = await buildBonusAccumulatedReportBlob(targetDate, sourceRows)
+    downloadBlob(bonusAccumulatedReportFilename(targetDate), blob)
+  }
 
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Bonos")
-
-    const buffer = XLSX.write(wb, { type: "array", bookType: "xlsx" })
-    const blob = new Blob([buffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    })
-    downloadBlob(`reporte-bonos-${yearMonth}.xlsx`, blob)
+  const handleDownloadAnnualAccumulatedReportXlsx = async () => {
+    const targetDate = reportDate || filterEndDate || formatDate(new Date())
+    const year = Number(targetDate.slice(0, 4)) || new Date().getFullYear()
+    const sourceRows: ProductionShiftReportSourceRow[] = productionBaseRows.map((r) => ({
+      machine_id: r.machine_id,
+      machineIdRaw: r.machineIdRaw,
+      timestamp: r.timestamp,
+      operator: r.operator,
+      operator_2: r.operator_2,
+      packer_1: r.packer_1,
+      packer_2: r.packer_2,
+      count: r.count,
+      event: r.event,
+      sku: r.sku,
+      unitsPerBox: r.unitsPerBox,
+    }))
+    const blob = await buildAnnualAccumulatedReportBlob(year, sourceRows)
+    downloadBlob(annualAccumulatedReportFilename(year), blob)
   }
 
   // KPIs (sin hardcode / sin mocks). Se calculan a partir de datos existentes;
@@ -1253,12 +1261,19 @@ export default function MetricsPage() {
             <FileSpreadsheet className="h-5 w-5 text-muted-foreground" />
             <h2 className="text-lg font-semibold text-card-foreground">Reportes Descargables</h2>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-3">
             <Button variant="outline" className="justify-start" onClick={() => setIsReportDialogOpen(true)}>
-              <Download className="h-4 w-4" /> Reporte de Producción (Rango)
+              <Download className="h-4 w-4" /> Reporte de Producción por Turno
             </Button>
             <Button variant="outline" className="justify-start" onClick={handleDownloadBonusReportXlsx}>
-              <Download className="h-4 w-4" /> Reporte de Bonos
+              <Download className="h-4 w-4" /> Acumulado de Bono Mensual
+            </Button>
+            <Button
+              variant="outline"
+              className="justify-start"
+              onClick={handleDownloadAnnualAccumulatedReportXlsx}
+            >
+              <Download className="h-4 w-4" /> Acumulado Anual
             </Button>
           </div>
         </div>
@@ -1278,63 +1293,68 @@ export default function MetricsPage() {
             <Dialog open={isReportDialogOpen} onOpenChange={setIsReportDialogOpen}>
               <DialogContent className="sm:max-w-lg">
                 <DialogHeader>
-                  <DialogTitle>Generar Reporte de Producción</DialogTitle>
+                  <DialogTitle>Reporte de Producción por Turno</DialogTitle>
                   <DialogDescription>
-                    Selecciona rango de fechas y turnos
+                    Un archivo Excel con una hoja por cada día del mes (ej. hoja «04 MAYO 2026»).
+                    Cada hoja repite la misma plantilla (fecha, supervisor, turno y tabla por máquina).
+                    Archivo: Reporte de Producción Turno 1 Mayo 2026.xlsx
                   </DialogDescription>
                 </DialogHeader>
 
                 <div className="grid gap-4">
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">Fecha inicio</label>
-                      <input
-                        type="date"
-                        className={cn(
-                          "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
-                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        )}
-                        value={reportStartDate}
-                        onChange={(e) => setReportStartDate(e.target.value)}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-foreground">Fecha fin</label>
-                      <input
-                        type="date"
-                        className={cn(
-                          "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
-                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                        )}
-                        value={reportEndDate}
-                        onChange={(e) => setReportEndDate(e.target.value)}
-                      />
-                    </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">Mes del reporte</label>
+                    <input
+                      type="date"
+                      className={cn(
+                        "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      )}
+                      value={reportDate}
+                      onChange={(e) => setReportDate(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Elige cualquier día del mes; se generan hojas del 01 al último día (nombre: 04 MAYO 2026).
+                      El rango Desde/Hasta arriba debe cubrir todo ese mes.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="supervisorName">Supervisor</Label>
+                    <Input
+                      id="supervisorName"
+                      value={supervisorName}
+                      onChange={(e) => setSupervisorName(e.target.value)}
+                      placeholder="Ej. Ulises Moran"
+                    />
                   </div>
 
                   <div className="flex items-start gap-3">
                     <Checkbox
-                      checked={includeBothShifts}
-                      onCheckedChange={(v) => setIncludeBothShifts(Boolean(v))}
+                      checked={reportBothShifts}
+                      onCheckedChange={(v) => setReportBothShifts(Boolean(v))}
                     />
                     <div className="space-y-1">
-                      <p className="text-sm font-medium text-foreground">Ambos turnos</p>
+                      <p className="text-sm font-medium text-foreground">Descargar ambos turnos</p>
                       <p className="text-sm text-muted-foreground">
-                        Matutino y vespertino
+                        Genera dos archivos (Turno 1 y Turno 2) para la misma fecha
                       </p>
                     </div>
                   </div>
 
-                  {!includeBothShifts && (
+                  {!reportBothShifts && (
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-foreground">Turno</label>
-                      <Select value={selectedShift} onValueChange={(v) => setSelectedShift(v as ShiftType)}>
+                      <Select
+                        value={String(reportShiftNumber)}
+                        onValueChange={(v) => setReportShiftNumber(v === "2" ? 2 : 1)}
+                      >
                         <SelectTrigger>
                           <SelectValue placeholder="Seleccionar" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="matutino">Matutino (06:00–13:59)</SelectItem>
-                          <SelectItem value="vespertino">Vespertino (14:00–21:59)</SelectItem>
+                          <SelectItem value="1">Turno 1 (06:00–17:00)</SelectItem>
+                          <SelectItem value="2">Turno 2 (15:00–00:30)</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -1345,8 +1365,8 @@ export default function MetricsPage() {
                   <Button variant="outline" onClick={() => setIsReportDialogOpen(false)}>
                     Cancelar
                   </Button>
-                  <Button onClick={handleGenerateProductionReport}>
-                    <Download className="h-4 w-4" /> Generar
+                  <Button onClick={handleGenerateProductionReport} disabled={reportGenerating}>
+                    <Download className="h-4 w-4" /> {reportGenerating ? "Generando…" : "Descargar Excel"}
                   </Button>
                 </DialogFooter>
               </DialogContent>
@@ -1391,17 +1411,18 @@ export default function MetricsPage() {
             {/* Production Charts */}
             <div className="rounded-xl border border-border bg-card p-6">
               <h3 className="font-semibold text-foreground mb-4">Producción por Hora</h3>
-              <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={hourlyProductionData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-                    <XAxis dataKey="hour" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 12 }} domain={[0, 400]} />
-                    <Tooltip />
-                    <Bar dataKey="production" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              <ChartContainer
+                className="h-[300px] w-full aspect-auto"
+                config={{ production: { label: "Producción", color: "#22c55e" } }}
+              >
+                <BarChart data={hourlyProductionData} margin={{ left: 8, right: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="hour" tick={{ fontSize: 12 }} />
+                  <YAxis tick={{ fontSize: 12 }} domain={[0, "auto"]} />
+                  <ChartTooltip content={<ChartTooltipContent />} cursor={false} />
+                  <Bar dataKey="production" fill="var(--color-production)" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ChartContainer>
             </div>
 
             {/* Machines & SKUs */}

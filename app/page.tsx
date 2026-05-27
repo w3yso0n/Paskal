@@ -459,7 +459,7 @@ export default function HomePage() {
             </div>
           ) : !hasProductionData ? (
             <div className="flex h-[400px] items-center justify-center rounded-lg border border-dashed border-border bg-muted/30 text-muted-foreground">
-              Sin datos de producción. Los datos se cargan desde el PLC/ESP.
+              Sin datos de producción.
             </div>
           ) : (
             <>
