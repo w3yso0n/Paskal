@@ -57,6 +57,7 @@ import {
   UserCheck,
   UserMinus,
   UserPlus,
+  CalendarDays,
 } from "lucide-react"
 import {
   BarChart,
@@ -77,6 +78,7 @@ import {
   Cell,
 } from "recharts"
 import { cn } from "@/lib/utils"
+import { MonthPicker } from "@/components/ui/month-picker"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import type { AttendanceRecord } from "@/lib/types"
 import { useAuth } from "@/contexts/auth-context"
@@ -419,27 +421,67 @@ function buildPersonnelMovementsFromCheckins(
 export default function MetricsPage() {
   const { getAccessToken } = useAuth()
   const [activeTab, setActiveTab] = useState("produccion")
+  // Initialise to the current calendar month
   const [filterStartDate, setFilterStartDate] = useState(() => {
     const d = new Date()
-    d.setDate(d.getDate() - 14)
-    const yyyy = d.getFullYear()
-    const mm = String(d.getMonth() + 1).padStart(2, "0")
-    const dd = String(d.getDate()).padStart(2, "0")
-    return `${yyyy}-${mm}-${dd}`
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`
   })
   const [filterEndDate, setFilterEndDate] = useState(() => {
     const d = new Date()
-    const yyyy = d.getFullYear()
-    const mm = String(d.getMonth() + 1).padStart(2, "0")
-    const dd = String(d.getDate()).padStart(2, "0")
-    return `${yyyy}-${mm}-${dd}`
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
   })
+
+  // Custom date-range dialog
+  const [customRangeOpen, setCustomRangeOpen] = useState(false)
+  const [tempStart, setTempStart] = useState(filterStartDate)
+  const [tempEnd, setTempEnd] = useState(filterEndDate)
 
   const formatDate = (date: Date) => {
     const yyyy = date.getFullYear()
     const mm = String(date.getMonth() + 1).padStart(2, "0")
     const dd = String(date.getDate()).padStart(2, "0")
     return `${yyyy}-${mm}-${dd}`
+  }
+
+  // Last 6 months + current month as quick-select pills
+  const monthOptions = useMemo(() => {
+    const now = new Date()
+    return Array.from({ length: 6 }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1)
+      const year = d.getFullYear()
+      const month = d.getMonth()
+      const firstDay = `${year}-${String(month + 1).padStart(2, "0")}-01`
+      const lastDayDate = new Date(year, month + 1, 0)
+      const lastDay = formatDate(lastDayDate)
+      // For the current month use today as the end so we don't request future data
+      const isCurrentMonth = year === now.getFullYear() && month === now.getMonth()
+      const effectiveEnd = isCurrentMonth ? formatDate(now) : lastDay
+      const label = d.toLocaleDateString("es-MX", { month: "short", year: "numeric" })
+      return { key: `${year}-${month}`, firstDay, effectiveEnd, label }
+    })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const activeMonthKey = useMemo(
+    () =>
+      monthOptions.find(
+        (m) => filterStartDate === m.firstDay && filterEndDate === m.effectiveEnd,
+      )?.key ?? null,
+    [filterStartDate, filterEndDate, monthOptions],
+  )
+  const isCustomRange = activeMonthKey === null
+
+  const applyMonth = (m: (typeof monthOptions)[number]) => {
+    setFilterStartDate(m.firstDay)
+    setFilterEndDate(m.effectiveEnd)
+  }
+
+  const applyCustomRange = () => {
+    if (!tempStart || !tempEnd) return
+    const start = tempStart <= tempEnd ? tempStart : tempEnd
+    const end = tempStart <= tempEnd ? tempEnd : tempStart
+    setFilterStartDate(start)
+    setFilterEndDate(end)
+    setCustomRangeOpen(false)
   }
 
   const downloadBlob = (filename: string, blob: Blob) => {
@@ -934,11 +976,27 @@ export default function MetricsPage() {
     }
   }, [productionBaseRows, filterStartDate, filterEndDate])
 
+  // Último día del rango que tenga al menos un evento de producción.
+  const lastDayWithData = useMemo(() => {
+    let best: string | null = null
+    for (const r of productionBaseRows) {
+      if (r.event !== "Producción") continue
+      const ts = new Date(r.timestamp)
+      if (Number.isNaN(ts.getTime())) continue
+      const dayStr = formatDate(ts)
+      if (!best || dayStr > best) best = dayStr
+    }
+    return best
+  }, [productionBaseRows])
+
   const hourlyProductionData = useMemo(() => {
-    const today = new Date()
-    const start = new Date(today)
+    // Use the last day with real production data in the range.
+    // Falls back to filterEndDate only if no data at all (will return empty array).
+    const refDay = lastDayWithData ?? filterEndDate
+    const day = new Date(`${refDay}T12:00:00`)
+    const start = new Date(day)
     start.setHours(0, 0, 0, 0)
-    const end = new Date(today)
+    const end = new Date(day)
     end.setHours(23, 59, 59, 999)
 
     const byHour = new Map<string, number>()
@@ -954,7 +1012,7 @@ export default function MetricsPage() {
     return [...byHour.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([hour, production]) => ({ hour: `${hour}:00`, production }))
-  }, [productionBaseRows])
+  }, [productionBaseRows, lastDayWithData, filterEndDate])
 
   const topMachinesData = useMemo(() => {
     const start = new Date(filterStartDate)
@@ -1169,20 +1227,41 @@ export default function MetricsPage() {
   const productionToday = hasHourlyData
     ? hourlyProductionData.reduce((acc, r) => acc + (Number(r.production) || 0), 0)
     : null
-  const avgPerHour =
-    hasHourlyData && productionToday != null
-      ? Math.round(productionToday / hourlyProductionData.length)
-      : null
-  const peakHour = hasHourlyData
-    ? hourlyProductionData.reduce(
-        (best, r) => {
-          const prod = Number(r.production) || 0
-          if (!best) return { hour: r.hour, production: prod }
-          return prod > best.production ? { hour: r.hour, production: prod } : best
-        },
-        null as null | { hour: string; production: number },
-      )
-    : null
+
+  // Promedio/Hora: total de unidades en el RANGO COMPLETO ÷ número de slots de hora
+  // distintos con producción. Así funciona igual para un día o para un mes entero.
+  const avgPerHour = useMemo(() => {
+    const hourSlots = new Set<string>()
+    let total = 0
+    for (const r of productionBaseRows) {
+      if (r.event !== "Producción") continue
+      const ts = new Date(r.timestamp)
+      if (Number.isNaN(ts.getTime())) continue
+      total += Number(r.count) || 0
+      // Slot único por fecha+hora (YYYY-MM-DDTHH)
+      hourSlots.add(ts.toISOString().slice(0, 13))
+    }
+    if (hourSlots.size === 0 || total === 0) return null
+    return Math.round(total / hourSlots.size)
+  }, [productionBaseRows])
+
+  // Hora pico: la hora del día (00-23) con más producción acumulada en TODO el rango.
+  const peakHour = useMemo(() => {
+    const byHour = new Map<string, number>()
+    for (const r of productionBaseRows) {
+      if (r.event !== "Producción") continue
+      const ts = new Date(r.timestamp)
+      if (Number.isNaN(ts.getTime())) continue
+      const h = `${String(ts.getHours()).padStart(2, "0")}:00`
+      byHour.set(h, (byHour.get(h) ?? 0) + (Number(r.count) || 0))
+    }
+    if (byHour.size === 0) return null
+    let best: { hour: string; production: number } | null = null
+    for (const [hour, production] of byHour) {
+      if (!best || production > best.production) best = { hour, production }
+    }
+    return best
+  }, [productionBaseRows])
 
   const uptime =
     topMachinesData.length > 0
@@ -1191,6 +1270,15 @@ export default function MetricsPage() {
             topMachinesData.length,
         )
       : null
+
+  const todayStr = formatDate(new Date())
+  const refDayLabel = lastDayWithData ?? filterEndDate
+  const productionDayLabel =
+    refDayLabel === todayStr
+      ? "Producción Hoy"
+      : lastDayWithData
+        ? `Producción ${new Date(`${lastDayWithData}T12:00:00`).toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}`
+        : "Producción"
 
   return (
     <DashboardLayout
@@ -1217,43 +1305,105 @@ export default function MetricsPage() {
         </div>
 
         {/* Date Range Filter */}
-        <div className="rounded-xl border border-border bg-card p-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
-            <div className="flex-1">
-              <Label className="text-sm font-medium text-foreground mb-2 block">Desde</Label>
-              <input
-                type="date"
-                value={filterStartDate}
-                onChange={(e) => setFilterStartDate(e.target.value)}
-                className={cn(
-                  "w-full px-3 py-2 rounded-md border border-input bg-background text-sm",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                )}
-              />
-            </div>
-            <div className="flex-1">
-              <Label className="text-sm font-medium text-foreground mb-2 block">Hasta</Label>
-              <input
-                type="date"
-                value={filterEndDate}
-                onChange={(e) => setFilterEndDate(e.target.value)}
-                className={cn(
-                  "w-full px-3 py-2 rounded-md border border-input bg-background text-sm",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                )}
-              />
-            </div>
-            <Button type="button" variant="secondary" className="gap-2" onClick={() => setReloadNonce((n) => n + 1)}>
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            {monthOptions.map((m) => (
+              <Button
+                key={m.key}
+                size="sm"
+                variant={activeMonthKey === m.key ? "default" : "outline"}
+                className="capitalize"
+                onClick={() => applyMonth(m)}
+              >
+                {m.label}
+              </Button>
+            ))}
+
+            <Button
+              size="sm"
+              variant={isCustomRange ? "default" : "outline"}
+              className="gap-1.5"
+              onClick={() => {
+                setTempStart(filterStartDate)
+                setTempEnd(filterEndDate)
+                setCustomRangeOpen(true)
+              }}
+            >
+              <CalendarDays className="h-4 w-4" />
+              {isCustomRange ? `${filterStartDate} – ${filterEndDate}` : "Rango personalizado"}
+            </Button>
+
+            <Button
+              size="sm"
+              variant="ghost"
+              className="gap-1.5 text-muted-foreground"
+              onClick={() => setReloadNonce((n) => n + 1)}
+            >
               <RefreshCw className="h-4 w-4" />
-              Actualizar
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground mt-3">
-            Rango seleccionado: <span className="font-medium">{filterStartDate}</span> a{" "}
-            <span className="font-medium">{filterEndDate}</span>. Los datos se vuelven a cargar al cambiar las fechas
-            (y cada 30 s mientras la página está abierta).
+
+          <p className="mt-2 text-xs text-muted-foreground">
+            Mostrando del{" "}
+            <span className="font-medium">{filterStartDate}</span> al{" "}
+
           </p>
         </div>
+
+        {/* Custom date-range dialog */}
+        <Dialog open={customRangeOpen} onOpenChange={setCustomRangeOpen}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <CalendarDays className="h-5 w-5 text-primary" />
+                Elegir rango de fechas
+              </DialogTitle>
+              <DialogDescription>
+                Selecciona un día o un rango. Si eliges el mismo día en ambos campos verás solo ese día.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-4 py-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="custom-start">Desde</Label>
+                <input
+                  id="custom-start"
+                  type="date"
+                  value={tempStart}
+                  max={tempEnd || undefined}
+                  onChange={(e) => setTempStart(e.target.value)}
+                  className={cn(
+                    "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  )}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="custom-end">Hasta</Label>
+                <input
+                  id="custom-end"
+                  type="date"
+                  value={tempEnd}
+                  min={tempStart || undefined}
+                  onChange={(e) => setTempEnd(e.target.value)}
+                  className={cn(
+                    "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                  )}
+                />
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setCustomRangeOpen(false)}>
+                Cancelar
+              </Button>
+              <Button onClick={applyCustomRange} disabled={!tempStart || !tempEnd}>
+                Aplicar
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Reportes */}
         <div className="rounded-xl border border-border bg-card p-6">
@@ -1294,28 +1444,14 @@ export default function MetricsPage() {
               <DialogContent className="sm:max-w-lg">
                 <DialogHeader>
                   <DialogTitle>Reporte de Producción por Turno</DialogTitle>
-                  <DialogDescription>
-                    Un archivo Excel con una hoja por cada día del mes (ej. hoja «04 MAYO 2026»).
-                    Cada hoja repite la misma plantilla (fecha, supervisor, turno y tabla por máquina).
-                    Archivo: Reporte de Producción Turno 1 Mayo 2026.xlsx
-                  </DialogDescription>
                 </DialogHeader>
 
                 <div className="grid gap-4">
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-foreground">Mes del reporte</label>
-                    <input
-                      type="date"
-                      className={cn(
-                        "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                      )}
-                      value={reportDate}
-                      onChange={(e) => setReportDate(e.target.value)}
-                    />
+                    <MonthPicker value={reportDate} onChange={setReportDate} />
                     <p className="text-xs text-muted-foreground">
-                      Elige cualquier día del mes; se generan hojas del 01 al último día (nombre: 04 MAYO 2026).
-                      El rango Desde/Hasta arriba debe cubrir todo ese mes.
+                      Se generan hojas del 01 al último día del mes seleccionado.
                     </p>
                   </div>
 
@@ -1375,7 +1511,7 @@ export default function MetricsPage() {
             {/* KPI Cards */}
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <KpiCard
-                title="Producción Hoy"
+                title={productionDayLabel}
                 value={productionToday == null ? "—" : productionToday.toLocaleString()}
                 subtitle="Unidades"
                 icon={CheckCircle}
@@ -1430,10 +1566,7 @@ export default function MetricsPage() {
               {/* Machines */}
               <div className="rounded-xl border border-border bg-card p-6">
                 <h3 className="font-semibold text-foreground mb-4">Top Máquinas</h3>
-                <p className="mb-3 text-xs text-muted-foreground">
-                  Uds/día = unidades producidas en el rango de fechas ÷ días del rango. Operador = quien acumula más
-                  unidades en PROD para esa máquina en el mismo periodo.
-                </p>
+
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[560px]">
                     <thead>

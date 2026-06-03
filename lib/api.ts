@@ -426,7 +426,6 @@ export interface ApiMachine {
   packager3Code?: string | null;
   packager4Code?: string | null;
   configuredAt?: string | null;
-  workstationId?: string | null;
   model?: string | null;
   serialNumber?: string | null;
   createdAt?: string;
@@ -707,6 +706,14 @@ export interface ApiMachineCheckin {
 export async function getActiveMachineCheckins(accessToken: string): Promise<ApiMachineCheckin[]> {
   const res = await fetchWithAuth("/machine-checkin/active", { accessToken })
   return parseResponse<ApiMachineCheckin[]>(res)
+}
+
+export async function closeAllMachineCheckins(accessToken: string): Promise<{ closed: number }> {
+  const res = await fetchWithAuth("/machine-checkin/close-all", {
+    accessToken,
+    method: "POST",
+  })
+  return parseResponse<{ closed: number }>(res)
 }
 
 export async function getMachineCheckins(

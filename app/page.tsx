@@ -125,6 +125,17 @@ function makeZonedDate(
   return corrected
 }
 
+function getMonthBoundsInTimeZone(now: Date, timeZone: string): { start: Date; end: Date } {
+  const p = getPartsInTimeZone(now, timeZone)
+  const start = makeZonedDate(p.year, p.month, 1, 0, 0, timeZone)
+  // Para el fin del mes, avanzamos desde el día 15 unos 30 días y tomamos el día 1 de ese mes.
+  const midMonth = makeZonedDate(p.year, p.month, 15, 12, 0, timeZone)
+  const nextMonthMid = new Date(midMonth.getTime() + 30 * 24 * 60 * 60 * 1000)
+  const np = getPartsInTimeZone(nextMonthMid, timeZone)
+  const end = makeZonedDate(np.year, np.month, 1, 0, 0, timeZone)
+  return { start, end }
+}
+
 function getDayBoundsInTimeZone(now: Date, timeZone: string): { start: Date; end: Date } {
   const p = getPartsInTimeZone(now, timeZone)
   const start = makeZonedDate(p.year, p.month, p.day, 0, 0, timeZone)
@@ -273,6 +284,10 @@ export default function HomePage() {
           now,
           DASHBOARD_TIMEZONE,
         )
+        const { start: startOfMonthTz, end: endOfMonthTz } = getMonthBoundsInTimeZone(
+          now,
+          DASHBOARD_TIMEZONE,
+        )
         const { start: shiftStart, end: shiftEnd } = getShiftBoundsInTimeZone(
           now,
           selectedShift,
@@ -303,7 +318,8 @@ export default function HomePage() {
           const ts = new Date(e.occurredAt)
           if (Number.isNaN(ts.getTime())) continue
 
-          total += count
+          const isThisMonth = ts >= startOfMonthTz && ts < endOfMonthTz
+          if (isThisMonth) total += count
           const isToday = ts >= startOfTodayTz && ts < endOfTodayTz
           if (isToday) today += count
 
@@ -412,9 +428,8 @@ export default function HomePage() {
         {/* KPI Cards */}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <KpiCard
-            title="Producción Total"
+            title="Producción del Mes"
             value={loading ? "—" : totalProduced.toLocaleString()}
-            subtitle="Los datos se cargan desde el PLC"
             icon={Package}
             iconColor="text-primary"
           />

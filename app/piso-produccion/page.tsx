@@ -5,6 +5,7 @@ import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { MachineCard } from "@/components/production/machine-card"
 import type { Machine } from "@/lib/types"
 import {
+  closeAllMachineCheckins,
   getActiveMachineCheckins,
   getEmployees,
   getMachines,
@@ -59,6 +60,19 @@ function mapApiMachineToFrontend(m: ApiMachine): Machine {
 
 const MAX_PACKERS_PER_MACHINE = 4
 const MAX_OPERATORS_PER_MACHINE = 2
+
+function computeEffectiveStatus(
+  sku: string | undefined,
+  operator: string | undefined,
+  packers: string[] | undefined,
+): Machine["status"] {
+  const hasSku = Boolean(sku)
+  const hasOperator = Boolean(operator)
+  const hasPacker = Boolean(packers?.length)
+  if (hasSku && hasOperator && hasPacker) return "active"
+  if (hasSku || hasOperator || hasPacker) return "waiting"
+  return "inactive"
+}
 
 interface MachineData extends Machine {
   machineCode?: string
@@ -126,23 +140,22 @@ export default function ProductionFloorPage() {
         const checkinByMachineId = new Map<string, ApiMachineCheckin>(
           apiCheckins.map((c) => [c.machineId, c]),
         )
-        const mapped = apiMachines.map((m) => ({
-          ...mapApiMachineToFrontend(m),
-          machineCode: m.code ?? undefined,
-          sku: m.currentSku ?? undefined,
-          operator: (() => {
+        const mapped = apiMachines.map((m) => {
+          const base = mapApiMachineToFrontend(m)
+          const sku = m.currentSku ?? undefined
+          const operator = (() => {
             const c = checkinByMachineId.get(m.id)
             const code = c?.operatorCode ?? m.operatorCode
             if (!code) return undefined
             return employeeNameByCode.get(code) ?? code
-          })(),
-          operator2: (() => {
+          })()
+          const operator2 = (() => {
             const c = checkinByMachineId.get(m.id)
             const code = c?.operator2Code ?? m.operator2Code
             if (!code) return undefined
             return employeeNameByCode.get(code) ?? code
-          })(),
-          packers: (() => {
+          })()
+          const packers = (() => {
             const c = checkinByMachineId.get(m.id)
             const codes = [
               c?.packager1Code ?? m.packager1Code,
@@ -152,8 +165,17 @@ export default function ProductionFloorPage() {
             ].filter((v): v is string => Boolean(v))
             if (codes.length === 0) return undefined
             return codes.map((code) => employeeNameByCode.get(code) ?? code)
-          })(),
-        }))
+          })()
+          return {
+            ...base,
+            status: computeEffectiveStatus(sku, operator, packers),
+            machineCode: m.code ?? undefined,
+            sku,
+            operator,
+            operator2,
+            packers,
+          }
+        })
         setMachineData(mapped)
       } catch (e) {
         if (!cancelled) {
@@ -253,12 +275,11 @@ export default function ProductionFloorPage() {
               operator: operatorInput || undefined,
               operator2: dialogShowSecondOperator ? operator2Input.trim() || undefined : undefined,
               packers: nextPackers.length ? nextPackers : undefined,
-              status:
-                codeInput || operatorInput || (dialogShowSecondOperator && operator2Input.trim()) || nextPackers.length
-                  ? codeInput && operatorInput && nextPackers.length
-                    ? "active"
-                    : "waiting"
-                  : "inactive",
+              status: computeEffectiveStatus(
+                codeInput || undefined,
+                operatorInput || undefined,
+                nextPackers.length ? nextPackers : undefined,
+              ),
             }
           : m,
       ),
@@ -278,20 +299,98 @@ export default function ProductionFloorPage() {
   }
 
   const handleReset = () => {
+    // Optimistic UI: limpia localmente de inmediato
     setMachineData((prev) =>
       prev.map((m) => ({
         ...m,
         operator: undefined,
         operator2: undefined,
         packers: undefined,
-        status: "inactive",
+        status: "inactive" as const,
       })),
     )
-    setHasUnsavedChanges(true)
+    setHasUnsavedChanges(false)
+
+    // Llama al backend: cierra TODOS los checkins activos y pone las máquinas en idle
+    ;(async () => {
+      const token = await getAccessToken()
+      if (!token) {
+        toast.error("Sesión inválida. Vuelve a iniciar sesión.")
+        return
+      }
+      try {
+        const { closed } = await closeAllMachineCheckins(token)
+        toast.success(`Turno cerrado: ${closed} check-in${closed !== 1 ? "s" : ""} cerrado${closed !== 1 ? "s" : ""}.`)
+
+        // Recarga desde el backend para que la UI refleje el estado real
+        const [apiMachines, apiEmployees, apiCheckins] = await Promise.all([
+          getMachines(token),
+          getEmployees(token),
+          getActiveMachineCheckins(token),
+        ])
+        setEmployeeRows(apiEmployees)
+        const employeeNameByCode = new Map(
+          apiEmployees
+            .filter((e) => e.employeeCode)
+            .map((e) => [String(e.employeeCode), e.fullName] as const),
+        )
+        const checkinByMachineId = new Map<string, ApiMachineCheckin>(
+          apiCheckins.map((c) => [c.machineId, c]),
+        )
+        const mapped = apiMachines.map((m) => {
+          const base = mapApiMachineToFrontend(m)
+          const sku = m.currentSku ?? undefined
+          const operator = (() => {
+            const c = checkinByMachineId.get(m.id)
+            const code = c?.operatorCode ?? m.operatorCode
+            if (!code) return undefined
+            return employeeNameByCode.get(code) ?? code
+          })()
+          const operator2 = (() => {
+            const c = checkinByMachineId.get(m.id)
+            const code = c?.operator2Code ?? m.operator2Code
+            if (!code) return undefined
+            return employeeNameByCode.get(code) ?? code
+          })()
+          const packers = (() => {
+            const c = checkinByMachineId.get(m.id)
+            const codes = [
+              c?.packager1Code ?? m.packager1Code,
+              c?.packager2Code ?? m.packager2Code,
+              c?.packager3Code ?? m.packager3Code,
+              c?.packager4Code ?? m.packager4Code,
+            ].filter((v): v is string => Boolean(v))
+            if (codes.length === 0) return undefined
+            return codes.map((code) => employeeNameByCode.get(code) ?? code)
+          })()
+          return {
+            ...base,
+            status: computeEffectiveStatus(sku, operator, packers),
+            machineCode: m.code ?? undefined,
+            sku,
+            operator,
+            operator2,
+            packers,
+          }
+        })
+        setMachineData(mapped)
+      } catch {
+        toast.error("No se pudo cerrar el turno en el servidor.")
+      }
+    })()
   }
 
   const handleQuickUpdate = (machineId: string, patch: Partial<MachineData>) => {
-    setMachineData((prev) => prev.map((m) => (m.id === machineId ? { ...m, ...patch } : m)))
+    setMachineData((prev) =>
+      prev.map((m) => {
+        if (m.id !== machineId) return m
+        const next = { ...m, ...patch }
+        return {
+          ...next,
+          status: computeEffectiveStatus(next.sku, next.operator, next.packers),
+        }
+      }),
+    )
     setHasUnsavedChanges(true)
   }
 
@@ -469,23 +568,22 @@ export default function ProductionFloorPage() {
         const checkinByMachineId = new Map<string, ApiMachineCheckin>(
           apiCheckins.map((c) => [c.machineId, c]),
         )
-        const mapped: MachineData[] = apiMachines.map((m) => ({
-          ...mapApiMachineToFrontend(m),
-          machineCode: m.code ?? undefined,
-          sku: m.currentSku ?? undefined,
-          operator: (() => {
+        const mapped: MachineData[] = apiMachines.map((m) => {
+          const base = mapApiMachineToFrontend(m)
+          const sku = m.currentSku ?? undefined
+          const operator = (() => {
             const c = checkinByMachineId.get(m.id)
             const code = c?.operatorCode ?? m.operatorCode
             if (!code) return undefined
             return employeeNameByCode.get(code) ?? code
-          })(),
-          operator2: (() => {
+          })()
+          const operator2 = (() => {
             const c = checkinByMachineId.get(m.id)
             const code = c?.operator2Code ?? m.operator2Code
             if (!code) return undefined
             return employeeNameByCode.get(code) ?? code
-          })(),
-          packers: (() => {
+          })()
+          const packers = (() => {
             const c = checkinByMachineId.get(m.id)
             const codes = [
               c?.packager1Code ?? m.packager1Code,
@@ -495,8 +593,17 @@ export default function ProductionFloorPage() {
             ].filter((v): v is string => Boolean(v))
             if (codes.length === 0) return undefined
             return codes.map((code) => employeeNameByCode.get(code) ?? code)
-          })(),
-        }))
+          })()
+          return {
+            ...base,
+            status: computeEffectiveStatus(sku, operator, packers),
+            machineCode: m.code ?? undefined,
+            sku,
+            operator,
+            operator2,
+            packers,
+          }
+        })
         setMachineData(mapped)
         setHasUnsavedChanges(false)
         toast.success("Asignaciones guardadas.")
