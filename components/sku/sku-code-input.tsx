@@ -28,20 +28,36 @@ export function SkuCodeInput({
   className,
   inputClassName,
 }: SkuCodeInputProps) {
-  const options = useMemo<TextAutocompleteOption[]>(
-    () =>
-      [...catalog]
-        .sort((a, b) => b.usageCount - a.usageCount || a.code.localeCompare(b.code))
-        .map((sku) => ({
-          value: sku.code,
+  const normalized = normalizeSkuCode(value)
+  const registered = isSkuRegistered(normalized, catalog)
+
+  const options = useMemo<TextAutocompleteOption[]>(() => {
+    const fromCatalog = [...catalog]
+      .sort((a, b) => b.usageCount - a.usageCount || a.code.localeCompare(b.code))
+      .map((sku) => {
+        const code = normalizeSkuCode(sku.code)
+        return {
+          value: code,
           label: sku.code,
           hint: `${sku.unitsPerBox} pzas/caja · usado ${sku.usageCount}×`,
-        })),
-    [catalog],
-  )
+        }
+      })
 
-  const normalized = normalizeSkuCode(value)
-  const showWarning = Boolean(normalized) && !isSkuRegistered(normalized, catalog)
+    if (normalized && !registered) {
+      const display = value.trim() || normalized
+      return [
+        {
+          value: normalized,
+          label: display,
+          hint: "Asignado · no registrado en catálogo",
+        },
+        ...fromCatalog,
+      ]
+    }
+    return fromCatalog
+  }, [catalog, normalized, registered, value])
+
+  const showWarning = Boolean(normalized) && !registered
 
   return (
     <div className={cn("space-y-1", className)}>
@@ -57,7 +73,7 @@ export function SkuCodeInput({
       {showWarning && (
         <p className="flex items-start gap-1.5 text-xs text-amber-700">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          SKU no registrado. Regístralo en Gestión de SKUs para evitar errores.
+          Este SKU está asignado pero no está en el catálogo. Regístralo en Gestión de SKUs o cámbialo aquí.
         </p>
       )}
     </div>

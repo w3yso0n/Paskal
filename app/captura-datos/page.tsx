@@ -325,7 +325,7 @@ function DailyCaptureSection({
                 id={`${category}-sku`}
                 value={form.sku}
                 onChange={(e) => setForm((f) => ({ ...f, sku: e.target.value.toUpperCase() }))}
-                placeholder="Ej. ALM-PAQ-100"
+                placeholder="Ej. 522pk18+4l-10"
               />
             </div>
             <div className="space-y-2">

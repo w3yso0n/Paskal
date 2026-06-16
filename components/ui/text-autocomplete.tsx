@@ -43,10 +43,10 @@ export function TextAutocomplete({
   )
 
   useEffect(() => {
-    if (value && selected) {
+    if (selected) {
       setQuery(selected.label)
-    } else if (!value) {
-      setQuery("")
+    } else {
+      setQuery(value)
     }
   }, [value, selected])
 
@@ -71,8 +71,8 @@ export function TextAutocomplete({
     const onPointerDown = (e: MouseEvent) => {
       if (!wrapperRef.current?.contains(e.target as Node)) {
         setOpen(false)
-        if (value && selected) setQuery(selected.label)
-        else if (!value) setQuery("")
+        if (selected) setQuery(selected.label)
+        else setQuery(value)
       }
     }
     document.addEventListener("mousedown", onPointerDown)
@@ -104,7 +104,8 @@ export function TextAutocomplete({
       if (opt) pick(opt)
     } else if (e.key === "Escape") {
       setOpen(false)
-      if (value && selected) setQuery(selected.label)
+      if (selected) setQuery(selected.label)
+      else setQuery(value)
     }
   }
 

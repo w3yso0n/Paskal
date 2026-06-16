@@ -36,6 +36,11 @@ import { Maximize2, Minimize2, Plus, Settings2, RotateCcw, X, Tags } from "lucid
 import { toast } from "sonner"
 import { filterFloorMachines } from "@/lib/machine-floor"
 import {
+  FLOOR_COLUMN_COUNT,
+  FLOOR_MACHINE_CELL_MIN_HEIGHT,
+  FLOOR_ROW_ORDER,
+} from "@/lib/machine-floor-layout"
+import {
   getProductSkus,
   recordProductSkuUsage,
   type ApiProductSku,
@@ -234,14 +239,16 @@ export default function ProductionFloorPage() {
   /** Asignación rápida: panel extra (op.2 / emp.2–4) por máquina */
   const [quickAssignmentExpanded, setQuickAssignmentExpanded] = useState<Set<string>>(() => new Set())
 
-  // Group machines by columns
-  const columns = [
-    machineData.filter(m => m.position.col === 0),
-    machineData.filter(m => m.position.col === 1),
-    machineData.filter(m => m.position.col === 2),
-    machineData.filter(m => m.position.col === 3),
-    machineData.filter(m => m.position.col === 4),
-  ]
+  const machinesByColumn = useMemo(() => {
+    const cols: MachineData[][] = Array.from({ length: FLOOR_COLUMN_COUNT }, () => [])
+    for (const m of machineData) {
+      const col = m.position.col
+      if (col >= 0 && col < FLOOR_COLUMN_COUNT) {
+        cols[col].push(m)
+      }
+    }
+    return cols
+  }, [machineData])
 
   const handleMachineClick = (machine: MachineData) => {
     if (isDiagramFullscreen) setIsDiagramFullscreen(false)
@@ -332,6 +339,8 @@ export default function ProductionFloorPage() {
     setMachineData((prev) =>
       prev.map((m) => ({
         ...m,
+        sku: undefined,
+        unitsPerBox: undefined,
         operator: undefined,
         operator2: undefined,
         packers: undefined,
@@ -340,7 +349,7 @@ export default function ProductionFloorPage() {
     )
     setHasUnsavedChanges(false)
 
-    // Llama al backend: cierra TODOS los checkins activos y pone las máquinas en idle
+    // Cierra check-ins, limpia SKU/personal en BD y recarga
     ;(async () => {
       const token = await getAccessToken()
       if (!token) {
@@ -348,11 +357,28 @@ export default function ProductionFloorPage() {
         return
       }
       try {
+        const apiMachines = await getMachines(token)
+        const floorMachines = filterFloorMachines(apiMachines)
         const { closed } = await closeAllMachineCheckins(token)
-        toast.success(`Turno cerrado: ${closed} check-in${closed !== 1 ? "s" : ""} cerrado${closed !== 1 ? "s" : ""}.`)
+        await Promise.all(
+          floorMachines.map((m) =>
+            updateMachine(token, m.id, {
+              status: "idle",
+              currentSku: null,
+              operatorCode: null,
+              operator2Code: null,
+              packager1Code: null,
+              packager2Code: null,
+              packager3Code: null,
+              packager4Code: null,
+            }),
+          ),
+        )
+        toast.success(
+          `Turno reiniciado: ${closed} check-in${closed !== 1 ? "s" : ""} cerrado${closed !== 1 ? "s" : ""}, asignaciones limpiadas.`,
+        )
 
-        // Recarga desde el backend para que la UI refleje el estado real
-        const [apiMachines, apiEmployees, apiCheckins] = await Promise.all([
+        const [freshMachines, apiEmployees, apiCheckins] = await Promise.all([
           getMachines(token),
           getEmployees(token),
           getActiveMachineCheckins(token),
@@ -366,7 +392,7 @@ export default function ProductionFloorPage() {
         const checkinByMachineId = new Map<string, ApiMachineCheckin>(
           apiCheckins.map((c) => [c.machineId, c]),
         )
-        const mapped = filterFloorMachines(apiMachines).map((m) => {
+        const mapped = filterFloorMachines(freshMachines).map((m) => {
           const base = mapApiMachineToFrontend(m)
           const sku = m.currentSku ?? undefined
           const operator = (() => {
@@ -685,10 +711,14 @@ export default function ProductionFloorPage() {
   }, [machineData])
 
   const getAvailablePeople = (all: string[], machineId: string, current?: string) => {
-    return all.filter((name) => {
+    const available = all.filter((name) => {
       const usedBy = selectedEmployeesByMachine.get(name)
       return !usedBy || usedBy === machineId || name === current
     })
+    if (current && current.trim() && !available.includes(current)) {
+      return [current, ...available]
+    }
+    return available
   }
 
   const canAddPacker = (packerName: string, machineId: string) => {
@@ -779,12 +809,22 @@ export default function ProductionFloorPage() {
   const renderDiagram = (viewportClassName: string) => {
     return (
       <div className={cn("overflow-auto", viewportClassName)}>
-        <div className="mx-auto flex min-h-full min-w-[900px] items-end justify-center gap-14">
-          {columns.map((column, colIndex) => (
-            <div key={colIndex} className="flex min-h-full flex-col justify-end ">
-              {column
-                .sort((a, b) => a.position.row - b.position.row)
-                .map((machine) => (
+        <div className="mx-auto flex min-h-full min-w-[900px] items-start justify-center gap-10 pt-2">
+          {machinesByColumn.map((column, colIndex) => (
+            <div key={colIndex} className="flex flex-col gap-1">
+              {FLOOR_ROW_ORDER.map((row) => {
+                const machine = column.find((m) => m.position.row === row)
+                if (!machine) {
+                  return (
+                    <div
+                      key={`empty-${colIndex}-${row}`}
+                      className="w-36 shrink-0"
+                      style={{ minHeight: FLOOR_MACHINE_CELL_MIN_HEIGHT }}
+                      aria-hidden
+                    />
+                  )
+                }
+                return (
                   <MachineCard
                     key={machine.id}
                     id={machine.id}
@@ -803,7 +843,8 @@ export default function ProductionFloorPage() {
                     onClick={() => handleMachineClick(machine)}
                     isSelected={focusedMachineId === machine.id}
                   />
-                ))}
+                )
+              })}
             </div>
           ))}
         </div>
