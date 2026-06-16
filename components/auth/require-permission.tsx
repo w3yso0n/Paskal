@@ -8,7 +8,9 @@ import { Button } from "@/components/ui/button"
 import { ShieldX, Loader2 } from "lucide-react"
 
 interface RequirePermissionProps {
-  permissions: Permission[]
+  /** Un permiso o lista; basta con cumplir uno (OR). */
+  permissions?: Permission[]
+  permission?: Permission
   children: React.ReactNode
   /** If true, show a "no permission" card instead of redirecting. Default: true */
   showFallback?: boolean
@@ -16,11 +18,14 @@ interface RequirePermissionProps {
 
 export function RequirePermission({
   permissions,
+  permission,
   children,
   showFallback = true,
 }: RequirePermissionProps) {
   const { user, loading } = useAuth()
   const router = useRouter()
+
+  const required = permissions ?? (permission ? [permission] : [])
 
   if (loading) {
     return (
@@ -35,7 +40,7 @@ export function RequirePermission({
     return null
   }
 
-  if (!hasAnyPermission(user, permissions)) {
+  if (!hasAnyPermission(user, required)) {
     if (!showFallback) {
       router.replace("/")
       return null

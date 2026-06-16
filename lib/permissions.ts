@@ -72,15 +72,17 @@ export function hasPermission(
 
 export function hasAnyPermission(
   user: RequestUser | null | undefined,
-  permissions: Permission[],
+  permissions: Permission[] | undefined,
 ): boolean {
+  if (!permissions?.length) return false
   return permissions.some((p) => hasPermission(user, p))
 }
 
 export function hasAllPermissions(
   user: RequestUser | null | undefined,
-  permissions: Permission[],
+  permissions: Permission[] | undefined,
 ): boolean {
+  if (!permissions?.length) return false
   return permissions.every((p) => hasPermission(user, p))
 }
 
