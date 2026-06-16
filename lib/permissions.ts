@@ -91,6 +91,7 @@ export function hasAllPermissions(
 export const ROUTE_PERMISSIONS: Record<string, Permission[]> = {
   "/administracion/usuarios": ["users.list"],
   "/administracion/configuracion-organizacion": ["platform-config.view"],
+  "/administracion/gestion-skus": ["business-rules.manage"],
   "/captura-datos": ["data-capture.manage"],
   "/configuracion-bono": ["business-rules.manage"],
   "/reglas-negocio": ["business-rules.manage"],

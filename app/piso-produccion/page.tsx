@@ -926,7 +926,7 @@ export default function ProductionFloorPage() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Button variant="outline" size="sm" asChild>
-                <Link href="/gestion-skus">
+                <Link href="/administracion/gestion-skus">
                   <Tags className="mr-2 h-4 w-4" />
                   Gestión SKUs
                 </Link>
