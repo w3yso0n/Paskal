@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   Home,
   Target,
@@ -27,18 +28,35 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useAuth } from "@/contexts/auth-context"
+import { BonusVacationAdjustmentsPanel } from "@/components/metas/bonus-vacation-adjustments"
 import {
   createGoal,
   deleteGoal,
+  getBonusProductionConfigForMonth,
   getGoals,
+  getMachines,
   getMetricPoints,
   getMetrics,
+  getProductionEvents,
   updateGoal,
   type ApiGoal,
   type ApiGoalPeriod,
   type ApiGoalShift,
+  type ApiMachine,
   type ApiMetric,
 } from "@/lib/api"
+import {
+  bonusConfigToGoalDefinitions,
+  goalMatchesBonusDefinition,
+  monthDateBounds,
+} from "@/lib/bonus-goals-bridge"
+import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
+import { DEFAULT_BONUS_PRODUCTION_CONFIG } from "@/lib/bonus-production-config"
+import {
+  normalizeSku,
+  productionUnitsFromEvent,
+  resolveProductionEventSku,
+} from "@/lib/production-goal-events"
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -123,6 +141,24 @@ const statusConfig: Record<
   },
 }
 
+function isProductionMetric(metric: ApiMetric | undefined): boolean {
+  return metric?.name.trim().toLowerCase() === "producción"
+}
+
+function buildMachineMaps(machines: ApiMachine[]) {
+  const labelById = new Map<string, string>()
+  const skuById = new Map<string, string>()
+  const upbById = new Map<string, number>()
+  for (const m of machines) {
+    labelById.set(m.id, (m.code ?? m.name).trim() || m.name)
+    const sku = m.currentSku?.trim()
+    if (sku) skuById.set(m.id, sku)
+    const upb = m.unitsPerBox
+    if (upb != null && Number.isFinite(upb) && upb > 0) upbById.set(m.id, upb)
+  }
+  return { labelById, skuById, upbById }
+}
+
 // ─── GoalCard ─────────────────────────────────────────────────────────────────
 
 function GoalCard({
@@ -131,12 +167,16 @@ function GoalCard({
   actual,
   onEdit,
   onDelete,
+  fromBonusConfig,
+  machineLabel,
 }: {
   goal: ApiGoal
   metric: ApiMetric | undefined
   actual: number
   onEdit: (goal: ApiGoal) => void
   onDelete: (goal: ApiGoal) => void
+  fromBonusConfig?: boolean
+  machineLabel?: string | null
 }) {
   const target = Number(goal.targetValue)
   const pct = target > 0 ? Math.min(100, (actual / target) * 100) : 0
@@ -155,6 +195,14 @@ function GoalCard({
               <Badge variant="outline" className="text-xs">
                 {periodLabels[goal.period]}
               </Badge>
+              {fromBonusConfig ? (
+                <Badge className="bg-primary/10 text-primary text-xs">Config. bono</Badge>
+              ) : null}
+              {goal.sku?.trim() ? (
+                <Badge variant="secondary" className="text-xs">
+                  SKU: {goal.sku.trim()}
+                </Badge>
+              ) : null}
               {goal.shift ? (
                 <Badge variant="secondary" className="text-xs">
                   {shiftLabels[goal.shift]}
@@ -174,9 +222,12 @@ function GoalCard({
             </h3>
             <p className="text-sm text-muted-foreground">
               {goal.startDate} — {goal.endDate}
+              {machineLabel ? ` · ${machineLabel}` : ""}
             </p>
           </div>
           <div className="flex gap-1">
+            {!fromBonusConfig ? (
+              <>
             <Button
               variant="ghost"
               size="icon"
@@ -195,6 +246,18 @@ function GoalCard({
             >
               <Trash2 className="h-4 w-4" />
             </Button>
+              </>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 text-xs text-primary"
+                onClick={onEdit as () => void}
+                title="Editar en reglas de negocio"
+              >
+                Editar en config.
+              </Button>
+            )}
           </div>
         </div>
 
@@ -240,15 +303,36 @@ function GoalCard({
 const ALL_PERIODS: ApiGoalPeriod[] = ["daily", "weekly", "monthly", "quarterly", "yearly"]
 
 export default function MetasPage() {
+  const searchParams = useSearchParams()
+  const router = useRouter()
   const { getAccessToken } = useAuth()
+
+  useEffect(() => {
+    if (searchParams.get("tab") === "configuracion") {
+      router.replace("/reglas-negocio?tab=bono")
+    }
+  }, [searchParams, router])
+
+  const openBonusConfig = () => {
+    router.push("/reglas-negocio?tab=bono")
+  }
+
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const [goals, setGoals] = useState<ApiGoal[]>([])
   const [metrics, setMetrics] = useState<ApiMetric[]>([])
+  const [machines, setMachines] = useState<ApiMachine[]>([])
   const [actualByGoalId, setActualByGoalId] = useState<Record<string, number>>({})
   const [filterPeriod, setFilterPeriod] = useState<ApiGoalPeriod | "all">("all")
   const [filterShift, setFilterShift] = useState<ApiGoalShift | "all">("all")
+  const [bonusConfigMonth] = useState(() => {
+    const now = new Date()
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+  })
+  const [bonusConfig, setBonusConfig] = useState<BonusProductionConfigData>(
+    DEFAULT_BONUS_PRODUCTION_CONFIG,
+  )
 
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingGoal, setEditingGoal] = useState<ApiGoal | null>(null)
@@ -259,12 +343,54 @@ export default function MetasPage() {
     targetValue: "",
     startDate: "",
     endDate: "",
+    sku: "",
+    machineId: "none",
   })
 
   const metricById = useMemo(
     () => new Map(metrics.map((m) => [m.id, m] as const)),
     [metrics],
   )
+
+  const machineMaps = useMemo(() => buildMachineMaps(machines), [machines])
+
+  const productionMetricId = useMemo(() => {
+    const prod =
+      metrics.find((m) => m.name.toLowerCase() === "producción") ?? metrics[0]
+    return prod?.id ?? null
+  }, [metrics])
+
+  const bonusMonthBounds = useMemo(
+    () => monthDateBounds(bonusConfigMonth),
+    [bonusConfigMonth],
+  )
+
+  const bonusDefinitions = useMemo(
+    () => bonusConfigToGoalDefinitions(bonusConfig),
+    [bonusConfig],
+  )
+
+  const isBonusSyncedGoal = (goal: ApiGoal) => {
+    if (!productionMetricId || goal.sku?.trim()) return false
+    return bonusDefinitions.some((def) =>
+      goalMatchesBonusDefinition(goal, def, productionMetricId, bonusMonthBounds),
+    )
+  }
+
+  const skuSuggestions = useMemo(() => {
+    const set = new Set<string>()
+    for (const m of machines) {
+      const sku = m.currentSku?.trim()
+      if (sku) set.add(sku)
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, "es"))
+  }, [machines])
+
+  const selectedFormMetric = useMemo(
+    () => metrics.find((m) => m.id === formData.metricId),
+    [metrics, formData.metricId],
+  )
+  const showProductionSkuFields = isProductionMetric(selectedFormMetric)
 
   // ── derived stats ──────────────────────────────────────────────────────────
   const enriched = useMemo(
@@ -324,9 +450,21 @@ export default function MetasPage() {
         return
       }
 
-      const [goalsData, metricsData] = await Promise.all([getGoals(token), getMetrics(token)])
+      const [goalsData, metricsData, machinesData] = await Promise.all([
+        getGoals(token),
+        getMetrics(token),
+        getMachines(token),
+      ])
       setGoals(goalsData)
       setMetrics(metricsData)
+      setMachines(machinesData)
+
+      try {
+        const cfg = await getBonusProductionConfigForMonth(token, bonusConfigMonth)
+        setBonusConfig(cfg.config)
+      } catch {
+        setBonusConfig(DEFAULT_BONUS_PRODUCTION_CONFIG)
+      }
 
       if (goalsData.length === 0) {
         setActualByGoalId({})
@@ -334,6 +472,8 @@ export default function MetasPage() {
       }
 
       const metricIds = Array.from(new Set(goalsData.map((g) => g.metricId)))
+      const skuGoals = goalsData.filter((g) => normalizeSku(g.sku))
+      const nonSkuGoals = goalsData.filter((g) => !normalizeSku(g.sku))
 
       const minStart = goalsData.reduce(
         (min, g) => (g.startDate < min ? g.startDate : min),
@@ -344,21 +484,30 @@ export default function MetasPage() {
         goalsData[0].endDate,
       )
       const range = toDateTimeRange(minStart, maxEnd)
+      const { skuById, upbById } = buildMachineMaps(machinesData)
 
-      const pointsByMetric = await Promise.all(
-        metricIds.map((metricId) =>
-          getMetricPoints(token, {
-            metricId,
-            from: range.from,
-            to: range.to,
-            limit: 5000,
-          }),
-        ),
-      )
+      const [pointsByMetric, productionEvents] = await Promise.all([
+        nonSkuGoals.length > 0
+          ? Promise.all(
+              metricIds.map((metricId) =>
+                getMetricPoints(token, {
+                  metricId,
+                  from: range.from,
+                  to: range.to,
+                  limit: 5000,
+                }),
+              ),
+            )
+          : Promise.resolve([] as Awaited<ReturnType<typeof getMetricPoints>>[]),
+        skuGoals.length > 0
+          ? getProductionEvents(token, { from: range.from, to: range.to, limit: 10000 })
+          : Promise.resolve([]),
+      ])
 
       const points = pointsByMetric.flat()
       const actual: Record<string, number> = {}
-      for (const g of goalsData) {
+
+      for (const g of nonSkuGoals) {
         const { from, to } = toDateTimeRange(g.startDate, g.endDate)
         const shift = g.shift ?? null
         const sum = points
@@ -373,6 +522,26 @@ export default function MetasPage() {
             return s === shift
           })
           .reduce((acc, p) => acc + Number(p.value ?? 0), 0)
+        actual[g.id] = sum
+      }
+
+      for (const g of skuGoals) {
+        const goalSku = normalizeSku(g.sku)?.toLowerCase()
+        if (!goalSku) continue
+        const { from, to } = toDateTimeRange(g.startDate, g.endDate)
+        const shift = g.shift ?? null
+        const sum = productionEvents
+          .filter((e) => (g.machineId ? e.machineId === g.machineId : true))
+          .filter((e) => e.occurredAt >= from && e.occurredAt <= to)
+          .filter((e) => {
+            if (!shift) return true
+            return productionShiftFromMeasuredAt(e.occurredAt) === shift
+          })
+          .filter((e) => {
+            const eventSku = resolveProductionEventSku(e, skuById)
+            return eventSku?.trim().toLowerCase() === goalSku
+          })
+          .reduce((acc, e) => acc + productionUnitsFromEvent(e, upbById), 0)
         actual[g.id] = sum
       }
       setActualByGoalId(actual)
@@ -394,7 +563,7 @@ export default function MetasPage() {
     return () => {
       cancelled = true
     }
-  }, [getAccessToken])
+  }, [getAccessToken, bonusConfigMonth])
 
   const openCreate = () => {
     setEditingGoal(null)
@@ -405,6 +574,8 @@ export default function MetasPage() {
       targetValue: "",
       startDate: "",
       endDate: "",
+      sku: "",
+      machineId: "none",
     })
     setIsDialogOpen(true)
   }
@@ -418,6 +589,8 @@ export default function MetasPage() {
       targetValue: String(g.targetValue),
       startDate: g.startDate,
       endDate: g.endDate,
+      sku: g.sku?.trim() ?? "",
+      machineId: g.machineId ?? "none",
     })
     setIsDialogOpen(true)
   }
@@ -426,6 +599,8 @@ export default function MetasPage() {
     const token = await getAccessToken()
     if (!token) return
 
+    const selectedMetric = metrics.find((m) => m.id === formData.metricId)
+    const skuValue = normalizeSku(formData.sku)
     const payload = {
       metricId: formData.metricId,
       period: formData.period,
@@ -433,10 +608,16 @@ export default function MetasPage() {
       targetValue: Number(formData.targetValue),
       startDate: formData.startDate,
       endDate: formData.endDate,
+      machineId: formData.machineId === "none" ? null : formData.machineId,
+      sku: isProductionMetric(selectedMetric) ? skuValue : null,
     }
 
     if (!payload.metricId) {
       setError("Selecciona una métrica.")
+      return
+    }
+    if (isProductionMetric(selectedMetric) && formData.sku.trim() && !skuValue) {
+      setError("El SKU no puede estar vacío.")
       return
     }
     if (!payload.startDate || !payload.endDate) {
@@ -485,8 +666,10 @@ export default function MetasPage() {
         {/* Header */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">Sistema de Metas</h1>
-            <p className="text-muted-foreground">Define y monitorea objetivos de producción</p>
+            <h1 className="text-2xl font-bold text-foreground">Metas</h1>
+            <p className="text-muted-foreground">
+              Monitorea cumplimiento de objetivos de producción
+            </p>
           </div>
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
             <DialogTrigger asChild>
@@ -518,6 +701,49 @@ export default function MetasPage() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                {showProductionSkuFields ? (
+                  <>
+                    <div className="space-y-2">
+                      <Label>SKU (opcional)</Label>
+                      <Input
+                        list="metas-sku-suggestions"
+                        value={formData.sku}
+                        onChange={(e) => setFormData((s) => ({ ...s, sku: e.target.value }))}
+                        placeholder="Ej. SKU-001"
+                      />
+                      <datalist id="metas-sku-suggestions">
+                        {skuSuggestions.map((sku) => (
+                          <option key={sku} value={sku} />
+                        ))}
+                      </datalist>
+                      <p className="text-xs text-muted-foreground">
+                        Si defines un SKU, el cumplimiento se calcula con eventos de producción PLC
+                        filtrados por ese código (unidades = cajas × piezas por caja).
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Máquina (opcional)</Label>
+                      <Select
+                        value={formData.machineId}
+                        onValueChange={(v) => setFormData((s) => ({ ...s, machineId: v }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Todas las máquinas" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">Todas las máquinas</SelectItem>
+                          {machines.map((m) => (
+                            <SelectItem key={m.id} value={m.id}>
+                              {(m.code ?? m.name).trim() || m.name}
+                              {m.currentSku?.trim() ? ` · ${m.currentSku.trim()}` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </>
+                ) : null}
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -601,6 +827,22 @@ export default function MetasPage() {
             </DialogContent>
           </Dialog>
         </div>
+
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="pt-6 text-sm text-muted-foreground">
+            Las metas de Tail, Turbo, Roller y Bending provienen de{" "}
+            <Link href="/reglas-negocio?tab=bono" className="font-medium text-primary underline">
+              Reglas de negocio → Configuración de bono
+            </Link>
+            {" "}(mes vigente: {bonusConfigMonth}). Al guardar allí se sincronizan aquí y en los
+            reportes Excel.
+          </CardContent>
+        </Card>
+
+        <BonusVacationAdjustmentsPanel
+          bonusConfigMonth={bonusConfigMonth}
+          bonusConfig={bonusConfig}
+        />
 
         {/* Error / loading */}
         {error ? (
@@ -775,8 +1017,18 @@ export default function MetasPage() {
                           goal={goal}
                           metric={metricById.get(goal.metricId)}
                           actual={actual}
-                          onEdit={openEdit}
+                          machineLabel={
+                            goal.machineId
+                              ? (machineMaps.labelById.get(goal.machineId) ?? null)
+                              : null
+                          }
+                          onEdit={
+                            isBonusSyncedGoal(goal)
+                              ? openBonusConfig
+                              : openEdit
+                          }
                           onDelete={onDelete}
+                          fromBonusConfig={isBonusSyncedGoal(goal)}
                         />
                       ))}
                     </div>

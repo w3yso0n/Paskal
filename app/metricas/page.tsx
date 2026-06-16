@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { KpiCard } from "@/components/dashboard/kpi-card"
 import { AttendanceTable } from "@/components/attendance/attendance-table"
@@ -46,7 +47,6 @@ import {
 import {
   CheckCircle,
   Clock,
-  Zap,
   TrendingUp,
   AlertTriangle,
   Users,
@@ -58,6 +58,7 @@ import {
   UserMinus,
   UserPlus,
   CalendarDays,
+  Target,
 } from "lucide-react"
 import {
   BarChart,
@@ -86,20 +87,38 @@ import {
   getEmployees,
   getMachines,
   getMachineCheckins,
+  getManualDataCaptures,
+  getEmployeeDayRecords,
+  getEmployeeRoleEvents,
+  getBonusProductionConfigForMonth,
+  getResolvedHolidaysForMonth,
   getProductionEvents,
+  getGoals,
+  getMetrics,
+  type ApiGoal,
+  type ApiMetric,
   type ApiEmployee,
+  type ApiMachine,
   type ApiMachineCheckin,
   type ApiProductionEvent,
 } from "@/lib/api"
+import { filterFloorMachines } from "@/lib/machine-floor"
 import {
   buildProductionShiftReportBlob,
   productionShiftReportFilename,
+  type ProductionShiftManualCapture,
   type ProductionShiftReportSourceRow,
 } from "@/lib/production-shift-report-excel"
 import {
   buildBonusAccumulatedReportBlob,
   bonusAccumulatedReportFilename,
+  type BonusEmployeeDayRecord,
+  type BonusManualCapture,
 } from "@/lib/bonus-accumulated-report-excel"
+import type {
+  BonusEmployeePrimaryRole,
+  BonusEmployeeRoleEvent,
+} from "@/lib/bonus-role-context"
 import {
   buildAnnualAccumulatedReportBlob,
   annualAccumulatedReportFilename,
@@ -284,6 +303,147 @@ function skuFromMessage(message: string | null | undefined): string | undefined 
   return raw || undefined
 }
 
+function mapEventsToProductionBaseRows(
+  events: ApiProductionEvent[],
+  checkins: ApiMachineCheckin[],
+  employees: ApiEmployee[],
+  apiMachines: ApiMachine[],
+): ProductionBaseRow[] {
+  const machineLabelById = new Map<string, string>()
+  const machineSkuById = new Map<string, string>()
+  const machineUpbById = new Map<string, number>()
+  for (const m of filterFloorMachines(apiMachines)) {
+    const label = (m.code ?? m.name).trim() || m.name
+    machineLabelById.set(m.id, label)
+    const curSku = m.currentSku?.trim()
+    if (curSku) machineSkuById.set(m.id, curSku)
+    const upb = m.unitsPerBox
+    if (upb != null && Number.isFinite(upb) && upb > 0) machineUpbById.set(m.id, upb)
+  }
+
+  const codeToName = buildEmployeeCodeToNameMap(employees)
+  const resolvePerson = (raw: string | undefined) => {
+    const code = String(raw ?? "").trim()
+    if (!code || code === "—") return "—"
+    return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
+  }
+
+  return events.map((e: ApiProductionEvent) => {
+    const payload = e.payload ?? {}
+    const eventRaw = String(payloadString(payload, "EVENT", "event") ?? e.eventType ?? "")
+    const lower = eventRaw.toLowerCase()
+    const event: ProductionEventType =
+      eventRaw === "Cambio SKU" || eventRaw === "Parada" || eventRaw === "Producción"
+        ? (eventRaw as ProductionEventType)
+        : lower.includes("cambio") || lower.includes("sku")
+          ? "Cambio SKU"
+          : lower.includes("paro") || lower.includes("down")
+            ? "Parada"
+            : lower === "prod" || lower.includes("produ")
+              ? "Producción"
+              : "Producción"
+
+    const countRaw =
+      (payload["COUNT"] as unknown) ??
+      (payload["count"] as unknown) ??
+      (payload["units"] as unknown)
+    const count = typeof countRaw === "number" ? countRaw : Number(countRaw)
+
+    const ts = String(
+      payloadString(payload, "TIMESTAMP", "timestamp") ?? e.occurredAt ?? new Date().toISOString(),
+    )
+
+    const mid = e.machineId?.trim()
+    const fromPayload = payloadString(payload, "MACHINE_ID", "machine_id") ?? ""
+    const machine_id = (mid && machineLabelById.get(mid)) || fromPayload || mid || "—"
+
+    const operatorCodeRaw =
+      payloadString(payload, "OPERATOR_1", "operator_1", "OPERATOR", "operator") ??
+      nthStringFromArray(payload, "operators", 0) ??
+      nthStringFromArrayLoose(payload, "operators", 0)
+
+    let operatorLabel = resolvePerson(operatorCodeRaw)
+    if (operatorLabel === "—" && e.machineId?.trim()) {
+      const fromChk = primaryOperatorLabelFromCheckin(
+        e.machineId,
+        new Date(ts).getTime(),
+        checkins,
+        resolvePerson,
+      )
+      if (fromChk) operatorLabel = fromChk
+    }
+
+    const operator2CodeRaw =
+      payloadString(payload, "OPERATOR_2", "operator_2") ??
+      nthStringFromArray(payload, "operators", 1) ??
+      nthStringFromArrayLoose(payload, "operators", 1)
+    let operator2Label = resolvePerson(operator2CodeRaw)
+    if (operator2Label === "—" && e.machineId?.trim()) {
+      const ch = findBestCheckinForMachineAndTime(e.machineId, new Date(ts).getTime(), checkins)
+      const oc2 = ch?.operator2Code?.trim()
+      if (oc2) operator2Label = resolvePerson(oc2)
+    }
+
+    const upbRaw =
+      (payload["units_per_box"] as unknown) ??
+      (payload["unitsPerBox"] as unknown) ??
+      (mid ? machineUpbById.get(mid) : undefined)
+    const unitsPerBox =
+      typeof upbRaw === "number" && Number.isFinite(upbRaw) && upbRaw > 0
+        ? upbRaw
+        : Number(upbRaw) > 0
+          ? Number(upbRaw)
+          : mid
+            ? (machineUpbById.get(mid) ?? 48)
+            : 48
+
+    const skuResolved =
+      payloadString(
+        payload,
+        "SKU",
+        "sku",
+        "PRODUCT",
+        "product",
+        "PRODUCT_CODE",
+        "product_code",
+      ) ??
+      (mid ? machineSkuById.get(mid) : undefined) ??
+      skuFromMessage(e.message)
+
+    const rawPackerCodes = collectPackerCodesFromPayload(payload)
+    let packersAttributed = dedupeTrimmedPreserveOrder(
+      rawPackerCodes.map((c) => resolvePerson(c)).filter((p) => p && p !== "—"),
+    )
+    if (packersAttributed.length === 0 && e.machineId?.trim()) {
+      packersAttributed = packerDisplayNamesFromCheckin(
+        e.machineId,
+        new Date(ts).getTime(),
+        checkins,
+        resolvePerson,
+      )
+    }
+    const packer_1 = packersAttributed[0] ?? "—"
+    const packer_2 = packersAttributed[1] ?? "—"
+
+    return {
+      machine_id,
+      machineIdRaw: e.machineId?.trim() ?? null,
+      timestamp: ts,
+      operator: operatorLabel,
+      operator_2: operator2Label,
+      unitsPerBox,
+      packer_1,
+      packer_2,
+      packersAttributed,
+      parameter_1: Number((payload["PARAMETER_1"] as unknown) ?? 0) || 0,
+      parameter_2: Number((payload["PARAMETER_2"] as unknown) ?? 0) || 0,
+      count: Number.isFinite(count) ? count : 0,
+      event,
+      sku: skuResolved ?? "—",
+    }
+  })
+}
+
 /** Asistencia proxy: una fila por persona asignada en el check-in NFC (entrada/salida de máquina). */
 function machineCheckinsToAttendanceRecords(
   checkins: ApiMachineCheckin[],
@@ -443,6 +603,24 @@ export default function MetricsPage() {
     return `${yyyy}-${mm}-${dd}`
   }
 
+  const getMonthDateBounds = (reportMonth: string) => {
+    const [yRaw, mRaw] = reportMonth.split("-")
+    const year = Number(yRaw)
+    const month = Number(mRaw) - 1
+    const now = new Date()
+    if (!Number.isFinite(year) || !Number.isFinite(month) || month < 0 || month > 11) {
+      return {
+        start: formatDate(new Date(now.getFullYear(), now.getMonth(), 1)),
+        end: formatDate(now),
+      }
+    }
+    const mm = String(month + 1).padStart(2, "0")
+    const start = `${year}-${mm}-01`
+    const lastDay = formatDate(new Date(year, month + 1, 0))
+    const isCurrentMonth = year === now.getFullYear() && month === now.getMonth()
+    return { start, end: isCurrentMonth ? formatDate(now) : lastDay }
+  }
+
   // Last 6 months + current month as quick-select pills
   const monthOptions = useMemo(() => {
     const now = new Date()
@@ -504,6 +682,8 @@ export default function MetricsPage() {
 
   const [productionBaseRows, setProductionBaseRows] = useState<ProductionBaseRow[]>([])
   const [employeeRows, setEmployeeRows] = useState<ApiEmployee[]>([])
+  const [goalsRows, setGoalsRows] = useState<ApiGoal[]>([])
+  const [metricsRows, setMetricsRows] = useState<ApiMetric[]>([])
   const [dataLoading, setDataLoading] = useState(true)
   const [dataError, setDataError] = useState<string | null>(null)
   const [reloadNonce, setReloadNonce] = useState(0)
@@ -534,166 +714,22 @@ export default function MetricsPage() {
         const fromIso = new Date(`${filterStartDate}T00:00:00`).toISOString()
         const toIso = new Date(`${filterEndDate}T23:59:59.999`).toISOString()
 
-        const [events, employees, apiMachines, checkins] = await Promise.all([
+        const [events, employees, apiMachines, checkins, goals, metrics] = await Promise.all([
           getProductionEvents(token, { from: fromIso, to: toIso, limit: 120_000 }),
           getEmployees(token),
           getMachines(token),
           getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
+          getGoals(token),
+          getMetrics(token),
         ])
         if (cancelled) return
 
         setEmployeeRows(employees)
+        setGoalsRows(goals)
+        setMetricsRows(metrics)
         setMachineCheckinsLoaded(checkins)
 
-        const machineLabelById = new Map<string, string>()
-        const machineSkuById = new Map<string, string>()
-        const machineUpbById = new Map<string, number>()
-        for (const m of apiMachines) {
-          const label = (m.code ?? m.name).trim() || m.name
-          machineLabelById.set(m.id, label)
-          const curSku = m.currentSku?.trim()
-          if (curSku) machineSkuById.set(m.id, curSku)
-          const upb = m.unitsPerBox
-          if (upb != null && Number.isFinite(upb) && upb > 0) machineUpbById.set(m.id, upb)
-        }
-
-        const codeToName = buildEmployeeCodeToNameMap(employees)
-        const resolvePerson = (raw: string | undefined) => {
-          const code = String(raw ?? "").trim()
-          if (!code || code === "—") return "—"
-          return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
-        }
-
-        const mapped: ProductionBaseRow[] = events.map((e: ApiProductionEvent) => {
-          const payload = e.payload ?? {}
-          const eventRaw = String(
-            payloadString(payload, "EVENT", "event") ?? e.eventType ?? "",
-          )
-          const lower = eventRaw.toLowerCase()
-          const event: ProductionEventType =
-            eventRaw === "Cambio SKU" || eventRaw === "Parada" || eventRaw === "Producción"
-              ? (eventRaw as ProductionEventType)
-              : lower.includes("cambio") || lower.includes("sku")
-                ? "Cambio SKU"
-                : lower.includes("paro") || lower.includes("down")
-                  ? "Parada"
-                  : lower === "prod" || lower.includes("produ")
-                    ? "Producción"
-                    : "Producción"
-
-          const countRaw =
-            (payload["COUNT"] as unknown) ??
-            (payload["count"] as unknown) ??
-            (payload["units"] as unknown)
-          const count = typeof countRaw === "number" ? countRaw : Number(countRaw)
-
-          const ts =
-            String(
-              payloadString(payload, "TIMESTAMP", "timestamp") ??
-                e.occurredAt ??
-                new Date().toISOString(),
-            )
-
-          const mid = e.machineId?.trim()
-          const fromPayload = payloadString(payload, "MACHINE_ID", "machine_id") ?? ""
-          const machine_id =
-            (mid && machineLabelById.get(mid)) || fromPayload || mid || "—"
-
-          const operatorCodeRaw =
-            payloadString(
-              payload,
-              "OPERATOR_1",
-              "operator_1",
-              "OPERATOR",
-              "operator",
-            ) ??
-            nthStringFromArray(payload, "operators", 0) ??
-            nthStringFromArrayLoose(payload, "operators", 0)
-
-          let operatorLabel = resolvePerson(operatorCodeRaw)
-          if (operatorLabel === "—" && e.machineId?.trim()) {
-            const fromChk = primaryOperatorLabelFromCheckin(
-              e.machineId,
-              new Date(ts).getTime(),
-              checkins,
-              resolvePerson,
-            )
-            if (fromChk) operatorLabel = fromChk
-          }
-
-          const operator2CodeRaw =
-            payloadString(payload, "OPERATOR_2", "operator_2") ??
-            nthStringFromArray(payload, "operators", 1) ??
-            nthStringFromArrayLoose(payload, "operators", 1)
-          let operator2Label = resolvePerson(operator2CodeRaw)
-          if (operator2Label === "—" && e.machineId?.trim()) {
-            const ch = findBestCheckinForMachineAndTime(
-              e.machineId,
-              new Date(ts).getTime(),
-              checkins,
-            )
-            const oc2 = ch?.operator2Code?.trim()
-            if (oc2) operator2Label = resolvePerson(oc2)
-          }
-
-          const upbRaw =
-            (payload["units_per_box"] as unknown) ??
-            (payload["unitsPerBox"] as unknown) ??
-            (mid ? machineUpbById.get(mid) : undefined)
-          const unitsPerBox =
-            typeof upbRaw === "number" && Number.isFinite(upbRaw) && upbRaw > 0
-              ? upbRaw
-              : Number(upbRaw) > 0
-                ? Number(upbRaw)
-                : mid
-                  ? (machineUpbById.get(mid) ?? 48)
-                  : 48
-
-          const skuResolved =
-            payloadString(
-              payload,
-              "SKU",
-              "sku",
-              "PRODUCT",
-              "product",
-              "PRODUCT_CODE",
-              "product_code",
-            ) ??
-            (mid ? machineSkuById.get(mid) : undefined) ??
-            skuFromMessage(e.message)
-
-          const rawPackerCodes = collectPackerCodesFromPayload(payload)
-          let packersAttributed = dedupeTrimmedPreserveOrder(
-            rawPackerCodes.map((c) => resolvePerson(c)).filter((p) => p && p !== "—"),
-          )
-          if (packersAttributed.length === 0 && e.machineId?.trim()) {
-            packersAttributed = packerDisplayNamesFromCheckin(
-              e.machineId,
-              new Date(ts).getTime(),
-              checkins,
-              resolvePerson,
-            )
-          }
-          const packer_1 = packersAttributed[0] ?? "—"
-          const packer_2 = packersAttributed[1] ?? "—"
-
-          return {
-            machine_id,
-            machineIdRaw: e.machineId?.trim() ?? null,
-            timestamp: ts,
-            operator: operatorLabel,
-            operator_2: operator2Label,
-            unitsPerBox,
-            packer_1,
-            packer_2,
-            packersAttributed,
-            parameter_1: Number((payload["PARAMETER_1"] as unknown) ?? 0) || 0,
-            parameter_2: Number((payload["PARAMETER_2"] as unknown) ?? 0) || 0,
-            count: Number.isFinite(count) ? count : 0,
-            event,
-            sku: skuResolved ?? "—",
-          }
-        })
+        const mapped = mapEventsToProductionBaseRows(events, checkins, employees, apiMachines)
 
         if (isMetricasDebugEnabled()) {
           const prodRows = mapped.filter((r) => r.event === "Producción")
@@ -703,6 +739,7 @@ export default function MetricsPage() {
           }
           const sinOp = prodRows.filter((r) => r.operator === "—").length
           const conMaquina = prodRows.filter((r) => Boolean(r.machineIdRaw)).length
+          const codeToName = buildEmployeeCodeToNameMap(employees)
           console.info("[Métricas] METRICAS_DEBUG=1 — producción / operadores", {
             rango: { desde: filterStartDate, hasta: filterEndDate },
             registrosApi: events.length,
@@ -752,6 +789,15 @@ export default function MetricsPage() {
   const [supervisorName, setSupervisorName] = useState("")
   const [reportGenerating, setReportGenerating] = useState(false)
 
+  const [isBonusReportDialogOpen, setIsBonusReportDialogOpen] = useState(false)
+  const [bonusReportDate, setBonusReportDate] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`
+  })
+  const [bonusRangeStart, setBonusRangeStart] = useState(filterStartDate)
+  const [bonusRangeEnd, setBonusRangeEnd] = useState(filterEndDate)
+  const [bonusReportGenerating, setBonusReportGenerating] = useState(false)
+  const [bonusReportError, setBonusReportError] = useState<string | null>(null)
 
   const operatorBarPalette = [
     "#22c55e", // green
@@ -1061,14 +1107,34 @@ export default function MetricsPage() {
     })
   }, [analytics.machineScatter, productionBaseRows, filterStartDate, filterEndDate])
 
-  const topSkusData = useMemo(() => {
-    const total = analytics.produced14d > 0 ? analytics.produced14d : 1
-    return analytics.topSkus.map((s) => ({
-      sku: s.sku,
-      units: s.units,
-      percentage: (s.units / total) * 100,
-    }))
-  }, [analytics.produced14d, analytics.topSkus])
+  const productionMetricId = useMemo(
+    () => metricsRows.find((m) => m.name.trim().toLowerCase() === "producción")?.id ?? null,
+    [metricsRows],
+  )
+
+  const monthlyGoalSummary = useMemo(() => {
+    if (!productionMetricId) return null
+    const rangeStart = filterStartDate
+    const rangeEnd = filterEndDate
+    const monthlyGoals = goalsRows.filter((g) => {
+      if (g.metricId !== productionMetricId) return false
+      if (g.period !== "monthly") return false
+      if (g.sku?.trim()) return false
+      return g.startDate <= rangeEnd && g.endDate >= rangeStart
+    })
+    if (monthlyGoals.length === 0) return null
+    const target = monthlyGoals.reduce((acc, g) => acc + Number(g.targetValue || 0), 0)
+    if (target <= 0) return null
+    const actual = analytics.produced14d
+    const pct = Math.round((actual / target) * 100)
+    return { target, actual, pct }
+  }, [
+    goalsRows,
+    productionMetricId,
+    filterStartDate,
+    filterEndDate,
+    analytics.produced14d,
+  ])
 
   const attendanceFromCheckins = useMemo(
     () => machineCheckinsToAttendanceRecords(machineCheckinsLoaded, employeeRows),
@@ -1127,6 +1193,11 @@ export default function MetricsPage() {
       if (!code) return "—"
       return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
     }
+    const resolvePersonFromCode = (code: string | null | undefined) => {
+      const c = String(code ?? "").trim()
+      if (!c) return ""
+      return codeToName.get(c) ?? codeToName.get(c.toLowerCase()) ?? c
+    }
     const resolveFromCheckin = (ch: ApiMachineCheckin) => ({
       operator1: resolvePerson(ch.operatorCode),
       operator2: resolvePerson(ch.operator2Code ?? undefined),
@@ -1161,9 +1232,59 @@ export default function MetricsPage() {
       unitsPerBox: r.unitsPerBox,
     }))
 
+    const monthBounds = getMonthDateBounds(reportDate)
     const shifts: (1 | 2)[] = reportBothShifts ? [1, 2] : [reportShiftNumber]
     setReportGenerating(true)
     try {
+      const token = await getAccessToken()
+      let manualCaptures: ProductionShiftManualCapture[] = []
+      let reportConfiguredSkus: string[] = []
+      if (token) {
+        const [windingRows, bendingRows, goals, metrics] = await Promise.all([
+          getManualDataCaptures(token, {
+            category: "winding",
+            from: monthBounds.start,
+            to: monthBounds.end,
+            limit: 2000,
+          }),
+          getManualDataCaptures(token, {
+            category: "bending",
+            from: monthBounds.start,
+            to: monthBounds.end,
+            limit: 2000,
+          }),
+          getGoals(token),
+          getMetrics(token),
+        ])
+        const productionMetricId =
+          metrics.find((m) => m.name.trim().toLowerCase() === "producción")?.id ?? null
+        reportConfiguredSkus = productionMetricId
+          ? [
+              ...new Set(
+                goals
+                  .filter((g) => {
+                    const sku = g.sku?.trim()
+                    if (!sku || g.metricId !== productionMetricId) return false
+                    return g.startDate <= monthBounds.end && g.endDate >= monthBounds.start
+                  })
+                  .map((g) => g.sku!.trim()),
+              ),
+            ]
+          : []
+        manualCaptures = [...windingRows, ...bendingRows]
+          .filter((c) => c.recordDate && c.productionQty != null)
+          .map((c) => ({
+            category: c.category as "winding" | "bending",
+            sourceKey: c.sourceKey,
+            recordDate: c.recordDate!,
+            shift: c.shift,
+            sku: c.sku,
+            operatorCode: c.operatorCode,
+            packagerCode: c.packagerCode,
+            productionQty: Number(c.productionQty),
+          }))
+      }
+
       for (const shiftNumber of shifts) {
         const blob = await buildProductionShiftReportBlob({
           reportDate,
@@ -1171,8 +1292,11 @@ export default function MetricsPage() {
           supervisorName: supervisorName.trim() || "—",
           rows: sourceRows,
           checkins: machineCheckinsLoaded,
+          manualCaptures,
+          configuredSkus: reportConfiguredSkus,
           resolveFromCheckin,
           resolveEmployeeCode,
+          resolvePersonFromCode,
         })
         downloadBlob(productionShiftReportFilename(shiftNumber, reportDate), blob)
       }
@@ -1182,23 +1306,181 @@ export default function MetricsPage() {
     }
   }
 
-  const handleDownloadBonusReportXlsx = async () => {
-    const targetDate = reportDate || filterEndDate || formatDate(new Date())
-    const sourceRows: ProductionShiftReportSourceRow[] = productionBaseRows.map((r) => ({
-      machine_id: r.machine_id,
-      machineIdRaw: r.machineIdRaw,
-      timestamp: r.timestamp,
-      operator: r.operator,
-      operator_2: r.operator_2,
-      packer_1: r.packer_1,
-      packer_2: r.packer_2,
-      count: r.count,
-      event: r.event,
-      sku: r.sku,
-      unitsPerBox: r.unitsPerBox,
-    }))
-    const blob = await buildBonusAccumulatedReportBlob(targetDate, sourceRows)
-    downloadBlob(bonusAccumulatedReportFilename(targetDate), blob)
+  const openBonusReportDialog = () => {
+    const monthFirst = `${filterStartDate.slice(0, 7)}-01`
+    setBonusReportDate(monthFirst)
+    setBonusRangeStart(filterStartDate)
+    setBonusRangeEnd(filterEndDate)
+    setBonusReportError(null)
+    setIsBonusReportDialogOpen(true)
+  }
+
+  const handleBonusMonthChange = (value: string) => {
+    setBonusReportDate(value)
+    const bounds = getMonthDateBounds(value)
+    setBonusRangeStart(bounds.start)
+    setBonusRangeEnd(bounds.end)
+  }
+
+  const handleGenerateBonusReport = async () => {
+    if (!bonusRangeStart || !bonusRangeEnd) {
+      setBonusReportError("Selecciona el rango de fechas.")
+      return
+    }
+    const rangeStart = bonusRangeStart <= bonusRangeEnd ? bonusRangeStart : bonusRangeEnd
+    const rangeEnd = bonusRangeStart <= bonusRangeEnd ? bonusRangeEnd : bonusRangeStart
+
+    const codeToName = buildEmployeeCodeToNameMap(employeeRows)
+    const resolvePersonFromCode = (code: string | null | undefined) => {
+      const c = String(code ?? "").trim()
+      if (!c) return ""
+      return codeToName.get(c) ?? codeToName.get(c.toLowerCase()) ?? c
+    }
+
+    setBonusReportGenerating(true)
+    setBonusReportError(null)
+    try {
+      const token = await getAccessToken()
+      if (!token) {
+        setBonusReportError("Sesión no válida.")
+        return
+      }
+
+      const fromIso = new Date(`${rangeStart}T00:00:00`).toISOString()
+      const toIso = new Date(`${rangeEnd}T23:59:59.999`).toISOString()
+
+      const [events, employees, apiMachines, checkins] = await Promise.all([
+        getProductionEvents(token, { from: fromIso, to: toIso, limit: 120_000 }),
+        employeeRows.length > 0 ? Promise.resolve(employeeRows) : getEmployees(token),
+        getMachines(token),
+        getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
+      ])
+
+      const reportRows = mapEventsToProductionBaseRows(events, checkins, employees, apiMachines)
+      const sourceRows: ProductionShiftReportSourceRow[] = reportRows
+        .filter((r) => {
+          const day = r.timestamp.slice(0, 10)
+          return day >= rangeStart && day <= rangeEnd
+        })
+        .map((r) => ({
+          machine_id: r.machine_id,
+          machineIdRaw: r.machineIdRaw,
+          timestamp: r.timestamp,
+          operator: r.operator,
+          operator_2: r.operator_2,
+          packer_1: r.packer_1,
+          packer_2: r.packer_2,
+          count: r.count,
+          event: r.event,
+          sku: r.sku,
+          unitsPerBox: r.unitsPerBox,
+        }))
+
+      const monthBounds = getMonthDateBounds(bonusReportDate)
+      let manualCaptures: BonusManualCapture[] = []
+      let employeeDayRecords: BonusEmployeeDayRecord[] = []
+      let employeeRoleEvents: BonusEmployeeRoleEvent[] = []
+      let employeePrimaryRoles: BonusEmployeePrimaryRole[] = []
+
+      if (token) {
+        const [bendingRows, rollerRows, dayRecordRows, roleEventRows] = await Promise.all([
+          getManualDataCaptures(token, {
+            category: "bending",
+            from: monthBounds.start,
+            to: monthBounds.end,
+            limit: 2000,
+          }),
+          getManualDataCaptures(token, {
+            category: "roller",
+            from: monthBounds.start,
+            to: monthBounds.end,
+            limit: 2000,
+          }),
+          getEmployeeDayRecords(token, {
+            from: monthBounds.start,
+            to: monthBounds.end,
+            limit: 5000,
+          }),
+          getEmployeeRoleEvents(token, {
+            from: monthBounds.start,
+            to: monthBounds.end,
+            limit: 5000,
+          }),
+        ])
+
+        manualCaptures = [...bendingRows, ...rollerRows]
+          .filter((c) => c.recordDate && c.productionQty != null)
+          .map((c) => ({
+            category: c.category as "bending" | "roller",
+            sourceKey: c.sourceKey,
+            recordDate: c.recordDate!,
+            shift: c.shift,
+            operatorCode: c.operatorCode,
+            productionQty: Number(c.productionQty),
+          }))
+
+        employeeDayRecords = dayRecordRows.map((r) => ({
+          employeeName: r.employeeName,
+          recordDate: r.recordDate,
+          shift: r.shift,
+          recordType: r.recordType,
+        }))
+
+        employeeRoleEvents = roleEventRows.map((r) => ({
+          employeeName: r.employeeName,
+          recordDate: r.recordDate,
+          shift: r.shift,
+          secondaryRole: r.secondaryRole,
+        }))
+
+        employeePrimaryRoles = employees.map((e) => ({
+          fullName: e.fullName,
+          primaryRole: e.primaryRole,
+          secondaryRole: e.secondaryRole,
+          position: e.position,
+        }))
+      }
+
+      let productionConfig = undefined
+      let resolvedHolidayIsos: string[] | undefined
+      if (token) {
+        try {
+          const cfg = await getBonusProductionConfigForMonth(token, bonusReportDate)
+          productionConfig = cfg.config
+        } catch {
+          // usa DEFAULT_BONUS_PRODUCTION_CONFIG en el generador
+        }
+        try {
+          const [yRaw, mRaw] = bonusReportDate.split("-")
+          const reportYear = Number(yRaw)
+          const reportMonth = Number(mRaw)
+          if (Number.isFinite(reportYear) && Number.isFinite(reportMonth)) {
+            resolvedHolidayIsos = await getResolvedHolidaysForMonth(
+              token,
+              reportYear,
+              reportMonth,
+            )
+          }
+        } catch {
+          // festivos oficiales locales
+        }
+      }
+
+      const blob = await buildBonusAccumulatedReportBlob(bonusReportDate, sourceRows, {
+        checkins,
+        resolvePersonFromCode,
+        manualCaptures,
+        employeeDayRecords,
+        employeeRoleEvents,
+        employeePrimaryRoles,
+        productionConfig,
+        resolvedHolidayIsos,
+      })
+      downloadBlob(bonusAccumulatedReportFilename(bonusReportDate), blob)
+      setIsBonusReportDialogOpen(false)
+    } finally {
+      setBonusReportGenerating(false)
+    }
   }
 
   const handleDownloadAnnualAccumulatedReportXlsx = async () => {
@@ -1228,48 +1510,21 @@ export default function MetricsPage() {
     ? hourlyProductionData.reduce((acc, r) => acc + (Number(r.production) || 0), 0)
     : null
 
-  // Promedio/Hora: total de unidades en el RANGO COMPLETO ÷ número de slots de hora
-  // distintos con producción. Así funciona igual para un día o para un mes entero.
-  const avgPerHour = useMemo(() => {
-    const hourSlots = new Set<string>()
+  // Promedio/minuto: unidades en el rango ÷ slots de minuto con producción.
+  const avgPerMinute = useMemo(() => {
     let total = 0
+    const minuteSlots = new Set<string>()
     for (const r of productionBaseRows) {
       if (r.event !== "Producción") continue
       const ts = new Date(r.timestamp)
       if (Number.isNaN(ts.getTime())) continue
       total += Number(r.count) || 0
-      // Slot único por fecha+hora (YYYY-MM-DDTHH)
-      hourSlots.add(ts.toISOString().slice(0, 13))
+      minuteSlots.add(ts.toISOString().slice(0, 16))
     }
-    if (hourSlots.size === 0 || total === 0) return null
-    return Math.round(total / hourSlots.size)
+    if (minuteSlots.size === 0 || total === 0) return null
+    return Math.round((total / minuteSlots.size) * 100) / 100
   }, [productionBaseRows])
 
-  // Hora pico: la hora del día (00-23) con más producción acumulada en TODO el rango.
-  const peakHour = useMemo(() => {
-    const byHour = new Map<string, number>()
-    for (const r of productionBaseRows) {
-      if (r.event !== "Producción") continue
-      const ts = new Date(r.timestamp)
-      if (Number.isNaN(ts.getTime())) continue
-      const h = `${String(ts.getHours()).padStart(2, "0")}:00`
-      byHour.set(h, (byHour.get(h) ?? 0) + (Number(r.count) || 0))
-    }
-    if (byHour.size === 0) return null
-    let best: { hour: string; production: number } | null = null
-    for (const [hour, production] of byHour) {
-      if (!best || production > best.production) best = { hour, production }
-    }
-    return best
-  }, [productionBaseRows])
-
-  const uptime =
-    topMachinesData.length > 0
-      ? Math.round(
-          topMachinesData.reduce((acc, m) => acc + (Number(m.uptime) || 0), 0) /
-            topMachinesData.length,
-        )
-      : null
 
   const todayStr = formatDate(new Date())
   const refDayLabel = lastDayWithData ?? filterEndDate
@@ -1346,7 +1601,7 @@ export default function MetricsPage() {
           <p className="mt-2 text-xs text-muted-foreground">
             Mostrando del{" "}
             <span className="font-medium">{filterStartDate}</span> al{" "}
-
+            <span className="font-medium">{filterEndDate}</span>
           </p>
         </div>
 
@@ -1415,7 +1670,7 @@ export default function MetricsPage() {
             <Button variant="outline" className="justify-start" onClick={() => setIsReportDialogOpen(true)}>
               <Download className="h-4 w-4" /> Reporte de Producción por Turno
             </Button>
-            <Button variant="outline" className="justify-start" onClick={handleDownloadBonusReportXlsx}>
+            <Button variant="outline" className="justify-start" onClick={openBonusReportDialog}>
               <Download className="h-4 w-4" /> Acumulado de Bono Mensual
             </Button>
             <Button
@@ -1427,6 +1682,93 @@ export default function MetricsPage() {
             </Button>
           </div>
         </div>
+
+        {/* Bonus report dialog */}
+        <Dialog open={isBonusReportDialogOpen} onOpenChange={setIsBonusReportDialogOpen}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Acumulado de Bono Mensual</DialogTitle>
+              <DialogDescription>
+                Elige el mes del reporte y el rango de fechas con producción a incluir. Las metas,
+                bonos y reglas se toman de{" "}
+                <Link href="/reglas-negocio?tab=bono" className="text-primary underline">
+                  Reglas de negocio → Configuración de bono
+                </Link>
+                ; vacaciones e incidencias de Gestión de empleados; bending/roller de Captura de
+                datos.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Mes del reporte</label>
+                <MonthPicker value={bonusReportDate} onChange={handleBonusMonthChange} />
+                <p className="text-xs text-muted-foreground">
+                  Define la estructura mensual del Excel (semanas y columnas del mes seleccionado).
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">Rango de fechas</label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="bonus-range-start">Desde</Label>
+                    <input
+                      id="bonus-range-start"
+                      type="date"
+                      value={bonusRangeStart}
+                      max={bonusRangeEnd || undefined}
+                      onChange={(e) => setBonusRangeStart(e.target.value)}
+                      className={cn(
+                        "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                      )}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="bonus-range-end">Hasta</Label>
+                    <input
+                      id="bonus-range-end"
+                      type="date"
+                      value={bonusRangeEnd}
+                      min={bonusRangeStart || undefined}
+                      onChange={(e) => setBonusRangeEnd(e.target.value)}
+                      className={cn(
+                        "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
+                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                      )}
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Solo se incluyen eventos de producción entre estas fechas. Al generar, los datos
+                  se cargan directamente del mes elegido (no dependen del filtro superior de
+                  Métricas).
+                </p>
+              </div>
+
+              {bonusReportError ? (
+                <Alert variant="destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>{bonusReportError}</AlertDescription>
+                </Alert>
+              ) : null}
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsBonusReportDialogOpen(false)}>
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleGenerateBonusReport}
+                disabled={bonusReportGenerating || !bonusRangeStart || !bonusRangeEnd}
+              >
+                <Download className="h-4 w-4" />{" "}
+                {bonusReportGenerating ? "Generando…" : "Descargar Excel"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
@@ -1518,29 +1860,26 @@ export default function MetricsPage() {
                 iconColor="text-primary"
               />
               <KpiCard
-                title="Promedio/Hora"
-                value={avgPerHour == null ? "—" : avgPerHour.toLocaleString()}
+                title="Promedio/Minuto"
+                value={avgPerMinute == null ? "—" : avgPerMinute.toLocaleString()}
                 subtitle="Unidades"
                 icon={Clock}
                 iconColor="text-primary"
               />
               <KpiCard
-                title="Hora Pico"
-                value={peakHour?.hour ?? "—"}
-                subtitle={
-                  peakHour?.production == null
-                    ? "— uds"
-                    : `${peakHour.production.toLocaleString()} uds`
+                title="Meta Mensual"
+                value={
+                  monthlyGoalSummary == null
+                    ? "—"
+                    : `${monthlyGoalSummary.actual.toLocaleString()} / ${monthlyGoalSummary.target.toLocaleString()}`
                 }
-                icon={Zap}
-                iconColor="text-yellow-500"
-              />
-              <KpiCard
-                title="Uptime"
-                value={uptime == null ? "—" : `${uptime}%`}
-                subtitle="Disponibilidad"
-                icon={TrendingUp}
-                iconColor="text-primary"
+                subtitle={
+                  monthlyGoalSummary == null
+                    ? "Sin meta mensual configurada"
+                    : `${monthlyGoalSummary.pct}% del objetivo`
+                }
+                icon={Target}
+                iconColor="text-teal-600"
               />
             </div>
 
@@ -1604,25 +1943,35 @@ export default function MetricsPage() {
                 </div>
               </div>
 
-              {/* SKUs */}
+              {/* SKUs — solo gráfica de barras (top 10) */}
               <div className="rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-4">SKUs Más Producidos</h3>
-                <div className="space-y-4">
-                  {topSkusData.map((sku) => (
-                    <div key={sku.sku}>
-                      <div className="mb-1 flex items-center justify-between text-sm">
-                        <span className="font-medium">{sku.sku}</span>
-                        <span className="text-muted-foreground">{sku.units.toLocaleString()} uds</span>
-                      </div>
-                      <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
-                        <div
-                          className="h-full rounded-full bg-primary"
-                          style={{ width: `${sku.percentage * 3}%` }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <h3 className="font-semibold text-foreground mb-1">SKUs más producidos</h3>
+                <p className="text-xs text-muted-foreground mb-4">Top 10 en el rango seleccionado</p>
+                {analytics.skuDistribution.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-12 text-center">
+                    Sin producción por SKU en este rango.
+                  </p>
+                ) : (
+                  <ChartContainer
+                    className="h-[300px] w-full aspect-auto"
+                    config={{ units: { label: "Unidades" } }}
+                  >
+                    <BarChart
+                      data={analytics.skuDistribution.slice(0, 10)}
+                      margin={{ left: 8, right: 8 }}
+                    >
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="sku" tick={{ fontSize: 11 }} interval={0} angle={-25} textAnchor="end" height={70} />
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <Bar dataKey="units" radius={[4, 4, 0, 0]}>
+                        {analytics.skuDistribution.slice(0, 10).map((s, index) => (
+                          <Cell key={s.sku} fill={skuPalette[index % skuPalette.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ChartContainer>
+                )}
               </div>
             </div>
 
@@ -1680,42 +2029,26 @@ export default function MetricsPage() {
 
               {/* SKUs */}
               <TabsContent value="skus" className="space-y-4">
-                <div className="grid gap-6 lg:grid-cols-3">
-                  <div className="lg:col-span-2 rounded-xl border border-border bg-background p-4">
-                    <h3 className="text-sm font-semibold text-foreground mb-3">Distribución por SKU</h3>
-                    <ChartContainer
-                      className="h-[300px] w-full aspect-auto"
-                      config={{ units: { label: "Unidades" } }}
-                    >
-                      <BarChart data={analytics.skuDistribution.slice(0, 10)} margin={{ left: 8, right: 8 }}>
-                        <CartesianGrid vertical={false} />
-                        <XAxis dataKey="sku" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
-                        <ChartTooltip content={<ChartTooltipContent />} />
-                        <Bar dataKey="units" radius={[4, 4, 0, 0]}>
-                          {analytics.skuDistribution.slice(0, 10).map((s, index) => (
-                            <Cell key={s.sku} fill={skuPalette[index % skuPalette.length]} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ChartContainer>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <h3 className="text-sm font-semibold text-foreground mb-3">SKU (Top 6)</h3>
-                    <div className="h-[300px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie data={analytics.topSkus} dataKey="units" nameKey="sku" cx="50%" cy="50%" innerRadius={55} outerRadius={90} paddingAngle={2}>
-                            {analytics.topSkus.map((s, index) => (
-                              <Cell key={s.sku} fill={skuPalette[index % skuPalette.length]} />
-                            ))}
-                          </Pie>
-                          <Tooltip />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
+                <div className="rounded-xl border border-border bg-background p-4">
+                  <h3 className="text-sm font-semibold text-foreground mb-3">
+                    SKUs más producidos (top 10)
+                  </h3>
+                  <ChartContainer
+                    className="h-[320px] w-full aspect-auto"
+                    config={{ units: { label: "Unidades" } }}
+                  >
+                    <BarChart data={analytics.skuDistribution.slice(0, 10)} margin={{ left: 8, right: 8 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="sku" tick={{ fontSize: 12 }} />
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <Bar dataKey="units" radius={[4, 4, 0, 0]}>
+                        {analytics.skuDistribution.slice(0, 10).map((s, index) => (
+                          <Cell key={s.sku} fill={skuPalette[index % skuPalette.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ChartContainer>
                 </div>
               </TabsContent>
 
@@ -1791,60 +2124,8 @@ export default function MetricsPage() {
               </div>
             </div>
 
-            {/* Distribuciones */}
-            <div className="grid gap-6 lg:grid-cols-2">
-              {/* Distribución de Operadores */}
-              <div className="rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-4">Distribución de Operadores</h3>
-                <p className="mb-2 text-xs text-muted-foreground">
-                  Por unidades de producción en el rango; incluye hasta 20 operadores con producción &gt; 0.
-                </p>
-                <div className="h-[300px]">
-                  {analytics.operatorDistributionPie.length === 0 ? (
-                    <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
-                      Sin unidades por operador en este rango de fechas.
-                    </div>
-                  ) : (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={analytics.operatorDistributionPie}
-                          dataKey="units"
-                          nameKey="name"
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={55}
-                          outerRadius={90}
-                          paddingAngle={2}
-                          minAngle={2}
-                          label={({ name, value }) => {
-                            const u = typeof value === "number" ? value : Number(value)
-                            if (!Number.isFinite(u) || u <= 0) return ""
-                            const n = String(name ?? "")
-                            const short = n.length > 12 ? `${n.slice(0, 12)}…` : n
-                            return `${short}`
-                          }}
-                        >
-                          {analytics.operatorDistributionPie.map((op, index) => (
-                            <Cell key={op.name} fill={operatorBarPalette[index % operatorBarPalette.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip
-                          formatter={(value: number | string) => {
-                            const u = typeof value === "number" ? value : Number(value)
-                            const txt = Number.isFinite(u)
-                              ? `${u.toLocaleString("es-MX", { maximumFractionDigits: 0 })} uds`
-                              : String(value)
-                            return [txt, "Producción"]
-                          }}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  )}
-                </div>
-              </div>
-
-              {/* Distribución de Empacadores */}
+            {/* Distribución empacadores */}
+            <div className="grid gap-6">
               <div className="rounded-xl border border-border bg-card p-6">
                 <h3 className="font-semibold text-foreground mb-4">Distribución de Empacadores</h3>
                 <p className="mb-2 text-xs text-muted-foreground">

@@ -53,6 +53,7 @@ import { hasPermission } from "@/lib/permissions"
 import {
   deleteAlert,
   getAlerts,
+  getBusinessAlertThresholds,
   getMachines,
   getProductionEvents,
   updateAlert,
@@ -209,6 +210,26 @@ export default function AlertasClient() {
     return Number.isFinite(fromQuery) && fromQuery > 0 ? Math.round(fromQuery) : 10
   }, [searchParams])
   const [idleThresholdMinutes, setIdleThresholdMinutes] = useState(initialIdleThresholdMinutes)
+
+  useEffect(() => {
+    let cancelled = false
+    const loadThresholds = async () => {
+      try {
+        const token = await getAccessToken()
+        if (!token || cancelled) return
+        const cfg = await getBusinessAlertThresholds(token)
+        if (!cancelled && !searchParams.get("idleMin")) {
+          setIdleThresholdMinutes(cfg.idleMinutesWithoutProduction)
+        }
+      } catch {
+        // mantiene valor por defecto o query string
+      }
+    }
+    void loadThresholds()
+    return () => {
+      cancelled = true
+    }
+  }, [getAccessToken, searchParams])
 
   // --- Hooks ---
   const alertRules = useAlertRules({

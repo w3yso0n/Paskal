@@ -22,10 +22,13 @@ import {
   getEmployees,
   getMachines,
   getProductionEvents,
+  getGoals,
+  getMetrics,
   type ApiEmployee,
   type ApiMachine,
   type ApiProductionEvent,
 } from "@/lib/api"
+import { filterFloorMachines } from "@/lib/machine-floor"
 
 const DASHBOARD_TIMEZONE = "America/Mexico_City"
 
@@ -240,6 +243,9 @@ export default function HomePage() {
   const [employees, setEmployees] = useState<ApiEmployee[]>([])
   const [totalProduced, setTotalProduced] = useState(0)
   const [producedToday, setProducedToday] = useState(0)
+  const [monthlyGoal, setMonthlyGoal] = useState<{ actual: number; target: number; pct: number } | null>(
+    null,
+  )
   const [selectedShift, setSelectedShift] = useState<ShiftId>("shift1")
 
   useEffect(() => {
@@ -259,13 +265,15 @@ export default function HomePage() {
           return
         }
 
-        const [apiMachines, apiEmployees, events] = await Promise.all([
+        const [apiMachines, apiEmployees, events, goals, metrics] = await Promise.all([
           getMachines(token),
           getEmployees(token),
           getProductionEvents(token, { limit: 2500 }),
+          getGoals(token),
+          getMetrics(token),
         ])
         if (cancelled) return
-        setMachines(apiMachines)
+        setMachines(filterFloorMachines(apiMachines))
         setEmployees(apiEmployees)
 
         const employeeNameByCode = new Map<string, string>()
@@ -288,6 +296,29 @@ export default function HomePage() {
           now,
           DASHBOARD_TIMEZONE,
         )
+        const monthStartKey = new Intl.DateTimeFormat("en-CA", {
+          timeZone: DASHBOARD_TIMEZONE,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(startOfMonthTz)
+        const monthEndKey = new Intl.DateTimeFormat("en-CA", {
+          timeZone: DASHBOARD_TIMEZONE,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(new Date(endOfMonthTz.getTime() - 1))
+        const productionMetricId =
+          metrics.find((m) => m.name.trim().toLowerCase() === "producción")?.id ?? null
+        const monthlyGoals = productionMetricId
+          ? goals.filter((g) => {
+              if (g.metricId !== productionMetricId) return false
+              if (g.period !== "monthly") return false
+              if (g.sku?.trim()) return false
+              return g.startDate <= monthEndKey && g.endDate >= monthStartKey
+            })
+          : []
+        const monthlyTarget = monthlyGoals.reduce((acc, g) => acc + Number(g.targetValue || 0), 0)
         const { start: shiftStart, end: shiftEnd } = getShiftBoundsInTimeZone(
           now,
           selectedShift,
@@ -368,6 +399,15 @@ export default function HomePage() {
         setOperatorProductionData(rows)
         setTotalProduced(total)
         setProducedToday(today)
+        if (monthlyTarget > 0) {
+          setMonthlyGoal({
+            actual: total,
+            target: monthlyTarget,
+            pct: Math.round((total / monthlyTarget) * 100),
+          })
+        } else {
+          setMonthlyGoal(null)
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -446,8 +486,19 @@ export default function HomePage() {
             iconColor="text-primary"
           />
           <KpiCard
-            title="Meta Anual"
-            value="—"
+            title="Meta Mensual"
+            value={
+              loading || monthlyGoal == null
+                ? "—"
+                : `${monthlyGoal.actual.toLocaleString()} / ${monthlyGoal.target.toLocaleString()}`
+            }
+            subtitle={
+              loading
+                ? "Cargando…"
+                : monthlyGoal == null
+                  ? "Sin meta mensual configurada"
+                  : `${monthlyGoal.pct}% del objetivo`
+            }
             icon={Target}
             iconColor="text-teal-600"
           />
@@ -536,7 +587,7 @@ export default function HomePage() {
                       visibleMachines[key] ? (
                         <Line
                           key={key}
-                          type="monotone"
+                          type="linear"
                           dataKey={key}
                           stroke={machineColors[index % machineColors.length]}
                           strokeWidth={2}

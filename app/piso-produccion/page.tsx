@@ -1,6 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
+import Link from "next/link"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { MachineCard } from "@/components/production/machine-card"
 import type { Machine } from "@/lib/types"
@@ -27,39 +28,48 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { TextAutocomplete, type TextAutocompleteOption } from "@/components/ui/text-autocomplete"
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Maximize2, Minimize2, Plus, Settings2, RotateCcw, X } from "lucide-react"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Maximize2, Minimize2, Plus, Settings2, RotateCcw, X, Tags } from "lucide-react"
 import { toast } from "sonner"
+import { filterFloorMachines } from "@/lib/machine-floor"
+import {
+  getProductSkus,
+  recordProductSkuUsage,
+  type ApiProductSku,
+} from "@/lib/api"
+import { SkuCodeInput, skuUnitsPerBox } from "@/components/sku/sku-code-input"
+import { CreateSkuDialog } from "@/components/sku/create-sku-dialog"
+import { normalizeSkuCode } from "@/lib/sku-catalog"
+import { loadQuantityRules } from "@/lib/hook-sku-quantity-table"
+import type { HookSkuQuantityRule } from "@/lib/hook-sku-generator"
 
-/** Mapeo código máquina (PA-05 `M-###`) -> posición en diagrama (row, col).
- * Nota: las columnas son 0-indexed (col: 0 es la primera columna visual).
- * La 2da columna visual es col: 1 y aquí solo debe tener M-007 y M-008.
- */
-const MACHINE_POSITIONS: Record<string, { row: number; col: number }> = {
-  "M-001": { row: 6, col: 0 }, "M-002": { row: 5, col: 0 }, "M-003": { row: 4, col: 0 }, "M-004": { row: 3, col: 0 },
-  "M-005": { row: 2, col: 0 }, "M-006": { row: 1, col: 0 }, "M-007": { row: 6, col: 1 }, "M-008": { row: 5, col: 1 },
-  "M-009": { row: 6, col: 2 }, "M-010": { row: 5, col: 2 }, "M-011": { row: 4, col: 2 }, "M-012": { row: 3, col: 2 },
-  "M-013": { row: 6, col: 3 }, "M-014": { row: 5, col: 3 }, "M-015": { row: 4, col: 3 }, "M-016": { row: 3, col: 3 },
-  "M-017": { row: 6, col: 4 }, "M-018": { row: 5, col: 4 }, "M-019": { row: 4, col: 4 }, "M-020": { row: 3, col: 4 },
-}
-
-function mapApiMachineToFrontend(m: ApiMachine): Machine {
+function mapApiMachineToFrontend(m: ApiMachine): Machine & { onFloor: boolean } {
   const statusMap = { running: "active" as const, idle: "waiting" as const, stopped: "inactive" as const, maintenance: "inactive" as const, offline: "inactive" as const }
-  const code = m.code ?? m.name
-  const position = MACHINE_POSITIONS[code] ?? { row: 0, col: 0 }
-  return { id: m.id, name: m.name, status: statusMap[m.status], position }
+  const label = m.code ?? m.name
+  const onFloor = m.floorRow != null && m.floorCol != null
+  const position = {
+    row: m.floorRow ?? 0,
+    col: m.floorCol ?? 0,
+  }
+  return { id: m.id, name: label, status: statusMap[m.status], position, onFloor }
 }
 
 const MAX_PACKERS_PER_MACHINE = 4
 const MAX_OPERATORS_PER_MACHINE = 2
+
+function personAutocompleteOptions(
+  names: string[],
+  employeeRows: ApiEmployee[],
+): TextAutocompleteOption[] {
+  return names.map((name) => ({
+    value: name,
+    label: name,
+    hint: employeeRows.find((e) => e.fullName === name)?.employeeCode ?? undefined,
+  }))
+}
 
 function computeEffectiveStatus(
   sku: string | undefined,
@@ -75,12 +85,19 @@ function computeEffectiveStatus(
 }
 
 interface MachineData extends Machine {
+  onFloor?: boolean
   machineCode?: string
   sku?: string
+  unitsPerBox?: number
   operator?: string
   operator2?: string
   packers?: string[]
   production?: number
+}
+
+function machineNumberFromName(name: string): number {
+  const match = name.match(/\d+/)
+  return match ? Number(match[0]) : Number.POSITIVE_INFINITY
 }
 
 export default function ProductionFloorPage() {
@@ -109,6 +126,13 @@ export default function ProductionFloorPage() {
   }, [employeeRows])
 
   const [machineData, setMachineData] = useState<MachineData[]>([])
+  const [skuCatalog, setSkuCatalog] = useState<ApiProductSku[]>([])
+  const [quantityRules, setQuantityRules] = useState<HookSkuQuantityRule[]>([])
+  const [selectedMachineIds, setSelectedMachineIds] = useState<Set<string>>(() => new Set())
+  const [bulkSku, setBulkSku] = useState("")
+  const [rangeFrom, setRangeFrom] = useState("")
+  const [rangeTo, setRangeTo] = useState("")
+  const [createSkuOpen, setCreateSkuOpen] = useState(false)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -124,12 +148,15 @@ export default function ProductionFloorPage() {
           setMachineData([])
           return
         }
-        const [apiMachines, apiEmployees, apiCheckins] = await Promise.all([
+        const [apiMachines, apiEmployees, apiCheckins, skus] = await Promise.all([
           getMachines(token),
           getEmployees(token),
           getActiveMachineCheckins(token),
+          getProductSkus(token),
         ])
         if (cancelled) return
+        setSkuCatalog(skus)
+        setQuantityRules(loadQuantityRules())
         setEmployeeRows(apiEmployees)
 
         const employeeNameByCode = new Map(
@@ -140,7 +167,7 @@ export default function ProductionFloorPage() {
         const checkinByMachineId = new Map<string, ApiMachineCheckin>(
           apiCheckins.map((c) => [c.machineId, c]),
         )
-        const mapped = apiMachines.map((m) => {
+        const mapped = filterFloorMachines(apiMachines).map((m) => {
           const base = mapApiMachineToFrontend(m)
           const sku = m.currentSku ?? undefined
           const operator = (() => {
@@ -171,6 +198,7 @@ export default function ProductionFloorPage() {
             status: computeEffectiveStatus(sku, operator, packers),
             machineCode: m.code ?? undefined,
             sku,
+            unitsPerBox: m.unitsPerBox ?? undefined,
             operator,
             operator2,
             packers,
@@ -205,8 +233,6 @@ export default function ProductionFloorPage() {
   const [dialogVisiblePackerSlots, setDialogVisiblePackerSlots] = useState(1)
   /** Asignación rápida: panel extra (op.2 / emp.2–4) por máquina */
   const [quickAssignmentExpanded, setQuickAssignmentExpanded] = useState<Set<string>>(() => new Set())
-
-  const skuRefs = useRef<Array<HTMLInputElement | null>>([])
 
   // Group machines by columns
   const columns = [
@@ -271,7 +297,10 @@ export default function ProductionFloorPage() {
         m.id === selectedMachine.id
           ? {
               ...m,
-              sku: codeInput || undefined,
+              sku: codeInput ? normalizeSkuCode(codeInput) : undefined,
+              unitsPerBox: codeInput
+                ? skuUnitsPerBox(skuCatalog, normalizeSkuCode(codeInput))
+                : undefined,
               operator: operatorInput || undefined,
               operator2: dialogShowSecondOperator ? operator2Input.trim() || undefined : undefined,
               packers: nextPackers.length ? nextPackers : undefined,
@@ -337,7 +366,7 @@ export default function ProductionFloorPage() {
         const checkinByMachineId = new Map<string, ApiMachineCheckin>(
           apiCheckins.map((c) => [c.machineId, c]),
         )
-        const mapped = apiMachines.map((m) => {
+        const mapped = filterFloorMachines(apiMachines).map((m) => {
           const base = mapApiMachineToFrontend(m)
           const sku = m.currentSku ?? undefined
           const operator = (() => {
@@ -368,6 +397,7 @@ export default function ProductionFloorPage() {
             status: computeEffectiveStatus(sku, operator, packers),
             machineCode: m.code ?? undefined,
             sku,
+            unitsPerBox: m.unitsPerBox ?? undefined,
             operator,
             operator2,
             packers,
@@ -385,6 +415,11 @@ export default function ProductionFloorPage() {
       prev.map((m) => {
         if (m.id !== machineId) return m
         const next = { ...m, ...patch }
+        if (patch.sku !== undefined) {
+          const sku = patch.sku ? normalizeSkuCode(patch.sku) : undefined
+          next.sku = sku
+          next.unitsPerBox = sku ? skuUnitsPerBox(skuCatalog, sku) : undefined
+        }
         return {
           ...next,
           status: computeEffectiveStatus(next.sku, next.operator, next.packers),
@@ -471,7 +506,8 @@ export default function ProductionFloorPage() {
         const nextStatus = ok ? "running" : "idle"
         const payload = {
           status: configured ? nextStatus : "idle",
-          currentSku: m.sku ?? null,
+          currentSku: m.sku ? normalizeSkuCode(m.sku) : null,
+          unitsPerBox: m.unitsPerBox,
           operatorCode,
           operator2Code,
           packager1Code: packer1Code,
@@ -568,7 +604,7 @@ export default function ProductionFloorPage() {
         const checkinByMachineId = new Map<string, ApiMachineCheckin>(
           apiCheckins.map((c) => [c.machineId, c]),
         )
-        const mapped: MachineData[] = apiMachines.map((m) => {
+        const mapped: MachineData[] = filterFloorMachines(apiMachines).map((m) => {
           const base = mapApiMachineToFrontend(m)
           const sku = m.currentSku ?? undefined
           const operator = (() => {
@@ -599,6 +635,7 @@ export default function ProductionFloorPage() {
             status: computeEffectiveStatus(sku, operator, packers),
             machineCode: m.code ?? undefined,
             sku,
+            unitsPerBox: m.unitsPerBox ?? undefined,
             operator,
             operator2,
             packers,
@@ -607,6 +644,17 @@ export default function ProductionFloorPage() {
         setMachineData(mapped)
         setHasUnsavedChanges(false)
         toast.success("Asignaciones guardadas.")
+
+        const usedSkus = new Set(
+          results
+            .map((r) => r.payload.currentSku)
+            .filter((s): s is string => Boolean(s)),
+        )
+        for (const code of usedSkus) {
+          if (skuCatalog.some((s) => normalizeSkuCode(s.code) === normalizeSkuCode(code))) {
+            await recordProductSkuUsage(token, code).catch(() => undefined)
+          }
+        }
       } catch (e) {
         toast.error("No se pudo guardar en el backend.")
         setHasUnsavedChanges(true)
@@ -666,6 +714,67 @@ export default function ProductionFloorPage() {
     }
     return [...machineData].sort((a, b) => byNumericName(a.name) - byNumericName(b.name))
   }, [machineData])
+
+  const toggleMachineSelected = (machineId: string, checked: boolean) => {
+    setSelectedMachineIds((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(machineId)
+      else next.delete(machineId)
+      return next
+    })
+  }
+
+  const toggleAllMachinesSelected = (checked: boolean) => {
+    setSelectedMachineIds(
+      checked ? new Set(sortedMachines.map((m) => m.id)) : new Set(),
+    )
+  }
+
+  const selectMachineRange = () => {
+    const from = Number(rangeFrom)
+    const to = Number(rangeTo)
+    if (!Number.isFinite(from) || !Number.isFinite(to)) {
+      toast.error("Indica números de máquina válidos para el rango.")
+      return
+    }
+    const min = Math.min(from, to)
+    const max = Math.max(from, to)
+    const ids = sortedMachines
+      .filter((m) => {
+        const n = machineNumberFromName(m.name)
+        return n >= min && n <= max
+      })
+      .map((m) => m.id)
+    setSelectedMachineIds(new Set(ids))
+    toast.message(`${ids.length} máquina(s) seleccionada(s).`)
+  }
+
+  const applyBulkSku = () => {
+    const sku = normalizeSkuCode(bulkSku)
+    if (!sku) {
+      toast.error("Indica un SKU para aplicar.")
+      return
+    }
+    if (selectedMachineIds.size === 0) {
+      toast.error("Selecciona al menos una máquina.")
+      return
+    }
+    const upb = skuUnitsPerBox(skuCatalog, sku)
+    setMachineData((prev) =>
+      prev.map((m) =>
+        selectedMachineIds.has(m.id)
+          ? {
+              ...m,
+              sku,
+              unitsPerBox: upb,
+              status: computeEffectiveStatus(sku, m.operator, m.packers),
+            }
+          : m,
+      ),
+    )
+    setHasUnsavedChanges(true)
+    toast.success(`SKU "${sku}" aplicado a ${selectedMachineIds.size} máquina(s).`)
+  }
 
   const renderDiagram = (viewportClassName: string) => {
     return (
@@ -815,7 +924,17 @@ export default function ProductionFloorPage() {
                 Captura SKU por máquina. Presiona Enter para ir a la siguiente.
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" asChild>
+                <Link href="/gestion-skus">
+                  <Tags className="mr-2 h-4 w-4" />
+                  Gestión SKUs
+                </Link>
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setCreateSkuOpen(true)}>
+                <Plus className="mr-2 h-4 w-4" />
+                Nuevo SKU
+              </Button>
               <Button
                 onClick={applyAndSaveAssignments}
                 disabled={!hasUnsavedChanges}
@@ -829,9 +948,81 @@ export default function ProductionFloorPage() {
             </div>
           </div>
 
+          <div className="mb-4 rounded-lg border border-dashed border-border bg-muted/20 p-4 space-y-3">
+            <p className="text-sm font-medium text-foreground">Cambio masivo de SKU</p>
+            <p className="text-xs text-muted-foreground">
+              Marca máquinas en la tabla, define un rango numérico o selecciona todas, luego aplica un SKU.
+            </p>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Desde máq.</Label>
+                <Input
+                  className="w-24"
+                  type="number"
+                  min={1}
+                  value={rangeFrom}
+                  onChange={(e) => setRangeFrom(e.target.value)}
+                  placeholder="1"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Hasta máq.</Label>
+                <Input
+                  className="w-24"
+                  type="number"
+                  min={1}
+                  value={rangeTo}
+                  onChange={(e) => setRangeTo(e.target.value)}
+                  placeholder="20"
+                />
+              </div>
+              <Button type="button" variant="secondary" size="sm" onClick={selectMachineRange}>
+                Seleccionar rango
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => toggleAllMachinesSelected(true)}
+              >
+                Todas
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => toggleAllMachinesSelected(false)}
+              >
+                Limpiar
+              </Button>
+              <div className="min-w-[200px] flex-1 space-y-1">
+                <Label className="text-xs">SKU a aplicar</Label>
+                <SkuCodeInput
+                  value={bulkSku}
+                  onValueChange={setBulkSku}
+                  catalog={skuCatalog}
+                  placeholder="Código SKU"
+                />
+              </div>
+              <Button type="button" onClick={applyBulkSku} disabled={selectedMachineIds.size === 0}>
+                Aplicar a {selectedMachineIds.size || "…"}
+              </Button>
+            </div>
+          </div>
+
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={
+                      sortedMachines.length > 0 &&
+                      selectedMachineIds.size === sortedMachines.length
+                    }
+                    onCheckedChange={(v) => toggleAllMachinesSelected(v === true)}
+                    aria-label="Seleccionar todas"
+                  />
+                </TableHead>
                 <TableHead>Máquina</TableHead>
                 <TableHead>SKU</TableHead>
                 <TableHead>Operador 1</TableHead>
@@ -841,7 +1032,7 @@ export default function ProductionFloorPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedMachines.map((m, index) => {
+              {sortedMachines.map((m) => {
                 const ok = Boolean(m.sku) && Boolean(m.operator) && Boolean(m.packers?.[0])
                 return (
                   <TableRow
@@ -850,46 +1041,40 @@ export default function ProductionFloorPage() {
                     data-state={focusedMachineId === m.id ? "selected" : undefined}
                     className={cn(!ok && "bg-amber-50/40")}
                   >
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <Checkbox
+                        checked={selectedMachineIds.has(m.id)}
+                        onCheckedChange={(v) => toggleMachineSelected(m.id, v === true)}
+                        aria-label={`Seleccionar ${m.name}`}
+                      />
+                    </TableCell>
                     <TableCell className="font-medium">{m.name}</TableCell>
-                    <TableCell>
-                      <Input
-                        ref={(el) => {
-                          skuRefs.current[index] = el
-                        }}
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <SkuCodeInput
                         value={m.sku ?? ""}
-                        placeholder="SKU-001"
-                        onFocus={() => setFocusedMachineId(m.id)}
-                        onChange={(e) => handleQuickUpdate(m.id, { sku: e.target.value.toUpperCase() })}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault()
-                            skuRefs.current[index + 1]?.focus()
-                          }
-                        }}
+                        onValueChange={(sku) => handleQuickUpdate(m.id, { sku })}
+                        catalog={skuCatalog}
+                        placeholder="sku-001"
                         className="w-44"
                       />
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        <Select
+                        <TextAutocomplete
                           value={m.operator ?? ""}
                           onValueChange={(v) => {
                             const patch: Partial<MachineData> = { operator: v || undefined }
                             if (v && m.operator2 === v) patch.operator2 = undefined
                             handleQuickUpdate(m.id, patch)
                           }}
-                        >
-                          <SelectTrigger className="h-9 w-52">
-                            <SelectValue placeholder="Seleccionar" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {getAvailablePeople(operators, m.id, m.operator).map((name) => (
-                              <SelectItem key={name} value={name}>
-                                {name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                          options={personAutocompleteOptions(
+                            getAvailablePeople(operators, m.id, m.operator),
+                            employeeRows,
+                          )}
+                          placeholder="Escribe operador…"
+                          className="w-52 min-w-0"
+                          inputClassName="h-9"
+                        />
                         {m.operator ? (
                           <Button
                             type="button"
@@ -909,7 +1094,7 @@ export default function ProductionFloorPage() {
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        <Select
+                        <TextAutocomplete
                           value={m.packers?.[0] ?? ""}
                           onValueChange={(v) => {
                             if (v && !canAddPacker(v, m.id)) {
@@ -928,18 +1113,14 @@ export default function ProductionFloorPage() {
                             const next = [v, ...deduped].slice(0, MAX_PACKERS_PER_MACHINE)
                             handleQuickUpdate(m.id, { packers: next })
                           }}
-                        >
-                          <SelectTrigger className="h-9 w-52">
-                            <SelectValue placeholder="Seleccionar" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {getAvailablePeople(packers, m.id, m.packers?.[0]).map((name) => (
-                              <SelectItem key={name} value={name}>
-                                {name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                          options={personAutocompleteOptions(
+                            getAvailablePeople(packers, m.id, m.packers?.[0]),
+                            employeeRows,
+                          )}
+                          placeholder="Escribe empacador…"
+                          className="w-52 min-w-0"
+                          inputClassName="h-9"
+                        />
                         {m.packers?.[0] ? (
                           <Button
                             type="button"
@@ -966,7 +1147,7 @@ export default function ProductionFloorPage() {
                           <div className="space-y-1.5">
                             <p className="text-xs font-medium text-muted-foreground">Operador 2</p>
                             <div className="flex items-center gap-2">
-                              <Select
+                              <TextAutocomplete
                                 value={m.operator2 ?? ""}
                                 onValueChange={(v) => {
                                   if (v && v === m.operator) {
@@ -976,20 +1157,16 @@ export default function ProductionFloorPage() {
                                   setError(null)
                                   handleQuickUpdate(m.id, { operator2: v || undefined })
                                 }}
-                              >
-                                <SelectTrigger className="h-9 w-full min-w-0">
-                                  <SelectValue placeholder="Opcional" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {getAvailablePeople(operators, m.id, m.operator2)
-                                    .filter((name) => name !== m.operator)
-                                    .map((name) => (
-                                      <SelectItem key={name} value={name}>
-                                        {name}
-                                      </SelectItem>
-                                    ))}
-                                </SelectContent>
-                              </Select>
+                                options={personAutocompleteOptions(
+                                  getAvailablePeople(operators, m.id, m.operator2).filter(
+                                    (name) => name !== m.operator,
+                                  ),
+                                  employeeRows,
+                                )}
+                                placeholder="Escribe operador 2…"
+                                className="w-full min-w-0"
+                                inputClassName="h-9"
+                              />
                               {m.operator2 ? (
                                 <Button
                                   type="button"
@@ -1007,7 +1184,7 @@ export default function ProductionFloorPage() {
                           <div className="space-y-1.5">
                             <p className="text-xs font-medium text-muted-foreground">Empacador 2</p>
                             <div className="flex items-center gap-2">
-                              <Select
+                              <TextAutocomplete
                                 value={m.packers?.[1] ?? ""}
                                 onValueChange={(v) => {
                                   const first = m.packers?.[0]
@@ -1035,18 +1212,14 @@ export default function ProductionFloorPage() {
                                   ) as string[]
                                   handleQuickUpdate(m.id, { packers: next })
                                 }}
-                              >
-                                <SelectTrigger className="h-9 w-full min-w-0">
-                                  <SelectValue placeholder="Opcional" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {getAvailablePeople(packers, m.id, m.packers?.[1]).map((name) => (
-                                    <SelectItem key={name} value={name}>
-                                      {name}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                                options={personAutocompleteOptions(
+                                  getAvailablePeople(packers, m.id, m.packers?.[1]),
+                                  employeeRows,
+                                )}
+                                placeholder="Escribe empacador 2…"
+                                className="w-full min-w-0"
+                                inputClassName="h-9"
+                              />
                               {m.packers?.[1] ? (
                                 <Button
                                   type="button"
@@ -1068,7 +1241,7 @@ export default function ProductionFloorPage() {
                           <div className="space-y-1.5">
                             <p className="text-xs font-medium text-muted-foreground">Empacador 3</p>
                             <div className="flex items-center gap-2">
-                              <Select
+                              <TextAutocomplete
                                 value={m.packers?.[2] ?? ""}
                                 onValueChange={(v) => {
                                   const a = m.packers?.[0]
@@ -1095,18 +1268,14 @@ export default function ProductionFloorPage() {
                                   const next = [a!, b!, v, m.packers?.[3]].filter(Boolean) as string[]
                                   handleQuickUpdate(m.id, { packers: next })
                                 }}
-                              >
-                                <SelectTrigger className="h-9 w-full min-w-0">
-                                  <SelectValue placeholder="Opcional" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {getAvailablePeople(packers, m.id, m.packers?.[2]).map((name) => (
-                                    <SelectItem key={name} value={name}>
-                                      {name}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                                options={personAutocompleteOptions(
+                                  getAvailablePeople(packers, m.id, m.packers?.[2]),
+                                  employeeRows,
+                                )}
+                                placeholder="Escribe empacador 3…"
+                                className="w-full min-w-0"
+                                inputClassName="h-9"
+                              />
                               {m.packers?.[2] ? (
                                 <Button
                                   type="button"
@@ -1130,7 +1299,7 @@ export default function ProductionFloorPage() {
                           <div className="space-y-1.5">
                             <p className="text-xs font-medium text-muted-foreground">Empacador 4</p>
                             <div className="flex items-center gap-2">
-                              <Select
+                              <TextAutocomplete
                                 value={m.packers?.[3] ?? ""}
                                 onValueChange={(v) => {
                                   const a = m.packers?.[0]
@@ -1157,18 +1326,14 @@ export default function ProductionFloorPage() {
                                   }
                                   handleQuickUpdate(m.id, { packers: [a!, b!, c!, v] })
                                 }}
-                              >
-                                <SelectTrigger className="h-9 w-full min-w-0">
-                                  <SelectValue placeholder="Opcional" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {getAvailablePeople(packers, m.id, m.packers?.[3]).map((name) => (
-                                    <SelectItem key={name} value={name}>
-                                      {name}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
+                                options={personAutocompleteOptions(
+                                  getAvailablePeople(packers, m.id, m.packers?.[3]),
+                                  employeeRows,
+                                )}
+                                placeholder="Escribe empacador 4…"
+                                className="w-full min-w-0"
+                                inputClassName="h-9"
+                              />
                               {m.packers?.[3] ? (
                                 <Button
                                   type="button"
@@ -1308,44 +1473,40 @@ export default function ProductionFloorPage() {
             {/* Code Input */}
             <div className="space-y-2">
               <Label htmlFor="code">SKU</Label>
-              <Input
+              <SkuCodeInput
                 id="code"
-                placeholder="Ej: PROD-001, SKU-123"
                 value={codeInput}
-                onChange={(e) => setCodeInput(e.target.value.toUpperCase())}
+                onValueChange={setCodeInput}
+                catalog={skuCatalog}
+                placeholder="Ej: s-negro-10m"
               />
             </div>
 
-            {/* Operator Select */}
+            {/* Operator */}
             <div className="space-y-2">
               <Label htmlFor="operator">Operador 1</Label>
-              <Select
+              <TextAutocomplete
+                id="operator"
                 value={operatorInput}
                 onValueChange={(v) => {
                   setOperatorInput(v)
                   if (operator2Input && v === operator2Input) setOperator2Input("")
                 }}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Seleccionar operador" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(selectedMachine
+                options={personAutocompleteOptions(
+                  selectedMachine
                     ? getAvailablePeople(operators, selectedMachine.id, operatorInput)
-                    : operators
-                  ).map((op) => (
-                    <SelectItem key={op} value={op}>
-                      {op}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                    : operators,
+                  employeeRows,
+                )}
+                placeholder="Escribe nombre del operador…"
+              />
             </div>
 
-            {/* Packers Select */}
+            {/* Packers */}
             <div className="space-y-2">
               <Label htmlFor="packer1">Empacador 1 (requerido)</Label>
-              <Select
+              <TextAutocomplete
+                id="packer1"
                 value={packer1Input}
                 onValueChange={(v) => {
                   if (v && !canAddPacker(v, selectedMachine?.id ?? "")) {
@@ -1358,18 +1519,14 @@ export default function ProductionFloorPage() {
                   if (packer3Input && v && packer3Input === v) setPacker3Input("")
                   if (packer4Input && v && packer4Input === v) setPacker4Input("")
                 }}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Seleccionar empacador" />
-                </SelectTrigger>
-                <SelectContent>
-                  {packers.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                options={personAutocompleteOptions(
+                  selectedMachine
+                    ? getAvailablePeople(packers, selectedMachine.id, packer1Input)
+                    : packers,
+                  employeeRows,
+                )}
+                placeholder="Escribe nombre del empacador…"
+              />
             </div>
 
             {!dialogShowSecondOperator ? (
@@ -1401,30 +1558,29 @@ export default function ProductionFloorPage() {
                     Quitar
                   </Button>
                 </div>
-                <Select value={operator2Input} onValueChange={setOperator2Input}>
-                  <SelectTrigger id="operator2">
-                    <SelectValue placeholder="Opcional" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(selectedMachine
+                <TextAutocomplete
+                  id="operator2"
+                  value={operator2Input}
+                  onValueChange={setOperator2Input}
+                  options={personAutocompleteOptions(
+                    (selectedMachine
                       ? getAvailablePeople(operators, selectedMachine.id, operator2Input).filter(
                           (op) => op !== operatorInput,
                         )
-                      : operators
-                    ).map((op) => (
-                      <SelectItem key={op} value={op}>
-                        {op}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                      : operators.filter((op) => op !== operatorInput)
+                    ),
+                    employeeRows,
+                  )}
+                  placeholder="Escribe operador 2…"
+                />
               </div>
             )}
 
             {dialogVisiblePackerSlots >= 2 ? (
               <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
                 <Label htmlFor="packer2">Empacador 2 (opcional)</Label>
-                <Select
+                <TextAutocomplete
+                  id="packer2"
                   value={packer2Input}
                   onValueChange={(v) => {
                     if (!packer1Input) {
@@ -1444,25 +1600,16 @@ export default function ProductionFloorPage() {
                     if (packer3Input && v && packer3Input === v) setPacker3Input("")
                     if (packer4Input && v && packer4Input === v) setPacker4Input("")
                   }}
-                >
-                  <SelectTrigger id="packer2">
-                    <SelectValue placeholder="Opcional" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {packers.map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  options={personAutocompleteOptions(packers, employeeRows)}
+                  placeholder="Escribe empacador 2…"
+                />
               </div>
             ) : null}
 
             {dialogVisiblePackerSlots >= 3 ? (
               <div className="space-y-2">
                 <Label>Empacador 3 (opcional)</Label>
-                <Select
+                <TextAutocomplete
                   value={packer3Input}
                   onValueChange={(v) => {
                     if (!packer2Input.trim()) {
@@ -1481,25 +1628,16 @@ export default function ProductionFloorPage() {
                     setPacker3Input(v)
                     if (packer4Input && v && packer4Input === v) setPacker4Input("")
                   }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Opcional" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {packers.map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  options={personAutocompleteOptions(packers, employeeRows)}
+                  placeholder="Escribe empacador 3…"
+                />
               </div>
             ) : null}
 
             {dialogVisiblePackerSlots >= 4 ? (
               <div className="space-y-2">
                 <Label>Empacador 4 (opcional)</Label>
-                <Select
+                <TextAutocomplete
                   value={packer4Input}
                   onValueChange={(v) => {
                     if (!packer3Input.trim()) {
@@ -1517,18 +1655,9 @@ export default function ProductionFloorPage() {
                     setError(null)
                     setPacker4Input(v)
                   }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Opcional" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {packers.map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  options={personAutocompleteOptions(packers, employeeRows)}
+                  placeholder="Escribe empacador 4…"
+                />
               </div>
             ) : null}
 
@@ -1580,6 +1709,16 @@ export default function ProductionFloorPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CreateSkuDialog
+        open={createSkuOpen}
+        onOpenChange={setCreateSkuOpen}
+        quantityRules={quantityRules}
+        getAccessToken={getAccessToken}
+        onCreated={(sku) => {
+          setSkuCatalog((prev) => [sku, ...prev.filter((s) => s.id !== sku.id)])
+        }}
+      />
     </DashboardLayout>
   )
 }

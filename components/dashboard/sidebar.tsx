@@ -17,6 +17,9 @@ import {
   Target,
   Palette,
   Shield,
+  ClipboardList,
+  Scale,
+  Tags,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
@@ -37,6 +40,7 @@ interface MenuItem {
 const productionItems: MenuItem[] = [
   { icon: Home, label: "Inicio", href: "/" },
   { icon: Factory, label: "Piso de producción", href: "/piso-produccion" },
+  { icon: Tags, label: "Gestión de SKUs", href: "/gestion-skus" },
   { icon: Monitor, label: "Tablero Operativo", href: "/tablero-operativo" },
   { icon: BarChart3, label: "Métricas", href: "/metricas" },
   { icon: Target, label: "Metas", href: "/metas" },
@@ -46,7 +50,9 @@ const productionItems: MenuItem[] = [
 const adminItems: MenuItem[] = [
   { icon: UserPlus, label: "Gestión de usuarios", href: "/administracion/usuarios", permission: "users.list" },
   { icon: Users, label: "Gestión de empleados", href: "/empleados", permission: "employees.manage" },
-  { icon: Palette, label: "Configuración de la organización", href: "/administracion/configuracion-organizacion", permission: "org-config.view" },
+  { icon: ClipboardList, label: "Captura de datos", href: "/captura-datos", permission: "data-capture.manage" },
+  { icon: Scale, label: "Reglas de negocio", href: "/reglas-negocio", permission: "business-rules.manage" },
+  { icon: Palette, label: "Configuración de la organización", href: "/administracion/configuracion-organizacion", permission: "platform-config.view" },
 ]
 
 function NavLink({

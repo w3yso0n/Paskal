@@ -7,9 +7,18 @@ interface OperatorCardProps {
   rank: number
   highlighted?: boolean
   density?: "normal" | "compact"
+  unitsLabel?: string
+  progressTitle?: string
 }
 
-export function OperatorCard({ operator, rank, highlighted = false, density = "normal" }: OperatorCardProps) {
+export function OperatorCard({
+  operator,
+  rank,
+  highlighted = false,
+  density = "normal",
+  unitsLabel = "unidades",
+  progressTitle = "Bono",
+}: OperatorCardProps) {
   const isLeader = rank === 1
   const isTopThree = rank <= 3
   const compact = density === "compact"
@@ -125,12 +134,12 @@ export function OperatorCard({ operator, rank, highlighted = false, density = "n
         <span className={cn(compact ? "text-2m font-bold text-card-foreground" : "mt-4 text-3xl font-bold text-card-foreground")}>
           {operator.units}
         </span>
-        <span className="text-xs text-muted-foreground">unidades</span>
+        <span className="text-xs text-muted-foreground">{unitsLabel}</span>
 
         {/* Bonus progress */}
         <div className={cn(compact ? " w-full" : "mt-4 w-full")}>
           <div className="mb-1 flex items-center justify-between text-xs">
-            <span className="text-muted-foreground">Bono</span>
+            <span className="text-muted-foreground">{progressTitle}</span>
             <span className="font-semibold text-foreground">{Math.min(operator.percentage, 100)}%</span>
           </div>
 
@@ -153,9 +162,17 @@ interface OperatorRowProps {
   operator: Operator
   rank: number
   density?: "normal" | "compact"
+  unitsLabel?: string
+  progressTitle?: string
 }
 
-export function OperatorRow({ operator, rank, density = "normal" }: OperatorRowProps) {
+export function OperatorRow({
+  operator,
+  rank,
+  density = "normal",
+  unitsLabel = "unidades",
+  progressTitle = "Bono",
+}: OperatorRowProps) {
   const compact = density === "compact"
   return (
     <div className={cn("flex items-center", compact ? "gap-2 py-1" : "gap-3 py-2")}>
@@ -190,8 +207,9 @@ export function OperatorRow({ operator, rank, density = "normal" }: OperatorRowP
       </div>
 
       {/* Units */}
-      <span className={cn("text-right font-bold text-foreground", compact ? "w-10 text-[12px]" : "w-12 text-sm")}>
+      <span className={cn("text-right font-bold text-foreground", compact ? "w-14 text-[12px]" : "w-16 text-sm")}>
         {operator.units}
+        <span className="ml-0.5 text-[10px] font-normal text-muted-foreground">{unitsLabel}</span>
       </span>
 
       {/* Progress */}
@@ -202,7 +220,7 @@ export function OperatorRow({ operator, rank, density = "normal" }: OperatorRowP
             style={{ width: `${Math.min(operator.percentage, 100)}%` }}
           />
         </div>
-        <span className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")}>
+        <span className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")} title={progressTitle}>
           {operator.percentage}%
         </span>
       </div>

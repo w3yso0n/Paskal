@@ -19,6 +19,9 @@ export type Permission =
   /** Configuración de temporizadores de paro hacia la ESP32 (solo rol admin en org). */
   | "production.esp-idle-config"
   | "employees.manage"
+  | "data-capture.manage"
+  | "bonus-config.manage"
+  | "business-rules.manage"
   | "platform-config.view"
   | "platform-config.edit"
 
@@ -37,6 +40,9 @@ const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "platform-config.view",
     "platform-config.edit",
     "employees.manage",
+    "data-capture.manage",
+    "bonus-config.manage",
+    "business-rules.manage",
   ],
   manager: [
     "alert-rules.list",
@@ -46,6 +52,8 @@ const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "alerts.clear",
     "production.edit-threshold",
     "employees.manage",
+    "bonus-config.manage",
+    "business-rules.manage",
   ],
   operator: [
     "alerts.dismiss",
@@ -83,6 +91,9 @@ export function hasAllPermissions(
 export const ROUTE_PERMISSIONS: Record<string, Permission[]> = {
   "/administracion/usuarios": ["users.list"],
   "/administracion/configuracion-organizacion": ["platform-config.view"],
+  "/captura-datos": ["data-capture.manage"],
+  "/configuracion-bono": ["business-rules.manage"],
+  "/reglas-negocio": ["business-rules.manage"],
   "/configuracion": ["platform-config.view"],
 }
 
@@ -116,6 +127,8 @@ export function showAdminSection(user: RequestUser | null | undefined): boolean 
     "users.list",
     "platform-config.view",
     "employees.manage",
+    "data-capture.manage",
+    "bonus-config.manage",
     "alert-rules.list",
   ])
 }

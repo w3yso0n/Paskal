@@ -2,6 +2,12 @@
  * URL base del API (backend Paskal). Debe coincidir con el puerto del backend.
  * Ej: http://localhost:3001
  */
+import type {
+  AlertThresholdsConfig,
+  BusinessHolidayScope,
+  ProductionIncidentType,
+} from "@/lib/business-rules"
+
 const getBaseUrl = () =>
   typeof window !== "undefined"
     ? (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "")
@@ -419,6 +425,8 @@ export interface ApiMachine {
   status: "running" | "idle" | "stopped" | "maintenance" | "offline";
   currentSku?: string | null;
   unitsPerBox?: number;
+  floorRow?: number | null;
+  floorCol?: number | null;
   operatorCode?: string | null;
   operator2Code?: string | null;
   packager1Code?: string | null;
@@ -440,12 +448,105 @@ export async function getMachines(accessToken: string): Promise<ApiMachine[]> {
 export interface UpdateMachinePayload {
   status?: ApiMachine["status"]
   currentSku?: string | null
+  unitsPerBox?: number
+  floorRow?: number | null
+  floorCol?: number | null
   operatorCode?: string | null
   operator2Code?: string | null
   packager1Code?: string | null
   packager2Code?: string | null
   packager3Code?: string | null
   packager4Code?: string | null
+}
+
+// --- Product SKU catalog ---
+
+export interface ApiProductSku {
+  id: string
+  code: string
+  hookType: string | null
+  color: string | null
+  length: string | null
+  extra: string | null
+  unitsPerBox: number
+  usageCount: number
+  isActive: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ApiSkuComponentOption {
+  id: string
+  componentType: "hook_type" | "color" | "length" | "extra"
+  value: string
+  label: string
+  sortOrder: number
+}
+
+export interface CreateProductSkuPayload {
+  code?: string
+  hookType: string
+  color: string
+  length: string
+  extra?: string
+  unitsPerBox: number
+}
+
+export async function getProductSkus(
+  accessToken: string,
+  opts?: { includeInactive?: boolean },
+): Promise<ApiProductSku[]> {
+  const q = opts?.includeInactive ? "?includeInactive=true" : ""
+  const res = await fetchWithAuth(`/product-sku${q}`, { accessToken })
+  return parseResponse<ApiProductSku[]>(res)
+}
+
+export async function getSkuComponentOptions(
+  accessToken: string,
+): Promise<ApiSkuComponentOption[]> {
+  const res = await fetchWithAuth("/product-sku/components", { accessToken })
+  return parseResponse<ApiSkuComponentOption[]>(res)
+}
+
+export async function createProductSku(
+  accessToken: string,
+  payload: CreateProductSkuPayload,
+): Promise<ApiProductSku> {
+  const res = await fetchWithAuth("/product-sku", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    accessToken,
+  })
+  return parseResponse<ApiProductSku>(res)
+}
+
+export async function recordProductSkuUsage(
+  accessToken: string,
+  code: string,
+): Promise<ApiProductSku | null> {
+  const res = await fetchWithAuth("/product-sku/usage", {
+    method: "POST",
+    body: JSON.stringify({ code }),
+    accessToken,
+  })
+  return parseResponse<ApiProductSku | null>(res)
+}
+
+export async function addSkuComponentOption(
+  accessToken: string,
+  payload: {
+    componentType: ApiSkuComponentOption["componentType"]
+    value: string
+    label?: string
+    sortOrder?: number
+  },
+): Promise<ApiSkuComponentOption> {
+  const res = await fetchWithAuth("/product-sku/components", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    accessToken,
+  })
+  return parseResponse<ApiSkuComponentOption>(res)
 }
 
 export async function updateMachine(
@@ -472,6 +573,7 @@ export interface ApiGoal {
   plantId: string | null
   lineId: string | null
   machineId: string | null
+  sku?: string | null
   targetValue: number
   period: ApiGoalPeriod
   /** null / ausente: cumplimiento con todos los registros del rango (sin filtrar por hora). */
@@ -492,6 +594,7 @@ export interface CreateGoalPayload {
   plantId?: string | null
   lineId?: string | null
   machineId?: string | null
+  sku?: string | null
   targetValue: number
   period: ApiGoalPeriod
   shift?: ApiGoalShift | null
@@ -560,6 +663,8 @@ export interface ApiEmployee {
   email: string | null;
   phone: string | null;
   position: string | null;
+  primaryRole: import("@/lib/employee-production-role").EmployeeProductionRole | null;
+  secondaryRole: import("@/lib/employee-production-role").EmployeeSecondaryRole | null;
   status: ApiEmployeeStatus;
   hiredAt: string | null;
   createdAt: string;
@@ -572,6 +677,8 @@ export interface CreateEmployeePayload {
   email?: string | null;
   phone?: string | null;
   position?: string | null;
+  primaryRole?: import("@/lib/employee-production-role").EmployeeProductionRole | null;
+  secondaryRole?: import("@/lib/employee-production-role").EmployeeSecondaryRole | null;
   status?: ApiEmployeeStatus;
   hiredAt?: string | Date | null;
 }
@@ -780,3 +887,464 @@ export async function getMetricPoints(
   const res = await fetchWithAuth(`/metric-point${qs ? `?${qs}` : ""}`, { accessToken });
   return parseResponse<ApiMetricPoint[]>(res);
 }
+
+// --- Captura de datos (solo administradores) ---
+
+export type ApiDataCaptureCategory =
+  | "winding"
+  | "bending"
+  | "roller"
+  | "scrap"
+  | "historical_monthly"
+
+export interface ApiManualDataCapture {
+  id: string
+  category: ApiDataCaptureCategory
+  sourceKey: string
+  recordDate: string | null
+  recordYear: number | null
+  recordMonth: number | null
+  shift: string | null
+  sku: string | null
+  operatorCode: string | null
+  packagerCode: string | null
+  productionQty: number | null
+  scrapQty: number | null
+  notes: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreateManualDataCapturePayload {
+  category: ApiDataCaptureCategory
+  sourceKey: string
+  recordDate?: string | null
+  recordYear?: number | null
+  recordMonth?: number | null
+  shift?: string | null
+  sku?: string | null
+  operatorCode?: string | null
+  packagerCode?: string | null
+  productionQty?: number | null
+  scrapQty?: number | null
+  notes?: string | null
+}
+
+export async function getManualDataCaptures(
+  accessToken: string,
+  params: {
+    category?: ApiDataCaptureCategory
+    sourceKey?: string
+    from?: string
+    to?: string
+    recordYear?: number
+    limit?: number
+  } = {},
+): Promise<ApiManualDataCapture[]> {
+  const q = new URLSearchParams()
+  if (params.category) q.set("category", params.category)
+  if (params.sourceKey) q.set("sourceKey", params.sourceKey)
+  if (params.from) q.set("from", params.from)
+  if (params.to) q.set("to", params.to)
+  if (params.recordYear != null) q.set("recordYear", String(params.recordYear))
+  if (params.limit != null) q.set("limit", String(params.limit))
+  const qs = q.toString()
+  const res = await fetchWithAuth(`/data-capture${qs ? `?${qs}` : ""}`, { accessToken })
+  return parseResponse<ApiManualDataCapture[]>(res)
+}
+
+export async function createManualDataCapture(
+  accessToken: string,
+  payload: CreateManualDataCapturePayload,
+): Promise<ApiManualDataCapture> {
+  const res = await fetchWithAuth("/data-capture", {
+    accessToken,
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<ApiManualDataCapture>(res)
+}
+
+export async function updateManualDataCapture(
+  accessToken: string,
+  id: string,
+  payload: Partial<CreateManualDataCapturePayload>,
+): Promise<ApiManualDataCapture> {
+  const res = await fetchWithAuth(`/data-capture/${id}`, {
+    accessToken,
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<ApiManualDataCapture>(res)
+}
+
+export async function deleteManualDataCapture(
+  accessToken: string,
+  id: string,
+): Promise<ApiManualDataCapture> {
+  const res = await fetchWithAuth(`/data-capture/${id}`, {
+    accessToken,
+    method: "DELETE",
+  })
+  return parseResponse<ApiManualDataCapture>(res)
+}
+
+// --- Registro diario de empleados (vacaciones, incidencias) ---
+
+export type ApiEmployeeDayRecordType =
+  | "vacation"
+  | "incident"
+  | "incapacity"
+  | "excused_unpaid"
+  | "time_exchange"
+
+export interface ApiEmployeeDayRecord {
+  id: string
+  employeeId: string
+  employeeName: string
+  employeeCode: string | null
+  recordDate: string
+  shift: string | null
+  recordType: ApiEmployeeDayRecordType
+  notes: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreateEmployeeDayRecordPayload {
+  employeeId: string
+  recordDate: string
+  shift?: string | null
+  recordType: ApiEmployeeDayRecordType
+  notes?: string | null
+}
+
+export async function getEmployeeDayRecords(
+  accessToken: string,
+  params: {
+    employeeId?: string
+    from?: string
+    to?: string
+    limit?: number
+  } = {},
+): Promise<ApiEmployeeDayRecord[]> {
+  const q = new URLSearchParams()
+  if (params.employeeId) q.set("employeeId", params.employeeId)
+  if (params.from) q.set("from", params.from)
+  if (params.to) q.set("to", params.to)
+  if (params.limit != null) q.set("limit", String(params.limit))
+  const qs = q.toString()
+  const res = await fetchWithAuth(`/employee-day-record${qs ? `?${qs}` : ""}`, { accessToken })
+  return parseResponse<ApiEmployeeDayRecord[]>(res)
+}
+
+export async function createEmployeeDayRecord(
+  accessToken: string,
+  payload: CreateEmployeeDayRecordPayload,
+): Promise<ApiEmployeeDayRecord> {
+  const res = await fetchWithAuth("/employee-day-record", {
+    accessToken,
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<ApiEmployeeDayRecord>(res)
+}
+
+export async function updateEmployeeDayRecord(
+  accessToken: string,
+  id: string,
+  payload: Partial<CreateEmployeeDayRecordPayload>,
+): Promise<ApiEmployeeDayRecord> {
+  const res = await fetchWithAuth(`/employee-day-record/${id}`, {
+    accessToken,
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<ApiEmployeeDayRecord>(res)
+}
+
+export async function deleteEmployeeDayRecord(
+  accessToken: string,
+  id: string,
+): Promise<ApiEmployeeDayRecord> {
+  const res = await fetchWithAuth(`/employee-day-record/${id}`, {
+    accessToken,
+    method: "DELETE",
+  })
+  return parseResponse<ApiEmployeeDayRecord>(res)
+}
+
+// --- Cambios temporales de rol ---
+
+export type ApiEmployeeSecondaryRole =
+  import("@/lib/employee-production-role").EmployeeSecondaryRole
+
+export interface ApiEmployeeRoleEvent {
+  id: string
+  employeeId: string
+  employeeName: string
+  employeeCode: string | null
+  recordDate: string
+  shift: string | null
+  secondaryRole: ApiEmployeeSecondaryRole
+  notes: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreateEmployeeRoleEventPayload {
+  employeeId: string
+  recordDate: string
+  shift?: string | null
+  secondaryRole: ApiEmployeeSecondaryRole
+  notes?: string | null
+}
+
+export async function getEmployeeRoleEvents(
+  accessToken: string,
+  params?: { employeeId?: string; from?: string; to?: string; limit?: number },
+): Promise<ApiEmployeeRoleEvent[]> {
+  const q = new URLSearchParams()
+  if (params?.employeeId) q.set("employeeId", params.employeeId)
+  if (params?.from) q.set("from", params.from)
+  if (params?.to) q.set("to", params.to)
+  if (params?.limit) q.set("limit", String(params.limit))
+  const suffix = q.toString() ? `?${q}` : ""
+  const res = await fetchWithAuth(`/employee-role-event${suffix}`, { accessToken })
+  return parseResponse<ApiEmployeeRoleEvent[]>(res)
+}
+
+export async function createEmployeeRoleEvent(
+  accessToken: string,
+  payload: CreateEmployeeRoleEventPayload,
+): Promise<ApiEmployeeRoleEvent> {
+  const res = await fetchWithAuth("/employee-role-event", {
+    accessToken,
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<ApiEmployeeRoleEvent>(res)
+}
+
+export async function deleteEmployeeRoleEvent(
+  accessToken: string,
+  id: string,
+): Promise<ApiEmployeeRoleEvent> {
+  const res = await fetchWithAuth(`/employee-role-event/${id}`, {
+    accessToken,
+    method: "DELETE",
+  })
+  return parseResponse<ApiEmployeeRoleEvent>(res)
+}
+
+// --- Configuración de producción y bonos ---
+
+export interface ApiBonusProductionConfig {
+  id: string
+  name: string
+  effectiveMonth: string
+  config: import("@/lib/bonus-production-config").BonusProductionConfigData
+  createdAt: string
+  updatedAt: string
+}
+
+export interface UpsertBonusProductionConfigPayload {
+  name: string
+  effectiveMonth: string
+  config: import("@/lib/bonus-production-config").BonusProductionConfigData
+}
+
+export async function getBonusProductionConfigs(
+  accessToken: string,
+): Promise<ApiBonusProductionConfig[]> {
+  const res = await fetchWithAuth("/bonus-config", { accessToken })
+  return parseResponse<ApiBonusProductionConfig[]>(res)
+}
+
+export async function getBonusProductionConfigForMonth(
+  accessToken: string,
+  month: string,
+): Promise<ApiBonusProductionConfig> {
+  const q = new URLSearchParams({ month: month.slice(0, 7) })
+  const res = await fetchWithAuth(`/bonus-config?${q}`, { accessToken })
+  return parseResponse<ApiBonusProductionConfig>(res)
+}
+
+export async function upsertBonusProductionConfig(
+  accessToken: string,
+  payload: UpsertBonusProductionConfigPayload,
+): Promise<ApiBonusProductionConfig> {
+  const res = await fetchWithAuth("/bonus-config", {
+    accessToken,
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<ApiBonusProductionConfig>(res)
+}
+
+export async function deleteBonusProductionConfig(
+  accessToken: string,
+  effectiveMonth: string,
+): Promise<ApiBonusProductionConfig> {
+  const res = await fetchWithAuth(`/bonus-config/${effectiveMonth}`, {
+    accessToken,
+    method: "DELETE",
+  })
+  return parseResponse<ApiBonusProductionConfig>(res)
+}
+
+// --- Reglas de negocio ---
+
+export interface ApiCatalogHoliday {
+  date: string
+  name: string
+  source: "official"
+}
+
+export interface ApiBusinessHoliday {
+  id: string
+  holidayDate: string
+  name: string
+  scope: BusinessHolidayScope
+  notes: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ApiProductionIncident {
+  id: string
+  incidentDate: string
+  shift: string | null
+  machineId: string | null
+  incidentType: ProductionIncidentType
+  description: string | null
+  durationMinutes: number | null
+  machine?: { id: string; name: string; code: string | null } | null
+  createdAt: string
+  updatedAt: string
+}
+
+export async function getCatalogHolidays(
+  accessToken: string,
+  year: number,
+): Promise<ApiCatalogHoliday[]> {
+  const res = await fetchWithAuth(`/business-rules/holidays/catalog?year=${year}`, { accessToken })
+  return parseResponse<ApiCatalogHoliday[]>(res)
+}
+
+export async function getCustomBusinessHolidays(
+  accessToken: string,
+  params?: { year?: number; from?: string; to?: string },
+): Promise<ApiBusinessHoliday[]> {
+  const q = new URLSearchParams()
+  if (params?.year) q.set("year", String(params.year))
+  if (params?.from) q.set("from", params.from)
+  if (params?.to) q.set("to", params.to)
+  const suffix = q.toString() ? `?${q}` : ""
+  const res = await fetchWithAuth(`/business-rules/holidays/custom${suffix}`, { accessToken })
+  return parseResponse<ApiBusinessHoliday[]>(res)
+}
+
+export async function getResolvedHolidaysForMonth(
+  accessToken: string,
+  year: number,
+  month: number,
+): Promise<string[]> {
+  const res = await fetchWithAuth(
+    `/business-rules/holidays/resolved?year=${year}&month=${month}`,
+    { accessToken },
+  )
+  return parseResponse<string[]>(res)
+}
+
+export async function createBusinessHoliday(
+  accessToken: string,
+  payload: {
+    holidayDate: string
+    name: string
+    scope?: BusinessHolidayScope
+    notes?: string | null
+  },
+): Promise<ApiBusinessHoliday> {
+  const res = await fetchWithAuth("/business-rules/holidays/custom", {
+    accessToken,
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<ApiBusinessHoliday>(res)
+}
+
+export async function deleteBusinessHoliday(
+  accessToken: string,
+  id: string,
+): Promise<ApiBusinessHoliday> {
+  const res = await fetchWithAuth(`/business-rules/holidays/custom/${id}`, {
+    accessToken,
+    method: "DELETE",
+  })
+  return parseResponse<ApiBusinessHoliday>(res)
+}
+
+export async function getProductionIncidents(
+  accessToken: string,
+  params?: { from?: string; to?: string; incidentType?: ProductionIncidentType; limit?: number },
+): Promise<ApiProductionIncident[]> {
+  const q = new URLSearchParams()
+  if (params?.from) q.set("from", params.from)
+  if (params?.to) q.set("to", params.to)
+  if (params?.incidentType) q.set("incidentType", params.incidentType)
+  if (params?.limit) q.set("limit", String(params.limit))
+  const suffix = q.toString() ? `?${q}` : ""
+  const res = await fetchWithAuth(`/business-rules/incidents${suffix}`, { accessToken })
+  return parseResponse<ApiProductionIncident[]>(res)
+}
+
+export async function createProductionIncident(
+  accessToken: string,
+  payload: {
+    incidentDate: string
+    shift?: string | null
+    machineId?: string | null
+    incidentType?: ProductionIncidentType
+    description?: string | null
+    durationMinutes?: number | null
+  },
+): Promise<ApiProductionIncident> {
+  const res = await fetchWithAuth("/business-rules/incidents", {
+    accessToken,
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<ApiProductionIncident>(res)
+}
+
+export async function deleteProductionIncident(
+  accessToken: string,
+  id: string,
+): Promise<ApiProductionIncident> {
+  const res = await fetchWithAuth(`/business-rules/incidents/${id}`, {
+    accessToken,
+    method: "DELETE",
+  })
+  return parseResponse<ApiProductionIncident>(res)
+}
+
+export async function getBusinessAlertThresholds(
+  accessToken: string,
+): Promise<AlertThresholdsConfig> {
+  const res = await fetchWithAuth("/business-rules/alert-thresholds", { accessToken })
+  return parseResponse<AlertThresholdsConfig>(res)
+}
+
+export async function updateBusinessAlertThresholds(
+  accessToken: string,
+  payload: Partial<AlertThresholdsConfig>,
+): Promise<AlertThresholdsConfig> {
+  const res = await fetchWithAuth("/business-rules/alert-thresholds", {
+    accessToken,
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<AlertThresholdsConfig>(res)
+}
+

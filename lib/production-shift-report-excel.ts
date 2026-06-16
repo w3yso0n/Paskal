@@ -1,5 +1,6 @@
 import type { Cell, Worksheet } from "exceljs"
 import type { ApiMachineCheckin } from "@/lib/api"
+import { BENDING_MACHINES } from "@/lib/data-capture-config"
 import {
   allCalendarDaysInMonth,
   excelSheetNameForDay,
@@ -24,13 +25,28 @@ export type ProductionShiftReportSourceRow = {
   unitsPerBox: number
 }
 
+export type ProductionShiftManualCapture = {
+  category: "winding" | "bending"
+  sourceKey: string
+  recordDate: string
+  shift: string | null
+  sku: string | null
+  operatorCode: string | null
+  packagerCode: string | null
+  productionQty: number
+}
+
 export type BuildProductionShiftReportParams = {
   reportDate: string
   shiftNumber: 1 | 2
   supervisorName: string
   rows: ProductionShiftReportSourceRow[]
   checkins: ApiMachineCheckin[]
+  manualCaptures?: ProductionShiftManualCapture[]
+  /** SKUs con meta en plataforma; si hay valores, el desglose Metal Hooks solo muestra estos códigos. */
+  configuredSkus?: string[]
   resolveEmployeeCode: (displayName: string) => string
+  resolvePersonFromCode: (code: string | null | undefined) => string
 }
 
 type MachineReportRow = {
@@ -65,6 +81,19 @@ type MetalHooksRow = {
   empTotal: number
 }
 
+type BendingReportRow = {
+  maquinaNum: number
+  operador: string
+  codigo: string
+  cajas: number | null
+  piezas: number | null
+  total: number
+}
+
+const BENDING_MACHINE_ORDER: Record<string, number> = Object.fromEntries(
+  BENDING_MACHINES.map((m, idx) => [m.key, idx + 1]),
+)
+
 const MH_COL = {
   CODIGO: 4,
   MAQUINA: 5,
@@ -79,10 +108,21 @@ const MH_COL = {
   EMP_TOTAL: 14,
 } as const
 
+const BEND_COL = {
+  MAQUINA: 9,
+  OPERADOR: 10,
+  CODIGO: 11,
+  VACIO: 12,
+  PIEZAS: 13,
+  TOTAL: 14,
+} as const
+
 const BORDER_COLOR = "FF94A3B8"
 const FILL_HEADER = "FFE2E8F0"
 const FILL_BANNER = "FFCBD5E1"
 const FILL_META = "FFF1F5F9"
+/** Verde, Énfasis 6, Claro 60% (tema Office del reporte de referencia). */
+const FILL_GREEN_EMPHASIS6_LIGHT60 = "FFB8DBAB"
 
 const borderThin = (): Partial<import("exceljs").Borders> => ({
   top: { style: "thin", color: { argb: BORDER_COLOR } },
@@ -123,6 +163,26 @@ const ST: Record<string, StylePreset> = {
     font: { bold: true, size: 11 },
     fill: { type: "pattern", pattern: "solid", fgColor: { argb: FILL_BANNER } },
     alignment: { horizontal: "center", vertical: "middle" },
+    border: borderThin(),
+  },
+  bannerGreen: {
+    font: { bold: true, size: 11 },
+    fill: {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: FILL_GREEN_EMPHASIS6_LIGHT60 },
+    },
+    alignment: { horizontal: "center", vertical: "middle" },
+    border: borderThin(),
+  },
+  headerGreen: {
+    font: { bold: true, size: 10 },
+    fill: {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: FILL_GREEN_EMPHASIS6_LIGHT60 },
+    },
+    alignment: { horizontal: "center", vertical: "middle", wrapText: true },
     border: borderThin(),
   },
   data: {
@@ -382,6 +442,88 @@ function aggregateMachineRows(
   return out
 }
 
+function reportShiftLabel(shiftNumber: 1 | 2): "matutino" | "vespertino" {
+  return shiftNumber === 1 ? "matutino" : "vespertino"
+}
+
+function manualCaptureMatchesShift(
+  captureShift: string | null | undefined,
+  shiftNumber: 1 | 2,
+): boolean {
+  const normalized = captureShift?.trim().toLowerCase()
+  if (!normalized) return true
+  return normalized === reportShiftLabel(shiftNumber)
+}
+
+function normalizeSkuKey(value: string | null | undefined): string {
+  return String(value ?? "").trim().toLowerCase()
+}
+
+function filterMachineRowsByConfiguredSkus(
+  rows: MachineReportRow[],
+  configuredSkus: string[] | undefined,
+): MachineReportRow[] {
+  if (!configuredSkus?.length) return rows
+  const allowed = new Set(
+    configuredSkus.map((s) => normalizeSkuKey(s)).filter(Boolean),
+  )
+  if (allowed.size === 0) return rows
+  return rows.filter((row) => {
+    const sku = row.item?.trim()
+    if (!sku || sku === "—") return false
+    return allowed.has(normalizeSkuKey(sku))
+  })
+}
+
+function manualWindingToMachineRow(
+  capture: ProductionShiftManualCapture,
+  resolvePersonFromCode: (code: string | null | undefined) => string,
+): MachineReportRow {
+  const qty = Math.round(capture.productionQty * 100) / 100
+  const operator = resolvePersonFromCode(capture.operatorCode) || "—"
+  const packer = resolvePersonFromCode(capture.packagerCode) || "—"
+  const sku = capture.sku?.trim() || "—"
+
+  return {
+    machine: capture.sourceKey,
+    operator1: operator,
+    operator2: "—",
+    item: sku,
+    boxQty: qty,
+    piecesPerBox: 1,
+    totalPieces: Math.round(qty),
+    packer1: packer,
+    packer1Boxes: qty,
+    packer2: "—",
+    packer2Boxes: 0,
+    totalPackerBoxes: qty,
+    difference: 0,
+    packer1Pieces: Math.round(qty),
+    packer2Pieces: 0,
+  }
+}
+
+function manualCapturesToBendingRows(
+  captures: ProductionShiftManualCapture[],
+  resolvePersonFromCode: (code: string | null | undefined) => string,
+): BendingReportRow[] {
+  const sorted = [...captures].sort((a, b) => {
+    const orderA = BENDING_MACHINE_ORDER[a.sourceKey] ?? 99
+    const orderB = BENDING_MACHINE_ORDER[b.sourceKey] ?? 99
+    if (orderA !== orderB) return orderA - orderB
+    return a.sourceKey.localeCompare(b.sourceKey, "es")
+  })
+
+  return sorted.map((capture, idx) => ({
+    maquinaNum: BENDING_MACHINE_ORDER[capture.sourceKey] ?? idx + 1,
+    operador: resolvePersonFromCode(capture.operatorCode) || "",
+    codigo: capture.sku?.trim() || "",
+    cajas: null,
+    piezas: null,
+    total: Math.round(capture.productionQty),
+  }))
+}
+
 function machineRowsToMetalHooks(
   machineRows: MachineReportRow[],
   resolveEmployeeCode: (displayName: string) => string,
@@ -414,6 +556,7 @@ function buildDayWorksheet(
   shiftNumber: 1 | 2,
   supervisorName: string,
   machineRows: MachineReportRow[],
+  bendingRows: BendingReportRow[],
   resolveEmployeeCode: (displayName: string) => string,
 ) {
   const dateLabel = formatDdMmYyyy(dayIso, REPORT_TIMEZONE)
@@ -452,6 +595,8 @@ function buildDayWorksheet(
   const gapBeforePersonalBlock = 2
   /** Filas en blanco entre totales Metal Hooks y firmas. */
   const gapBeforeSignatures = 4
+  /** Fila de banner Bending (después de totales Metal Hooks). */
+  const gapBeforeBending = 1
 
   sheet.getRow(mainHeaderRow).height = 28
   mainHeaders.forEach((h, i) => writeCell(sheet, mainHeaderRow, i + 1, h, "header"))
@@ -517,14 +662,14 @@ function buildDayWorksheet(
 
   sheet.getRow(bannerRow).height = 24
   mergeWrite(sheet, bannerRow, 2, 3, "Personal", "banner")
-  mergeWrite(sheet, bannerRow, 4, 8, "Metal Hooks", "banner")
+  mergeWrite(sheet, bannerRow, 4, 8, "Metal Hooks", "bannerGreen")
   mergeWrite(
     sheet,
     bannerRow,
     9,
     14,
     metalHooksGrandTotal,
-    "banner",
+    "bannerGreen",
   )
 
   writeCell(sheet, labelRow, 2, "operadoras", "meta")
@@ -543,10 +688,14 @@ function buildDayWorksheet(
     "Codigo",
   ]
   sheet.getRow(labelRow).height = 26
-  mhHeaders.forEach((h, i) => writeCell(sheet, labelRow, MH_COL.CODIGO + i, h, "header"))
-  writeCell(sheet, labelRow, MH_COL.EMP_TOTAL, "Total", "header")
+  mhHeaders.forEach((h, i) =>
+    writeCell(sheet, labelRow, MH_COL.CODIGO + i, h, "headerGreen"),
+  )
+  writeCell(sheet, labelRow, MH_COL.EMP_CAJAS, "", "headerGreen")
+  writeCell(sheet, labelRow, MH_COL.EMP_PIEZAS, "", "headerGreen")
+  writeCell(sheet, labelRow, MH_COL.EMP_TOTAL, "Total", "headerGreen")
 
-  const mhNumeric = new Set([
+  const mhNumeric = new Set<number>([
     MH_COL.CAJAS,
     MH_COL.PIEZAS,
     MH_COL.TOTAL,
@@ -603,7 +752,76 @@ function buildDayWorksheet(
     styleRect(sheet, mhTotalsRow, MH_COL.CODIGO, mhTotalsRow, MH_COL.EMP_TOTAL, "total")
   }
 
-  const sigLineRow = mhTotalsRow + gapBeforeSignatures
+  const bendBannerRow = mhTotalsRow + gapBeforeBending
+  const bendHeaderRow = bendBannerRow + 1
+  sheet.getRow(bendBannerRow).height = 24
+  mergeWrite(sheet, bendBannerRow, BEND_COL.MAQUINA, BEND_COL.TOTAL, "Bending", "bannerGreen")
+
+  const bendHeaders: [number, string][] = [
+    [BEND_COL.MAQUINA, "Maquina"],
+    [BEND_COL.OPERADOR, "Operador"],
+    [BEND_COL.CODIGO, "Codigo"],
+    [BEND_COL.VACIO, ""],
+    [BEND_COL.PIEZAS, "Piezas"],
+    [BEND_COL.TOTAL, "Total"],
+  ]
+  sheet.getRow(bendHeaderRow).height = 26
+  for (const [col, label] of bendHeaders) {
+    writeCell(sheet, bendHeaderRow, col, label, "headerGreen")
+  }
+
+  const bendDataStart = bendHeaderRow + 1
+  const bendNumeric = new Set<number>([
+    BEND_COL.MAQUINA,
+    BEND_COL.VACIO,
+    BEND_COL.PIEZAS,
+    BEND_COL.TOTAL,
+  ])
+
+  bendingRows.forEach((row, idx) => {
+    const r = bendDataStart + idx
+    const pairs: [number, string | number | null][] = [
+      [BEND_COL.MAQUINA, row.maquinaNum],
+      [BEND_COL.OPERADOR, row.operador],
+      [BEND_COL.CODIGO, row.codigo],
+      [BEND_COL.VACIO, row.cajas],
+      [BEND_COL.PIEZAS, row.piezas],
+      [BEND_COL.TOTAL, row.total],
+    ]
+    for (const [col, val] of pairs) {
+      if (val == null || val === "") continue
+      writeCell(sheet, r, col, val, bendNumeric.has(col) ? "number" : "data")
+    }
+  })
+
+  const bendDataEnd =
+    bendingRows.length > 0 ? bendDataStart + bendingRows.length - 1 : bendHeaderRow
+  const bendTotalsRow = bendDataEnd + 1
+
+  if (bendingRows.length > 0) {
+    const colLetter = (n: number) => sheet.getColumn(n).letter
+    const hasCajas = bendingRows.some((r) => r.cajas != null)
+    if (hasCajas) {
+      const letter = colLetter(BEND_COL.VACIO)
+      writeFormula(
+        sheet,
+        bendTotalsRow,
+        BEND_COL.VACIO,
+        `SUM(${letter}${bendDataStart}:${letter}${bendDataEnd})`,
+      )
+    }
+    const totalLetter = colLetter(BEND_COL.TOTAL)
+    writeFormula(
+      sheet,
+      bendTotalsRow,
+      BEND_COL.TOTAL,
+      `SUM(${totalLetter}${bendDataStart}:${totalLetter}${bendDataEnd})`,
+    )
+    styleRect(sheet, bendTotalsRow, BEND_COL.MAQUINA, bendTotalsRow, BEND_COL.TOTAL, "total")
+  }
+
+  const sigLineRow =
+    (bendingRows.length > 0 ? bendTotalsRow : bendHeaderRow) + gapBeforeSignatures
   const sigLabelRow = sigLineRow + 1
   sheet.getRow(sigLineRow).height = 28
 
@@ -664,6 +882,24 @@ export async function buildProductionShiftReportBlob(
       params.resolveFromCheckin,
     )
 
+    const dayManual = (params.manualCaptures ?? []).filter(
+      (c) => c.recordDate === dayIso && manualCaptureMatchesShift(c.shift, params.shiftNumber),
+    )
+    const windingManual = dayManual
+      .filter((c) => c.category === "winding")
+      .map((c) => manualWindingToMachineRow(c, params.resolvePersonFromCode))
+    const bendingRows = manualCapturesToBendingRows(
+      dayManual.filter((c) => c.category === "bending"),
+      params.resolvePersonFromCode,
+    )
+
+    const allMachineRows = filterMachineRowsByConfiguredSkus(
+      [...machineRows, ...windingManual].sort((a, b) =>
+        a.machine.localeCompare(b.machine, "es"),
+      ),
+      params.configuredSkus,
+    )
+
     let sheetName = excelSheetNameForDay(dayIso, REPORT_TIMEZONE)
     if (usedSheetNames.has(sheetName)) {
       let n = 2
@@ -680,7 +916,8 @@ export async function buildProductionShiftReportBlob(
       dayIso,
       params.shiftNumber,
       params.supervisorName,
-      machineRows,
+      allMachineRows,
+      bendingRows,
       params.resolveEmployeeCode,
     )
   }
