@@ -581,7 +581,7 @@ export default function HomePage() {
                         return `${displayHour}:${minuteStr} ${suffix}`
                       }}
                     />
-                    <YAxis tick={{ fontSize: 12 }} domain={[0, 600]} />
+                    <YAxis tick={{ fontSize: 12 }} domain={[0, 200]} />
                     <Tooltip content={<CustomTooltip />} />
                     {operatorKeys.map((key, index) =>
                       visibleMachines[key] ? (
