@@ -423,6 +423,10 @@ export interface ApiMachine {
   name: string;
   code: string | null;
   status: "running" | "idle" | "stopped" | "maintenance" | "offline";
+  /** `false` si el dispositivo no reporta hace más de 2 min (máquina apagada). */
+  online?: boolean;
+  /** Último heartbeat del dispositivo (ISO). `null` = nunca ha reportado. */
+  lastSeenAt?: string | null;
   currentSku?: string | null;
   unitsPerBox?: number;
   floorRow?: number | null;

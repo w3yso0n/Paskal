@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { MachineCard } from "@/components/production/machine-card"
@@ -76,18 +76,21 @@ function personAutocompleteOptions(
   }))
 }
 
+/**
+ * Estado visual de la máquina según el heartbeat del dispositivo:
+ *  - Rojo ("inactive"): sin heartbeat en > 2 min (apagada o sin wifi).
+ *  - Verde ("active"): encendida y con SKU + operador asignados.
+ *  - Amarillo ("waiting"): encendida pero sin configuración completa.
+ * El empacador no influye en el estado.
+ */
 function computeEffectiveStatus(
   sku: string | undefined,
   operator: string | undefined,
-  packers: string[] | undefined,
+  offline?: boolean,
 ): Machine["status"] {
-  const hasSku = Boolean(sku)
-  const hasOperator = Boolean(operator)
-  const hasPacker = Boolean(packers?.length)
-  // Verde ("active") con SKU + operador; el empacador ya no es requerido.
-  if (hasSku && hasOperator) return "active"
-  if (hasSku || hasOperator || hasPacker) return "waiting"
-  return "inactive"
+  if (offline) return "inactive"
+  if (Boolean(sku) && Boolean(operator)) return "active"
+  return "waiting"
 }
 
 interface MachineData extends Machine {
@@ -99,11 +102,61 @@ interface MachineData extends Machine {
   operator2?: string
   packers?: string[]
   production?: number
+  /** Dispositivo sin heartbeat reciente (> 2 min): la máquina se considera apagada. */
+  offline?: boolean
 }
 
 function machineNumberFromName(name: string): number {
   const match = name.match(/\d+/)
   return match ? Number(match[0]) : Number.POSITIVE_INFINITY
+}
+
+/** Cada cuánto se refresca el piso para detectar apagado (offline) en vivo y recuperación. */
+const FLOOR_REFRESH_INTERVAL_MS = 30_000
+
+/**
+ * Mapea la respuesta del backend (máquinas + check-ins activos) al modelo de UI.
+ * Resuelve el personal por nombre y deriva el estado efectivo, marcando como
+ * apagada (rojo) cualquier máquina con `online === false` (sin heartbeat > 2 min).
+ */
+function buildMachineData(
+  apiMachines: ApiMachine[],
+  apiCheckins: ApiMachineCheckin[],
+  employeeNameByCode: Map<string, string>,
+): MachineData[] {
+  const checkinByMachineId = new Map<string, ApiMachineCheckin>(
+    apiCheckins.map((c) => [c.machineId, c]),
+  )
+  const resolve = (code: string | null | undefined) =>
+    code ? employeeNameByCode.get(code) ?? code : undefined
+  return filterFloorMachines(apiMachines).map((m) => {
+    const base = mapApiMachineToFrontend(m)
+    const c = checkinByMachineId.get(m.id)
+    const sku = m.currentSku ?? undefined
+    const operator = resolve(c?.operatorCode ?? m.operatorCode)
+    const operator2 = resolve(c?.operator2Code ?? m.operator2Code)
+    const packerCodes = [
+      c?.packager1Code ?? m.packager1Code,
+      c?.packager2Code ?? m.packager2Code,
+      c?.packager3Code ?? m.packager3Code,
+      c?.packager4Code ?? m.packager4Code,
+    ].filter((v): v is string => Boolean(v))
+    const packers = packerCodes.length
+      ? packerCodes.map((code) => employeeNameByCode.get(code) ?? code)
+      : undefined
+    const offline = m.online === false
+    return {
+      ...base,
+      status: computeEffectiveStatus(sku, operator, offline),
+      machineCode: m.code ?? undefined,
+      sku,
+      unitsPerBox: m.unitsPerBox ?? undefined,
+      operator,
+      operator2,
+      packers,
+      offline,
+    }
+  })
 }
 
 export default function ProductionFloorPage() {
@@ -143,15 +196,23 @@ export default function ProductionFloorPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Espejo de hasUnsavedChanges para los refrescos en segundo plano (evita stale closures).
+  const hasUnsavedChangesRef = useRef(false)
   useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      setLoading(true)
-      setError(null)
+    hasUnsavedChangesRef.current = hasUnsavedChanges
+  }, [hasUnsavedChanges])
+
+  const loadAll = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const silent = opts?.silent ?? false
+      if (!silent) {
+        setLoading(true)
+        setError(null)
+      }
       try {
         const token = await getAccessToken()
         if (!token) {
-          setMachineData([])
+          if (!silent) setMachineData([])
           return
         }
         const [apiMachines, apiEmployees, apiCheckins, skus] = await Promise.all([
@@ -160,7 +221,8 @@ export default function ProductionFloorPage() {
           getActiveMachineCheckins(token),
           getProductSkus(token),
         ])
-        if (cancelled) return
+        // Un refresco en segundo plano no debe pisar ediciones locales sin guardar.
+        if (silent && hasUnsavedChangesRef.current) return
         setSkuCatalog(skus)
         setQuantityRules(loadQuantityRules())
         setEmployeeRows(apiEmployees)
@@ -170,59 +232,32 @@ export default function ProductionFloorPage() {
             .filter((e) => e.employeeCode)
             .map((e) => [String(e.employeeCode), e.fullName] as const),
         )
-        const checkinByMachineId = new Map<string, ApiMachineCheckin>(
-          apiCheckins.map((c) => [c.machineId, c]),
-        )
-        const mapped = filterFloorMachines(apiMachines).map((m) => {
-          const base = mapApiMachineToFrontend(m)
-          const sku = m.currentSku ?? undefined
-          const operator = (() => {
-            const c = checkinByMachineId.get(m.id)
-            const code = c?.operatorCode ?? m.operatorCode
-            if (!code) return undefined
-            return employeeNameByCode.get(code) ?? code
-          })()
-          const operator2 = (() => {
-            const c = checkinByMachineId.get(m.id)
-            const code = c?.operator2Code ?? m.operator2Code
-            if (!code) return undefined
-            return employeeNameByCode.get(code) ?? code
-          })()
-          const packers = (() => {
-            const c = checkinByMachineId.get(m.id)
-            const codes = [
-              c?.packager1Code ?? m.packager1Code,
-              c?.packager2Code ?? m.packager2Code,
-              c?.packager3Code ?? m.packager3Code,
-              c?.packager4Code ?? m.packager4Code,
-            ].filter((v): v is string => Boolean(v))
-            if (codes.length === 0) return undefined
-            return codes.map((code) => employeeNameByCode.get(code) ?? code)
-          })()
-          return {
-            ...base,
-            status: computeEffectiveStatus(sku, operator, packers),
-            machineCode: m.code ?? undefined,
-            sku,
-            unitsPerBox: m.unitsPerBox ?? undefined,
-            operator,
-            operator2,
-            packers,
-          }
-        })
-        setMachineData(mapped)
+        setMachineData(buildMachineData(apiMachines, apiCheckins, employeeNameByCode))
       } catch (e) {
-        if (!cancelled) {
+        if (!silent) {
           setError(e instanceof Error ? e.message : "Error al cargar máquinas")
           setMachineData([])
         }
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!silent) setLoading(false)
       }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [getAccessToken])
+    },
+    [getAccessToken],
+  )
+
+  useEffect(() => {
+    loadAll()
+  }, [loadAll])
+
+  // Refresco periódico: detecta apagado (offline → rojo) en vivo y la recuperación.
+  // Se pausa mientras haya cambios sin guardar para no descartar ediciones locales.
+  useEffect(() => {
+    if (hasUnsavedChanges) return
+    const id = window.setInterval(() => {
+      void loadAll({ silent: true })
+    }, FLOOR_REFRESH_INTERVAL_MS)
+    return () => window.clearInterval(id)
+  }, [loadAll, hasUnsavedChanges])
   const [selectedMachine, setSelectedMachine] = useState<MachineData | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [isDiagramFullscreen, setIsDiagramFullscreen] = useState(false)
@@ -315,7 +350,7 @@ export default function ProductionFloorPage() {
               status: computeEffectiveStatus(
                 codeInput || undefined,
                 operatorInput || undefined,
-                nextPackers.length ? nextPackers : undefined,
+                m.offline,
               ),
             }
           : m,
@@ -390,47 +425,7 @@ export default function ProductionFloorPage() {
             .filter((e) => e.employeeCode)
             .map((e) => [String(e.employeeCode), e.fullName] as const),
         )
-        const checkinByMachineId = new Map<string, ApiMachineCheckin>(
-          apiCheckins.map((c) => [c.machineId, c]),
-        )
-        const mapped = filterFloorMachines(freshMachines).map((m) => {
-          const base = mapApiMachineToFrontend(m)
-          const sku = m.currentSku ?? undefined
-          const operator = (() => {
-            const c = checkinByMachineId.get(m.id)
-            const code = c?.operatorCode ?? m.operatorCode
-            if (!code) return undefined
-            return employeeNameByCode.get(code) ?? code
-          })()
-          const operator2 = (() => {
-            const c = checkinByMachineId.get(m.id)
-            const code = c?.operator2Code ?? m.operator2Code
-            if (!code) return undefined
-            return employeeNameByCode.get(code) ?? code
-          })()
-          const packers = (() => {
-            const c = checkinByMachineId.get(m.id)
-            const codes = [
-              c?.packager1Code ?? m.packager1Code,
-              c?.packager2Code ?? m.packager2Code,
-              c?.packager3Code ?? m.packager3Code,
-              c?.packager4Code ?? m.packager4Code,
-            ].filter((v): v is string => Boolean(v))
-            if (codes.length === 0) return undefined
-            return codes.map((code) => employeeNameByCode.get(code) ?? code)
-          })()
-          return {
-            ...base,
-            status: computeEffectiveStatus(sku, operator, packers),
-            machineCode: m.code ?? undefined,
-            sku,
-            unitsPerBox: m.unitsPerBox ?? undefined,
-            operator,
-            operator2,
-            packers,
-          }
-        })
-        setMachineData(mapped)
+        setMachineData(buildMachineData(freshMachines, apiCheckins, employeeNameByCode))
       } catch {
         toast.error("No se pudo cerrar el turno en el servidor.")
       }
@@ -449,7 +444,7 @@ export default function ProductionFloorPage() {
         }
         return {
           ...next,
-          status: computeEffectiveStatus(next.sku, next.operator, next.packers),
+          status: computeEffectiveStatus(next.sku, next.operator, next.offline),
         }
       }),
     )
@@ -629,47 +624,7 @@ export default function ProductionFloorPage() {
             .filter((e) => e.employeeCode)
             .map((e) => [String(e.employeeCode), e.fullName] as const),
         )
-        const checkinByMachineId = new Map<string, ApiMachineCheckin>(
-          apiCheckins.map((c) => [c.machineId, c]),
-        )
-        const mapped: MachineData[] = filterFloorMachines(apiMachines).map((m) => {
-          const base = mapApiMachineToFrontend(m)
-          const sku = m.currentSku ?? undefined
-          const operator = (() => {
-            const c = checkinByMachineId.get(m.id)
-            const code = c?.operatorCode ?? m.operatorCode
-            if (!code) return undefined
-            return employeeNameByCode.get(code) ?? code
-          })()
-          const operator2 = (() => {
-            const c = checkinByMachineId.get(m.id)
-            const code = c?.operator2Code ?? m.operator2Code
-            if (!code) return undefined
-            return employeeNameByCode.get(code) ?? code
-          })()
-          const packers = (() => {
-            const c = checkinByMachineId.get(m.id)
-            const codes = [
-              c?.packager1Code ?? m.packager1Code,
-              c?.packager2Code ?? m.packager2Code,
-              c?.packager3Code ?? m.packager3Code,
-              c?.packager4Code ?? m.packager4Code,
-            ].filter((v): v is string => Boolean(v))
-            if (codes.length === 0) return undefined
-            return codes.map((code) => employeeNameByCode.get(code) ?? code)
-          })()
-          return {
-            ...base,
-            status: computeEffectiveStatus(sku, operator, packers),
-            machineCode: m.code ?? undefined,
-            sku,
-            unitsPerBox: m.unitsPerBox ?? undefined,
-            operator,
-            operator2,
-            packers,
-          }
-        })
-        setMachineData(mapped)
+        setMachineData(buildMachineData(apiMachines, apiCheckins, employeeNameByCode))
         setHasUnsavedChanges(false)
         toast.success("Asignaciones guardadas.")
 
@@ -799,7 +754,7 @@ export default function ProductionFloorPage() {
               ...m,
               sku,
               unitsPerBox: upb,
-              status: computeEffectiveStatus(sku, m.operator, m.packers),
+              status: computeEffectiveStatus(sku, m.operator, m.offline),
             }
           : m,
       ),
