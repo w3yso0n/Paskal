@@ -84,7 +84,8 @@ function computeEffectiveStatus(
   const hasSku = Boolean(sku)
   const hasOperator = Boolean(operator)
   const hasPacker = Boolean(packers?.length)
-  if (hasSku && hasOperator && hasPacker) return "active"
+  // Verde ("active") con SKU + operador; el empacador ya no es requerido.
+  if (hasSku && hasOperator) return "active"
   if (hasSku || hasOperator || hasPacker) return "waiting"
   return "inactive"
 }
@@ -528,7 +529,8 @@ export default function ProductionFloorPage() {
             packer3Code ||
             packer4Code,
         )
-        const ok = Boolean(m.sku) && Boolean(operatorCode) && Boolean(packer1Code)
+        // running (verde) con SKU + operador; el empacador es opcional.
+        const ok = Boolean(m.sku) && Boolean(operatorCode)
         const nextStatus = ok ? "running" : "idle"
         const payload = {
           status: configured ? nextStatus : "idle",
