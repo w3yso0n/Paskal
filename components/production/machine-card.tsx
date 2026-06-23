@@ -26,18 +26,21 @@ const statusColors = {
   active: "bg-green-500",
   waiting: "bg-yellow-500",
   inactive: "bg-red-500",
+  maintenance: "bg-blue-500",
 }
 
 const statusLabels = {
   active: "Activa",
   waiting: "Esperando",
   inactive: "Inactiva",
+  maintenance: "Mantenimiento",
 }
 
 const statusBorderColors = {
   active: "border-green-500",
   waiting: "border-yellow-500",
   inactive: "border-red-500",
+  maintenance: "border-blue-500",
 }
 
 export function MachineCard({ 
@@ -109,7 +112,8 @@ export function MachineCard({
                 "text-xs px-1.5 py-0.5 rounded",
                 status === "active" && "bg-green-100 text-green-700",
                 status === "waiting" && "bg-yellow-100 text-yellow-700",
-                status === "inactive" && "bg-red-100 text-red-700"
+                status === "inactive" && "bg-red-100 text-red-700",
+                status === "maintenance" && "bg-blue-100 text-blue-700"
               )}>
                 {statusLabels[status]}
               </span>

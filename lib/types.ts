@@ -2,7 +2,7 @@
  * Tipos usados en la plataforma. Los datos reales vienen del backend / PLC.
  */
 
-export type MachineStatus = "active" | "waiting" | "inactive"
+export type MachineStatus = "active" | "waiting" | "inactive" | "maintenance"
 
 export interface Machine {
   id: string

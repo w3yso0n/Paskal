@@ -52,7 +52,7 @@ import { loadQuantityRules } from "@/lib/hook-sku-quantity-table"
 import type { HookSkuQuantityRule } from "@/lib/hook-sku-generator"
 
 function mapApiMachineToFrontend(m: ApiMachine): Machine & { onFloor: boolean } {
-  const statusMap = { running: "active" as const, idle: "waiting" as const, stopped: "inactive" as const, maintenance: "inactive" as const, offline: "inactive" as const }
+  const statusMap = { running: "active" as const, idle: "waiting" as const, stopped: "inactive" as const, maintenance: "maintenance" as const, offline: "inactive" as const }
   const label = m.code ?? m.name
   const onFloor = m.floorRow != null && m.floorCol != null
   const position = {
@@ -87,8 +87,10 @@ function computeEffectiveStatus(
   sku: string | undefined,
   operator: string | undefined,
   offline?: boolean,
+  inMaintenance?: boolean,
 ): Machine["status"] {
   if (offline) return "inactive"
+  if (inMaintenance) return "maintenance"
   if (Boolean(sku) && Boolean(operator)) return "active"
   return "waiting"
 }
@@ -104,6 +106,8 @@ interface MachineData extends Machine {
   production?: number
   /** Dispositivo sin heartbeat reciente (> 2 min): la máquina se considera apagada. */
   offline?: boolean
+  /** Sesión de mantenimiento activa (estado azul). */
+  inMaintenance?: boolean
 }
 
 function machineNumberFromName(name: string): number {
@@ -145,9 +149,10 @@ function buildMachineData(
       ? packerCodes.map((code) => employeeNameByCode.get(code) ?? code)
       : undefined
     const offline = m.online === false
+    const inMaintenance = m.inMaintenance === true
     return {
       ...base,
-      status: computeEffectiveStatus(sku, operator, offline),
+      status: computeEffectiveStatus(sku, operator, offline, inMaintenance),
       machineCode: m.code ?? undefined,
       sku,
       unitsPerBox: m.unitsPerBox ?? undefined,
@@ -155,6 +160,7 @@ function buildMachineData(
       operator2,
       packers,
       offline,
+      inMaintenance,
     }
   })
 }
