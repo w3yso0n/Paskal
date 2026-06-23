@@ -81,7 +81,6 @@ const STATUS_LABELS: Record<ApiEmployeeStatus, string> = {
 
 type EmployeeFormState = {
   fullName: string
-  employeeCode: string
   nfcCardUid: string
   email: string
   phone: string
@@ -94,7 +93,6 @@ type EmployeeFormState = {
 
 const EMPTY_EMPLOYEE_FORM: EmployeeFormState = {
   fullName: "",
-  employeeCode: "",
   nfcCardUid: "",
   email: "",
   phone: "",
@@ -127,7 +125,6 @@ function monthBoundsFromInput(monthValue: string) {
 function employeeToForm(employee: ApiEmployee): EmployeeFormState {
   return {
     fullName: employee.fullName,
-    employeeCode: employee.employeeCode ?? "",
     nfcCardUid: employee.nfcCardUid ?? "",
     email: employee.email ?? "",
     phone: employee.phone ?? "",
@@ -171,15 +168,6 @@ function EmployeeFormFields({
           value={form.fullName}
           onChange={(e) => onChange({ ...form, fullName: e.target.value })}
           placeholder="Ej: Juan Pérez"
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-employeeCode`}>Código de empleado</Label>
-        <Input
-          id={`${idPrefix}-employeeCode`}
-          value={form.employeeCode}
-          onChange={(e) => onChange({ ...form, employeeCode: e.target.value })}
-          placeholder="Ej: OP-001"
         />
       </div>
       <div className="space-y-2">
@@ -501,7 +489,6 @@ export default function EmployeesPage() {
     try {
       const payload = {
         fullName,
-        employeeCode: employeeForm.employeeCode.trim() || null,
         nfcCardUid: employeeForm.nfcCardUid.trim() || null,
         email: employeeForm.email.trim() || null,
         phone: employeeForm.phone.trim() || null,
