@@ -665,6 +665,8 @@ export type ApiEmployeeStatus = "active" | "inactive" | "terminated";
 export interface ApiEmployee {
   id: string;
   employeeCode: string | null;
+  /** UID de tarjeta NFC (hex, minúsculas). El backend resuelve los taps por este campo. */
+  nfcCardUid: string | null;
   fullName: string;
   email: string | null;
   phone: string | null;
@@ -680,6 +682,7 @@ export interface ApiEmployee {
 export interface CreateEmployeePayload {
   fullName: string;
   employeeCode?: string | null;
+  nfcCardUid?: string | null;
   email?: string | null;
   phone?: string | null;
   position?: string | null;
