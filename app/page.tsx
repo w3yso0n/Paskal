@@ -38,31 +38,15 @@ function getShiftBoundsInTimeZone(now: Date, shift: ShiftId, timeZone: string): 
   const p = getPartsInTimeZone(now, timeZone)
 
   if (shift === "shift1") {
-    // 06:00 -> 17:00 (mismo día)
-    const start = makeZonedDate(p.year, p.month, p.day, 6, 0, timeZone)
-    const end = makeZonedDate(p.year, p.month, p.day, 17, 0, timeZone)
+    // Turno 1: 07:00 -> 16:00 (mismo día)
+    const start = makeZonedDate(p.year, p.month, p.day, 7, 0, timeZone)
+    const end = makeZonedDate(p.year, p.month, p.day, 16, 0, timeZone)
     return { start, end }
   }
 
-  // shift2: 15:00 -> 00:30 (cruza medianoche)
-  const nowMinutes = p.hour * 60 + p.minute
-  const isAfterMidnightBefore0030 = nowMinutes < 30
-
-  if (isAfterMidnightBefore0030) {
-    // Si estamos entre 00:00-00:29, el turno vigente empezó ayer 15:00 y termina hoy 00:30.
-    const yesterdayAnchor = makeZonedDate(p.year, p.month, p.day, 12, 0, timeZone)
-    const yesterday = new Date(yesterdayAnchor.getTime() - 24 * 60 * 60 * 1000)
-    const yp = getPartsInTimeZone(yesterday, timeZone)
-    const start = makeZonedDate(yp.year, yp.month, yp.day, 15, 0, timeZone)
-    const end = makeZonedDate(p.year, p.month, p.day, 0, 30, timeZone)
-    return { start, end }
-  }
-
-  const start = makeZonedDate(p.year, p.month, p.day, 15, 0, timeZone)
-  const tomorrowAnchor = makeZonedDate(p.year, p.month, p.day, 12, 0, timeZone)
-  const tomorrow = new Date(tomorrowAnchor.getTime() + 24 * 60 * 60 * 1000)
-  const tp = getPartsInTimeZone(tomorrow, timeZone)
-  const end = makeZonedDate(tp.year, tp.month, tp.day, 0, 30, timeZone)
+  // Turno 2: 16:00 -> 23:30 (mismo día, ya no cruza medianoche)
+  const start = makeZonedDate(p.year, p.month, p.day, 16, 0, timeZone)
+  const end = makeZonedDate(p.year, p.month, p.day, 23, 30, timeZone)
   return { start, end }
 }
 
@@ -514,7 +498,7 @@ export default function HomePage() {
                 variant="outline"
                 onClick={() => setSelectedShift((s) => (s === "shift1" ? "shift2" : "shift1"))}
               >
-                {selectedShift === "shift1" ? "Turno 1 (06:00–17:00)" : "Turno 2 (15:00–00:30)"}
+                {selectedShift === "shift1" ? "Turno 1 (07:00–16:00)" : "Turno 2 (16:00–23:30)"}
               </Button>
             </div>
           </div>

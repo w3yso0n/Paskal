@@ -1831,8 +1831,8 @@ export default function MetricsPage() {
                           <SelectValue placeholder="Seleccionar" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="1">Turno 1 (06:00–17:00)</SelectItem>
-                          <SelectItem value="2">Turno 2 (15:00–00:30)</SelectItem>
+                          <SelectItem value="1">Turno 1 (07:00–16:00)</SelectItem>
+                          <SelectItem value="2">Turno 2 (16:00–23:30)</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>

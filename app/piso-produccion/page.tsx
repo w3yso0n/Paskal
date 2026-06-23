@@ -264,6 +264,34 @@ export default function ProductionFloorPage() {
     }, FLOOR_REFRESH_INTERVAL_MS)
     return () => window.clearInterval(id)
   }, [loadAll, hasUnsavedChanges])
+
+  // Refresco en vivo (SSE): al recibir una señal de cambio del backend, recarga (con
+  // debounce). Ignora los pings de keep-alive. Si SSE falla, el polling de arriba es el
+  // respaldo. Se pausa con cambios sin guardar para no descartar ediciones locales.
+  useEffect(() => {
+    if (hasUnsavedChanges) return
+    const base = process.env.NEXT_PUBLIC_API_URL ?? ""
+    if (!base) return
+    let debounce: ReturnType<typeof setTimeout> | undefined
+    const es = new EventSource(`${base}/live/stream`)
+    es.onmessage = (ev) => {
+      try {
+        if (JSON.parse(ev.data)?.type === "ping") return
+      } catch {
+        /* payload no-JSON: tratar como señal de cambio */
+      }
+      if (debounce) clearTimeout(debounce)
+      debounce = setTimeout(() => void loadAll({ silent: true }), 800)
+    }
+    es.onerror = () => {
+      /* EventSource reintenta solo; el polling de 30 s queda como respaldo */
+    }
+    return () => {
+      es.close()
+      if (debounce) clearTimeout(debounce)
+    }
+  }, [loadAll, hasUnsavedChanges])
+
   const [selectedMachine, setSelectedMachine] = useState<MachineData | null>(null)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [isDiagramFullscreen, setIsDiagramFullscreen] = useState(false)
@@ -698,6 +726,7 @@ export default function ProductionFloorPage() {
   const activeCount = machineData.filter(m => m.status === "active").length
   const waitingCount = machineData.filter(m => m.status === "waiting").length
   const inactiveCount = machineData.filter(m => m.status === "inactive").length
+  const maintenanceCount = machineData.filter(m => m.status === "maintenance").length
   const assignedCount = machineData.filter(m => m.sku).length
 
   const sortedMachines = useMemo(() => {
@@ -907,6 +936,10 @@ export default function ProductionFloorPage() {
             <div className="flex items-center gap-2">
               <div className="h-3 w-3 rounded-full bg-red-500" />
               <span className="text-sm text-muted-foreground">Inactiva ({inactiveCount})</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="h-3 w-3 rounded-full bg-blue-500" />
+              <span className="text-sm text-muted-foreground">Mantenimiento ({maintenanceCount})</span>
             </div>
           </div>
         </div>

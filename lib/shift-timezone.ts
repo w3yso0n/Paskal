@@ -46,7 +46,7 @@ export function makeZonedDate(
   return corrected
 }
 
-/** Turno 1: 06:00–17:00. Turno 2: 15:00–00:30 (día calendario seleccionado). */
+/** Turno 1: 07:00–16:00. Turno 2: 16:00–23:30 (mismo día calendario; no cruza medianoche). */
 export function getShiftBoundsForCalendarDate(
   dateIso: string,
   shift: 1 | 2,
@@ -60,17 +60,15 @@ export function getShiftBoundsForCalendarDate(
 
   if (shift === 1) {
     return {
-      start: makeZonedDate(y, m, d, 6, 0, timeZone),
-      end: makeZonedDate(y, m, d, 17, 0, timeZone),
+      start: makeZonedDate(y, m, d, 7, 0, timeZone),
+      end: makeZonedDate(y, m, d, 16, 0, timeZone),
     }
   }
 
-  const anchor = makeZonedDate(y, m, d, 12, 0, timeZone)
-  const tomorrow = new Date(anchor.getTime() + 24 * 60 * 60 * 1000)
-  const tp = getPartsInTimeZone(tomorrow, timeZone)
+  // Turno 2: 16:00–23:30 del mismo día (ya no cruza medianoche).
   return {
-    start: makeZonedDate(y, m, d, 15, 0, timeZone),
-    end: makeZonedDate(tp.year, tp.month, tp.day, 0, 30, timeZone),
+    start: makeZonedDate(y, m, d, 16, 0, timeZone),
+    end: makeZonedDate(y, m, d, 23, 30, timeZone),
   }
 }
 
