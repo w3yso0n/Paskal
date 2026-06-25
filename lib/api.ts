@@ -849,6 +849,34 @@ export async function getMaintenanceSessions(
   return parseResponse<ApiMaintenanceSession[]>(res)
 }
 
+// --- Consulta SQL de solo lectura (sección "Datos") ---
+
+export interface DataQueryResult {
+  columns: string[]
+  rows: Record<string, unknown>[]
+  rowCount: number
+  /** El servidor recortó el resultado al tope de filas. */
+  truncated: boolean
+  elapsedMs: number
+}
+
+/**
+ * Ejecuta una consulta SQL de SOLO LECTURA (una sentencia SELECT/WITH/…).
+ * El backend la corre en una transacción `READ ONLY` con timeout y tope de filas.
+ */
+export async function runDataQuery(
+  accessToken: string,
+  sql: string,
+  maxRows?: number,
+): Promise<DataQueryResult> {
+  const res = await fetchWithAuth("/data/query", {
+    accessToken,
+    method: "POST",
+    body: JSON.stringify(maxRows != null ? { sql, maxRows } : { sql }),
+  })
+  return parseResponse<DataQueryResult>(res)
+}
+
 export async function closeAllMachineCheckins(accessToken: string): Promise<{ closed: number }> {
   const res = await fetchWithAuth("/machine-checkin/close-all", {
     accessToken,
