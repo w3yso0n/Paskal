@@ -24,6 +24,8 @@ export type Permission =
   | "business-rules.manage"
   | "platform-config.view"
   | "platform-config.edit"
+  /** Consulta de solo lectura de las tablas del sistema (sección "Datos", herramienta de validación). */
+  | "data.browse"
 
 const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
   admin: [
@@ -43,6 +45,7 @@ const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
     "data-capture.manage",
     "bonus-config.manage",
     "business-rules.manage",
+    "data.browse",
   ],
   manager: [
     "alert-rules.list",
@@ -98,6 +101,7 @@ export const ROUTE_PERMISSIONS: Record<string, Permission[]> = {
   "/configuracion-bono": ["business-rules.manage"],
   "/reglas-negocio": ["business-rules.manage"],
   "/configuracion": ["platform-config.view"],
+  "/datos": ["data.browse"],
 }
 
 export function canAccessRoute(
@@ -141,4 +145,11 @@ export function showAdminSection(user: RequestUser | null | undefined): boolean 
  */
 export function showPlatformSection(user: RequestUser | null | undefined): boolean {
   return hasPermission(user, "platform-config.view")
+}
+
+/**
+ * Whether the sidebar should show the "Datos" (read-only table browser) section.
+ */
+export function showDataSection(user: RequestUser | null | undefined): boolean {
+  return hasPermission(user, "data.browse")
 }

@@ -824,6 +824,31 @@ export async function getActiveMachineCheckins(accessToken: string): Promise<Api
   return parseResponse<ApiMachineCheckin[]>(res)
 }
 
+// --- Sesiones de mantenimiento (read-only, para la sección "Datos") ---
+
+export interface ApiMaintenanceSession {
+  id: string
+  machineId: string
+  machineCode: string
+  employeeCode: string | null
+  startedAt: string
+  endedAt: string | null
+  excludedUnits: number
+}
+
+export async function getMaintenanceSessions(
+  accessToken: string,
+  params: { machineId?: string; active?: boolean; limit?: number } = {},
+): Promise<ApiMaintenanceSession[]> {
+  const q = new URLSearchParams()
+  if (params.machineId) q.set("machineId", params.machineId)
+  if (params.active) q.set("active", "true")
+  if (params.limit) q.set("limit", String(params.limit))
+  const qs = q.toString()
+  const res = await fetchWithAuth(`/maintenance${qs ? `?${qs}` : ""}`, { accessToken })
+  return parseResponse<ApiMaintenanceSession[]>(res)
+}
+
 export async function closeAllMachineCheckins(accessToken: string): Promise<{ closed: number }> {
   const res = await fetchWithAuth("/machine-checkin/close-all", {
     accessToken,

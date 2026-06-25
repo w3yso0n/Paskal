@@ -20,6 +20,7 @@ import {
   ClipboardList,
   Scale,
   Tags,
+  Database,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
@@ -27,6 +28,7 @@ import {
   hasPermission,
   showAdminSection,
   showPlatformSection,
+  showDataSection,
   type Permission,
 } from "@/lib/permissions"
 
@@ -53,6 +55,10 @@ const adminItems: MenuItem[] = [
   { icon: ClipboardList, label: "Captura de datos", href: "/captura-datos", permission: "data-capture.manage" },
   { icon: Scale, label: "Reglas de negocio", href: "/reglas-negocio", permission: "business-rules.manage" },
   { icon: Palette, label: "Configuración de la organización", href: "/administracion/configuracion-organizacion", permission: "platform-config.view" },
+]
+
+const dataItems: MenuItem[] = [
+  { icon: Database, label: "Datos", href: "/datos", permission: "data.browse" },
 ]
 
 function NavLink({
@@ -106,6 +112,7 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
   )
   const hasAdmin = showAdminSection(user)
   const hasPlatform = showPlatformSection(user)
+  const hasData = showDataSection(user)
 
   return (
     <aside
@@ -174,6 +181,20 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
           </>
         )}
 
+        {hasData && (
+          <>
+            <SectionLabel label="Datos" collapsed={collapsed} />
+            {dataItems.map((item) => (
+              <NavLink
+                key={item.href}
+                item={item}
+                isActive={pathname === item.href || pathname.startsWith(item.href + "/")}
+                collapsed={collapsed}
+              />
+            ))}
+          </>
+        )}
+
         {hasPlatform && (
           <>
             <SectionLabel label="Plataforma" collapsed={collapsed} />
@@ -220,4 +241,5 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
 
 export const productionMenuItems = productionItems
 export const adminMenuItems = adminItems
+export const dataMenuItems = dataItems
 export const platformConfigItem: MenuItem = { icon: Shield, label: "Configuración", href: "/configuracion" }

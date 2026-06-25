@@ -13,6 +13,7 @@ import {
   Sidebar,
   productionMenuItems,
   adminMenuItems,
+  dataMenuItems,
   platformConfigItem,
 } from "./sidebar"
 import { Header } from "./header"
@@ -20,6 +21,7 @@ import {
   hasPermission,
   showAdminSection,
   showPlatformSection,
+  showDataSection,
 } from "@/lib/permissions"
 
 interface DashboardLayoutProps {
@@ -70,6 +72,7 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false)
   const hasAdmin = showAdminSection(user)
   const hasPlatform = showPlatformSection(user)
+  const hasData = showDataSection(user)
   const visibleAdminItems = adminMenuItems.filter(
     (item) => !item.permission || hasPermission(user, item.permission),
   )
@@ -119,6 +122,21 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
               <>
                 <MobileSectionLabel label="Administración" />
                 {visibleAdminItems.map((item) => (
+                  <MobileNavLink
+                    key={item.href}
+                    href={item.href}
+                    label={item.label}
+                    icon={item.icon}
+                    isActive={pathname === item.href}
+                    onClick={() => setMobileMenuOpen(false)}
+                  />
+                ))}
+              </>
+            )}
+            {hasData && (
+              <>
+                <MobileSectionLabel label="Datos" />
+                {dataMenuItems.map((item) => (
                   <MobileNavLink
                     key={item.href}
                     href={item.href}
