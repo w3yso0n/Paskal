@@ -38,36 +38,6 @@ const DASHBOARD_TIMEZONE = "America/Mexico_City"
 
 type ShiftId = "shift1" | "shift2"
 
-function getShiftBoundsInTimeZone(now: Date, shift: ShiftId, timeZone: string): { start: Date; end: Date } {
-  const p = getPartsInTimeZone(now, timeZone)
-
-  if (shift === "shift1") {
-    // Turno 1: 07:00 -> 16:00 (mismo día)
-    const start = makeZonedDate(p.year, p.month, p.day, 7, 0, timeZone)
-    const end = makeZonedDate(p.year, p.month, p.day, 16, 0, timeZone)
-    return { start, end }
-  }
-
-  // Turno 2: 16:00 -> 23:30 (mismo día, ya no cruza medianoche)
-  const start = makeZonedDate(p.year, p.month, p.day, 16, 0, timeZone)
-  const end = makeZonedDate(p.year, p.month, p.day, 23, 30, timeZone)
-  return { start, end }
-}
-
-function buildHourBuckets(startInclusive: Date, endExclusive: Date, timeZone: string): string[] {
-  const start = new Date(startInclusive)
-  // Alineamos al inicio de la hora, pero sin salirnos del rango.
-  start.setMinutes(0, 0, 0)
-
-  const labels: string[] = []
-  for (let t = start.getTime(); t < endExclusive.getTime(); t += 60 * 60 * 1000) {
-    const d = new Date(t)
-    const label = formatHmInTimeZone(d, timeZone)
-    if (labels.length === 0 || labels[labels.length - 1] !== label) labels.push(label)
-  }
-  return labels
-}
-
 function getPartsInTimeZone(date: Date, timeZone: string) {
   const dtf = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -229,10 +199,8 @@ type OperatorProductionStats = {
   shift: number
 }
 
-function resolveOperatorKey(
-  payload: Record<string, unknown>,
-  employeeNameByCode: Map<string, string>,
-): string {
+/** Código crudo (employee_code) del operador 1 del evento PROD; "—" si no hay. */
+function extractOperatorCode(payload: Record<string, unknown>): string {
   const rawOperators = payload["operators"]
   const fromOperatorsArray =
     Array.isArray(rawOperators) && rawOperators.length > 0 && typeof rawOperators[0] === "string"
@@ -245,7 +213,14 @@ function resolveOperatorKey(
     (payload["operator"] as string | undefined) ??
     fromOperatorsArray ??
     "—"
-  const opCode = String(rawOperator ?? "—").trim() || "—"
+  return String(rawOperator ?? "—").trim() || "—"
+}
+
+function resolveOperatorKey(
+  payload: Record<string, unknown>,
+  employeeNameByCode: Map<string, string>,
+): string {
+  const opCode = extractOperatorCode(payload)
   return employeeNameByCode.get(opCode) ?? employeeNameByCode.get(opCode.toLowerCase()) ?? opCode
 }
 
@@ -319,8 +294,28 @@ export default function HomePage() {
           employeeNameByCode.set(c.toLowerCase(), emp.fullName)
         }
 
+        // Turno ASIGNADO por operador (cruza por employee_code y por nombre).
+        const selectedShiftNum = selectedShift === "shift1" ? 1 : 2
+        const shiftByCode = new Map<string, number>()
+        const shiftByName = new Map<string, number>()
+        for (const emp of apiEmployees) {
+          if (emp.shift !== 1 && emp.shift !== 2) continue
+          const c = emp.employeeCode?.trim()
+          if (c) {
+            shiftByCode.set(c, emp.shift)
+            shiftByCode.set(c.toLowerCase(), emp.shift)
+          }
+          const n = emp.fullName?.trim()
+          if (n) {
+            shiftByName.set(n, emp.shift)
+            shiftByName.set(n.toLowerCase(), emp.shift)
+          }
+        }
+
         const byBucket = new Map<string, Record<string, string | number>>()
         const statsByOperator = new Map<string, OperatorProductionStats>()
+        // Horas (ms, alineadas) con producción del turno seleccionado HOY → eje dinámico.
+        const shiftHourMs: number[] = []
         let total = 0
         let today = 0
         const now = new Date()
@@ -332,15 +327,6 @@ export default function HomePage() {
           now,
           DASHBOARD_TIMEZONE,
         )
-        const { start: shiftStart, end: shiftEnd } = getShiftBoundsInTimeZone(
-          now,
-          selectedShift,
-          DASHBOARD_TIMEZONE,
-        )
-        const bucketLabels = buildHourBuckets(shiftStart, shiftEnd, DASHBOARD_TIMEZONE)
-        for (const label of bucketLabels) {
-          byBucket.set(label, { time: label })
-        }
 
         for (const e of events) {
           const payload = e.payload ?? {}
@@ -352,9 +338,17 @@ export default function HomePage() {
           const ts = new Date(e.occurredAt)
           if (Number.isNaN(ts.getTime())) continue
 
-          const operatorKey = resolveOperatorKey(payload, employeeNameByCode)
-          const opStats = statsByOperator.get(operatorKey) ?? { month: 0, today: 0, shift: 0 }
+          const opCode = extractOperatorCode(payload)
+          const operatorKey =
+            employeeNameByCode.get(opCode) ?? employeeNameByCode.get(opCode.toLowerCase()) ?? opCode
+          const opShift =
+            shiftByCode.get(opCode) ??
+            shiftByCode.get(opCode.toLowerCase()) ??
+            shiftByName.get(operatorKey) ??
+            shiftByName.get(operatorKey.toLowerCase()) ??
+            null
 
+          const opStats = statsByOperator.get(operatorKey) ?? { month: 0, today: 0, shift: 0 }
           const isThisMonth = ts >= startOfMonthTz && ts < endOfMonthTz
           if (isThisMonth) {
             total += count
@@ -365,22 +359,33 @@ export default function HomePage() {
             today += count
             opStats.today += count
           }
-          const inShift = ts >= shiftStart && ts < shiftEnd
-          if (inShift) {
-            opStats.shift += count
-          }
           statsByOperator.set(operatorKey, opStats)
 
-          if (!inShift) continue
+          // La gráfica agrupa por TURNO ASIGNADO del operador (no por la hora del evento):
+          // toda la producción de HOY de los operadores del turno seleccionado, aun fuera de hora.
+          if (!isToday || opShift !== selectedShiftNum) continue
+          opStats.shift += count
+          statsByOperator.set(operatorKey, opStats)
 
           const bucket = new Date(ts)
           bucket.setMinutes(0, 0, 0)
+          shiftHourMs.push(bucket.getTime())
           const label = formatHmInTimeZone(bucket, DASHBOARD_TIMEZONE)
-          if (!byBucket.has(label)) continue
-
           const row = byBucket.get(label) ?? { time: label }
           row[operatorKey] = (Number(row[operatorKey]) || 0) + count
           byBucket.set(label, row)
+        }
+
+        // Eje de horas DINÁMICO: de la primera a la última hora con producción del turno hoy,
+        // rellenando las horas intermedias con 0 para un eje continuo. Vacío si no hubo nada.
+        const bucketLabels: string[] = []
+        if (shiftHourMs.length > 0) {
+          const minH = Math.min(...shiftHourMs)
+          const maxH = Math.max(...shiftHourMs)
+          for (let t = minH; t <= maxH; t += 60 * 60 * 1000) {
+            const label = formatHmInTimeZone(new Date(t), DASHBOARD_TIMEZONE)
+            if (bucketLabels[bucketLabels.length - 1] !== label) bucketLabels.push(label)
+          }
         }
 
         const allOperatorKeys = new Set<string>()

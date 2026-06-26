@@ -157,6 +157,8 @@ type EmployeeFormState = {
   position: string
   primaryRole: EmployeeProductionRole
   secondaryRole: EmployeeSecondaryRole | ""
+  /** Turno asignado: "" = sin asignar, "1" = matutino, "2" = vespertino. */
+  shift: "" | "1" | "2"
   hiredAt: string
   status: ApiEmployeeStatus
 }
@@ -169,6 +171,7 @@ const EMPTY_EMPLOYEE_FORM: EmployeeFormState = {
   position: "",
   primaryRole: "operator",
   secondaryRole: "",
+  shift: "",
   hiredAt: "",
   status: "active",
 }
@@ -206,6 +209,7 @@ function employeeToForm(employee: ApiEmployee): EmployeeFormState {
     position: employee.position ?? "",
     primaryRole,
     secondaryRole: employee.secondaryRole ?? "",
+    shift: employee.shift === 1 ? "1" : employee.shift === 2 ? "2" : "",
     hiredAt: employee.hiredAt ?? "",
     status: employee.status,
   }
@@ -302,6 +306,27 @@ function EmployeeFormFields({
             ))}
           </SelectContent>
         </Select>
+      </div>
+      <div className="space-y-2">
+        <Label>Turno asignado</Label>
+        <Select
+          value={form.shift || "none"}
+          onValueChange={(v) =>
+            onChange({ ...form, shift: v === "none" ? "" : (v as "1" | "2") })
+          }
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Sin turno asignado" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">Sin turno asignado</SelectItem>
+            <SelectItem value="1">Turno 1 — Matutino (07:00–16:00)</SelectItem>
+            <SelectItem value="2">Turno 2 — Vespertino (16:00–23:30)</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          Define en qué gráfica de turno (inicio) aparece la producción de esta persona.
+        </p>
       </div>
       {form.primaryRole === "operator" ? (
         <div className="space-y-2">
@@ -636,17 +661,20 @@ export default function EmployeesPage() {
           employeeForm.primaryRole === "operator" && employeeForm.secondaryRole
             ? employeeForm.secondaryRole
             : null,
+        shift: employeeForm.shift ? Number(employeeForm.shift) : null,
         hiredAt: employeeForm.hiredAt.trim() || null,
         status: employeeForm.status,
       }
 
       if (editingEmployee) {
-        const updated = await updateEmployee(token, editingEmployee.id, payload)
-        setEmployees((prev) => prev.map((e) => (e.id === updated.id ? updated : e)))
+        await updateEmployee(token, editingEmployee.id, payload)
       } else {
-        const created = await createEmployee(token, payload)
-        setEmployees((prev) => [created, ...prev])
+        await createEmployee(token, payload)
       }
+      // Re-fetch de la lista: refleja la normalización del backend (NFC, employee_code interno
+      // auto-derivado, etc.) y evita que las tarjetas queden con datos stale tras editar.
+      const fresh = await getEmployees(token)
+      setEmployees(fresh)
 
       setIsEmployeeDialogOpen(false)
       setEditingEmployee(null)
@@ -1022,7 +1050,7 @@ export default function EmployeesPage() {
                           <div className="flex items-center gap-2 text-muted-foreground">
                             <Hash className="h-3.5 w-3.5 shrink-0" />
                             <span className="font-mono truncate">
-                              {employee.employeeCode ?? "Sin código"}
+                              {employee.nfcCardUid ? `NFC: ${employee.nfcCardUid}` : "Sin tarjeta NFC"}
                             </span>
                           </div>
                           <div className="flex items-center gap-2">

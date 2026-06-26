@@ -701,6 +701,8 @@ export interface ApiEmployee {
   hiredAt: string | null;
   /** Apoyo de transporte fijo para personal local. */
   localTransportSupport: boolean;
+  /** Turno asignado: 1 = matutino (07:00–16:00), 2 = vespertino (16:00–23:30). Null = sin asignar. */
+  shift: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -717,6 +719,8 @@ export interface CreateEmployeePayload {
   status?: ApiEmployeeStatus;
   hiredAt?: string | Date | null;
   localTransportSupport?: boolean;
+  /** Turno asignado: 1 = matutino, 2 = vespertino. Null = sin asignar. */
+  shift?: number | null;
 }
 
 export interface UpdateEmployeePayload extends Partial<CreateEmployeePayload> {}

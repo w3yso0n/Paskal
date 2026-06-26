@@ -67,15 +67,23 @@ const TABLES: TableDef[] = [
     table: "machines",
     label: "Máquinas",
     group: "Producción y planta",
-    // Muestra el roster activo (operadores/empacadores) junto a la máquina vía join al check-in activo.
+    // Muestra el roster activo (operadores/empacadores) por su NFC junto a la máquina,
+    // vía join al check-in activo y a employees (employee_code interno → nfc_card_uid).
     defaultSql:
       "select m.code, m.status, m.current_sku, m.units_per_box, m.orphan_units,\n" +
-      "  c.operator_code, c.operator_2_code,\n" +
-      "  c.packager_1_code, c.packager_2_code, c.packager_3_code, c.packager_4_code,\n" +
+      "  eo.nfc_card_uid as operator_nfc, eo2.nfc_card_uid as operator_2_nfc,\n" +
+      "  ep1.nfc_card_uid as packager_1_nfc, ep2.nfc_card_uid as packager_2_nfc,\n" +
+      "  ep3.nfc_card_uid as packager_3_nfc, ep4.nfc_card_uid as packager_4_nfc,\n" +
       "  m.last_seen_at, m.last_abs_count, m.last_seq, m.last_production_at, m.count_at_checkout,\n" +
       "  m.floor_row, m.floor_col, m.id\n" +
       "from machines m\n" +
       "left join machine_checkins c on c.machine_id = m.id and c.is_active = true\n" +
+      "left join employees eo on eo.employee_code = c.operator_code\n" +
+      "left join employees eo2 on eo2.employee_code = c.operator_2_code\n" +
+      "left join employees ep1 on ep1.employee_code = c.packager_1_code\n" +
+      "left join employees ep2 on ep2.employee_code = c.packager_2_code\n" +
+      "left join employees ep3 on ep3.employee_code = c.packager_3_code\n" +
+      "left join employees ep4 on ep4.employee_code = c.packager_4_code\n" +
       "order by m.code",
   },
   {
