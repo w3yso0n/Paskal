@@ -15,17 +15,13 @@ import {
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Plus, Search, Package, BookOpen } from "lucide-react"
+import { Plus, Search, Package } from "lucide-react"
 import { useAuth } from "@/contexts/auth-context"
 import { getProductSkus, type ApiProductSku } from "@/lib/api"
 import { CreateSkuDialog } from "@/components/sku/create-sku-dialog"
 import { HookSkuBuilder } from "@/components/sku/hook-sku-builder"
 import { HookSkuQuantityEditor } from "@/components/sku/hook-sku-quantity-editor"
 import {
-  HOOK_TYPE_CATALOG,
-  RAFIA_M_KG_CATALOG,
-  TWINE_COLOR_CATALOG,
-  WINDING_TYPE_CATALOG,
   type HookSkuQuantityRule,
 } from "@/lib/hook-sku-generator"
 import { loadQuantityRules } from "@/lib/hook-sku-quantity-table"
@@ -115,7 +111,6 @@ export default function SkuManagementPage() {
           <TabsList>
             <TabsTrigger value="generador">Generador</TabsTrigger>
             <TabsTrigger value="piezas">Piezas por caja</TabsTrigger>
-            <TabsTrigger value="catalogos">Catálogos</TabsTrigger>
             <TabsTrigger value="registrados">Registrados</TabsTrigger>
           </TabsList>
 
@@ -137,37 +132,6 @@ export default function SkuManagementPage() {
                 Los cambios se guardan en este navegador.
               </p>
               <HookSkuQuantityEditor rules={quantityRules} onChange={setQuantityRules} />
-            </div>
-          </TabsContent>
-
-          <TabsContent value="catalogos">
-            <div className="grid gap-4 md:grid-cols-2">
-              <CatalogCard
-                title="Tipo de gancho"
-                entries={Object.entries(HOOK_TYPE_CATALOG).map(([k, v]) => `${k} → ${v}`)}
-              />
-              <CatalogCard
-                title="Tipo de embobinado"
-                entries={Object.entries(WINDING_TYPE_CATALOG).map(([k, v]) => `${k} → ${v}`)}
-              />
-              <CatalogCard
-                title="Color de rafia"
-                entries={Object.entries(TWINE_COLOR_CATALOG).map(([k, v]) => `${k} → ${v}`)}
-                note='Blue usa "l" minúscula, no el número 1.'
-              />
-              <CatalogCard
-                title="Rafia m/kg"
-                entries={Object.entries(RAFIA_M_KG_CATALOG).map(([k, v]) => `${k} → ${v}`)}
-              />
-            </div>
-            <div className="mt-4 rounded-lg border border-dashed border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-              <p className="font-medium text-foreground">Reglas de metros totales</p>
-              <ul className="mt-2 list-inside list-disc space-y-1">
-                <li>Suma: vuelta principal + caída libre (si aplica).</li>
-                <li>Decimal &lt; 0.5 → redondeo hacia abajo (floor).</li>
-                <li>Decimal ≥ 0.5 → redondeo hacia arriba (ceil).</li>
-                <li>Varios colores en el SKU: códigos unidos con &quot;/&quot; (ej. w/o/y).</li>
-              </ul>
             </div>
           </TabsContent>
 
@@ -251,32 +215,5 @@ export default function SkuManagementPage() {
         }}
       />
     </DashboardLayout>
-  )
-}
-
-function CatalogCard({
-  title,
-  entries,
-  note,
-}: {
-  title: string
-  entries: string[]
-  note?: string
-}) {
-  return (
-    <div className="rounded-xl border border-border bg-card p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <BookOpen className="h-4 w-4 text-muted-foreground" />
-        <h3 className="text-sm font-semibold">{title}</h3>
-      </div>
-      <ul className="space-y-1 font-mono text-xs">
-        {entries.map((e) => (
-          <li key={e} className="text-muted-foreground">
-            {e}
-          </li>
-        ))}
-      </ul>
-      {note && <p className="mt-2 text-xs text-amber-700">{note}</p>}
-    </div>
   )
 }

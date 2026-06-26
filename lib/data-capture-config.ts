@@ -17,6 +17,13 @@ export const ROLLER_MACHINES = [
 ] as const
 
 export const SCRAP_SOURCE_KEY = "scrap-total"
+
+export const SCRAP_MATERIALS = [
+  { key: "scrap-metal", label: "Metal" },
+  { key: "scrap-twine", label: "Twine / Rafia" },
+] as const
+
+export type ScrapMaterialKey = (typeof SCRAP_MATERIALS)[number]["key"]
 export const HISTORICAL_MONTHLY_SOURCE_KEY = "company-monthly-total"
 
 export const SHIFT_OPTIONS = [
@@ -44,6 +51,8 @@ export function sourceKeyLabel(key: string): string {
   const found = all.find((m) => m.key === key)
   if (found) return found.label
   if (key === SCRAP_SOURCE_KEY) return "Scrap general"
+  const scrapMat = SCRAP_MATERIALS.find((m) => m.key === key)
+  if (scrapMat) return scrapMat.label
   if (key === HISTORICAL_MONTHLY_SOURCE_KEY) return "Producción mensual total"
   return key
 }

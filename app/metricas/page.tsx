@@ -7,6 +7,7 @@ import { KpiCard } from "@/components/dashboard/kpi-card"
 import { AttendanceTable } from "@/components/attendance/attendance-table"
 import { AttendanceStatsCards } from "@/components/attendance/attendance-stats-cards"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import {
   Tabs,
   TabsContent,
@@ -47,7 +48,7 @@ import {
 import {
   CheckCircle,
   Clock,
-  TrendingUp,
+  Package,
   AlertTriangle,
   Users,
   RefreshCw,
@@ -60,6 +61,10 @@ import {
   CalendarDays,
   Target,
   Palmtree,
+  Wrench,
+  Timer,
+  Scale,
+  Percent,
 } from "lucide-react"
 import {
   BarChart,
@@ -96,16 +101,27 @@ import {
   getProductionEvents,
   getGoals,
   getMetrics,
+  getAlerts,
+  getMaintenanceSessions,
+  getProductSkus,
   type ApiGoal,
   type ApiMetric,
+  type ApiMaintenanceSession,
+  type ApiProductSku,
   type ApiEmployee,
   type ApiMachine,
   type ApiMachineCheckin,
   type ApiProductionEvent,
   type ApiEmployeeDayRecord,
+  type ApiAlert,
 } from "@/lib/api"
 import { filterFloorMachines } from "@/lib/machine-floor"
 import { aggregateEmployeeVacationDays } from "@/lib/employee-vacation-days"
+import { mergeAttendanceWithDayRecords } from "@/lib/attendance-day-records"
+import {
+  computeMonthlyTurnover,
+  formatTurnoverPercent,
+} from "@/lib/employee-turnover"
 import {
   buildProductionShiftReportBlob,
   productionShiftReportFilename,
@@ -126,6 +142,39 @@ import {
   buildAnnualAccumulatedReportBlob,
   annualAccumulatedReportFilename,
 } from "@/lib/annual-accumulated-report-excel"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import {
+  EMPLOYEE_PRODUCTION_ROLE_LABELS,
+  resolveEmployeeProductionRole,
+} from "@/lib/employee-production-role"
+import { productionShiftFromMeasuredAt } from "@/lib/tablero-operator-goal"
+import {
+  fetchActualByGoalId,
+  getProductionMetricIds,
+  summarizeMonthlyGoalProgress,
+} from "@/lib/goal-actual-progress"
+import {
+  buildMaintenanceAnalytics,
+  formatMaintenanceDuration,
+  MAINTENANCE_VISIT_TYPE_LABELS,
+} from "@/lib/maintenance-metrics"
+import {
+  aggregateRaffiaYearConsumption,
+  formatRaffiaKg,
+} from "@/lib/raffia-consumption"
+import {
+  buildDailyInactivitySeries,
+  buildMachineActivitySummary,
+  formatDurationMinutes,
+} from "@/lib/machine-activity-analytics"
+import { buildAlertRoleCounts } from "@/lib/alert-role-metrics"
+import {
+  buildShiftIncidentsAnalytics,
+  type ShiftIncidentRow,
+} from "@/lib/shift-incidents-analytics"
+import { SHIFT_SCHEDULE, timeLabel } from "@/lib/shift-schedule"
+import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
+import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
 
 type ProductionEventType =
   | "Producción"
@@ -133,12 +182,37 @@ type ProductionEventType =
   | "Parada"
 
 type ShiftType = "matutino" | "vespertino"
+type ShiftFilter = "all" | ShiftType
+
+const SHIFT_FILTER_LABELS: Record<ShiftFilter, string> = {
+  all: "Todos los turnos",
+  matutino: "Matutino (06:00–14:00)",
+  vespertino: "Vespertino (14:00–22:00)",
+}
+
+function matchesShiftFilter(ts: string | Date, filter: ShiftFilter): boolean {
+  if (filter === "all") return true
+  const iso = typeof ts === "string" ? ts : ts.toISOString()
+  return productionShiftFromMeasuredAt(iso) === filter
+}
+
+function dayRecordMatchesShiftFilter(
+  shift: string | null | undefined,
+  filter: ShiftFilter,
+): boolean {
+  if (filter === "all") return true
+  const s = (shift ?? "").trim().toLowerCase()
+  if (!s) return filter === "matutino"
+  return s === filter
+}
 
 interface ProductionBaseRow {
   machine_id: string
   /** UUID de máquina en API (para enriquecer empacadores desde check-in). */
   machineIdRaw: string | null
   timestamp: string // ISO
+  /** Tipo crudo del PLC / API (PROD, ALERT_15, …). */
+  eventRaw: string
   operator: string
   operator_2: string
   packer_1: string
@@ -151,6 +225,50 @@ interface ProductionBaseRow {
   count: number
   event: ProductionEventType
   sku: string
+}
+
+type PersonProductionAgg = {
+  operatorUnits: number
+  packerUnits: number
+}
+
+function buildEmployeeNameToRoleLabelMap(employees: ApiEmployee[]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const emp of employees) {
+    const name = emp.fullName?.trim()
+    if (!name) continue
+    const role = resolveEmployeeProductionRole(emp.primaryRole, emp.position)
+    if (role) map.set(name, EMPLOYEE_PRODUCTION_ROLE_LABELS[role])
+  }
+  return map
+}
+
+function resolvePersonRoleLabel(
+  name: string,
+  agg: PersonProductionAgg,
+  nameToRole: Map<string, string>,
+): string {
+  const fromMaster = nameToRole.get(name)
+  if (fromMaster) return fromMaster
+  const hasOp = agg.operatorUnits > 0
+  const hasPack = agg.packerUnits > 0
+  if (hasOp && hasPack) return "Operador + Empacador"
+  if (hasPack) return "Empacador"
+  if (hasOp) return "Operador"
+  return "—"
+}
+
+const PERSON_ROLE_CHART_COLORS: Record<string, string> = {
+  Operador: "#22c55e",
+  Empacador: "#3b82f6",
+  "Operador bending": "#a855f7",
+  "Operador roller": "#f97316",
+  Mantenimiento: "#64748b",
+  "Operador + Empacador": "#14b8a6",
+}
+
+function personRoleBarColor(role: string): string {
+  return PERSON_ROLE_CHART_COLORS[role] ?? "#6366f1"
 }
 
 function buildEmployeeCodeToNameMap(employees: ApiEmployee[]): Map<string, string> {
@@ -336,13 +454,26 @@ function mapEventsToProductionBaseRows(
     .map((e: ApiProductionEvent) => {
     const payload = e.payload ?? {}
     const eventRaw = String(payloadString(payload, "EVENT", "event") ?? e.eventType ?? "")
+    const eventTypeUp = eventRaw.trim().toUpperCase()
     const lower = eventRaw.toLowerCase()
     const event: ProductionEventType =
-      eventRaw === "Cambio SKU" || eventRaw === "Parada" || eventRaw === "Producción"
-        ? (eventRaw as ProductionEventType)
-        : lower.includes("cambio") || lower.includes("sku")
+      eventTypeUp === "PROD" ||
+      eventTypeUp === "BOOT" ||
+      eventRaw === "Producción"
+        ? "Producción"
+        : eventTypeUp === "SKU_CHANGE" ||
+            eventRaw === "Cambio SKU" ||
+            lower.includes("cambio") ||
+            lower.includes("sku")
           ? "Cambio SKU"
-          : lower.includes("paro") || lower.includes("down")
+          : eventTypeUp === "ALERT_15" ||
+              eventTypeUp === "ALERT_45" ||
+              eventTypeUp === "ALERT_NO_CHECKIN" ||
+              eventTypeUp === "STOP" ||
+              eventRaw === "Parada" ||
+              lower.includes("paro") ||
+              lower.includes("down") ||
+              lower.includes("alert")
             ? "Parada"
             : lower === "prod" || lower.includes("produ")
               ? "Producción"
@@ -434,6 +565,7 @@ function mapEventsToProductionBaseRows(
       machine_id,
       machineIdRaw: e.machineId?.trim() ?? null,
       timestamp: ts,
+      eventRaw,
       operator: operatorLabel,
       operator_2: operator2Label,
       unitsPerBox,
@@ -595,6 +727,7 @@ export default function MetricsPage() {
     const d = new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
   })
+  const [shiftFilter, setShiftFilter] = useState<ShiftFilter>("all")
 
   // Custom date-range dialog
   const [customRangeOpen, setCustomRangeOpen] = useState(false)
@@ -678,16 +811,10 @@ export default function MetricsPage() {
     URL.revokeObjectURL(url)
   }
 
-  const getShift = (date: Date): ShiftType | null => {
-    const hour = date.getHours()
-    if (hour >= 6 && hour < 14) return "matutino"
-    if (hour >= 14 && hour < 22) return "vespertino"
-    return null
-  }
-
   const [productionBaseRows, setProductionBaseRows] = useState<ProductionBaseRow[]>([])
   const [employeeRows, setEmployeeRows] = useState<ApiEmployee[]>([])
   const [goalsRows, setGoalsRows] = useState<ApiGoal[]>([])
+  const [goalActualByGoalId, setGoalActualByGoalId] = useState<Record<string, number>>({})
   const [metricsRows, setMetricsRows] = useState<ApiMetric[]>([])
   const [dataLoading, setDataLoading] = useState(true)
   const [dataError, setDataError] = useState<string | null>(null)
@@ -696,7 +823,63 @@ export default function MetricsPage() {
   const [employeeDayRecordsLoaded, setEmployeeDayRecordsLoaded] = useState<ApiEmployeeDayRecord[]>(
     [],
   )
+  const [maintenanceSessionsLoaded, setMaintenanceSessionsLoaded] = useState<ApiMaintenanceSession[]>(
+    [],
+  )
+  const [ytdProductionBaseRows, setYtdProductionBaseRows] = useState<ProductionBaseRow[]>([])
+  const [productSkusRows, setProductSkusRows] = useState<ApiProductSku[]>([])
+  const [alertsLoaded, setAlertsLoaded] = useState<ApiAlert[]>([])
+  const [bonusConfigData, setBonusConfigData] = useState<BonusProductionConfigData>(
+    DEFAULT_BONUS_PRODUCTION_CONFIG,
+  )
+  const [machinesLoaded, setMachinesLoaded] = useState<ApiMachine[]>([])
   const attendanceStats = useMemo(() => [] as unknown[], [])
+
+  const scopedProductionRows = useMemo(() => {
+    const startDate = new Date(filterStartDate)
+    startDate.setHours(0, 0, 0, 0)
+    const endDate = new Date(filterEndDate)
+    endDate.setHours(23, 59, 59, 999)
+    return productionBaseRows.filter((r) => {
+      const rowDate = new Date(r.timestamp)
+      if (rowDate < startDate || rowDate > endDate) return false
+      return matchesShiftFilter(r.timestamp, shiftFilter)
+    })
+  }, [productionBaseRows, filterStartDate, filterEndDate, shiftFilter])
+
+  const shiftFilteredCheckins = useMemo(() => {
+    if (shiftFilter === "all") return machineCheckinsLoaded
+    return machineCheckinsLoaded.filter((ch) => matchesShiftFilter(ch.checkedInAt, shiftFilter))
+  }, [machineCheckinsLoaded, shiftFilter])
+
+  const shiftFilteredDayRecords = useMemo(() => {
+    if (shiftFilter === "all") return employeeDayRecordsLoaded
+    return employeeDayRecordsLoaded.filter((r) =>
+      dayRecordMatchesShiftFilter(r.shift, shiftFilter),
+    )
+  }, [employeeDayRecordsLoaded, shiftFilter])
+
+  const productionRowsForIncidents = useMemo(() => {
+    const startDate = new Date(filterStartDate)
+    startDate.setHours(0, 0, 0, 0)
+    const endDate = new Date(filterEndDate)
+    endDate.setHours(23, 59, 59, 999)
+    return productionBaseRows.filter((r) => {
+      const rowDate = new Date(r.timestamp)
+      return rowDate >= startDate && rowDate <= endDate
+    })
+  }, [productionBaseRows, filterStartDate, filterEndDate])
+
+  const checkinsForIncidents = useMemo(() => {
+    const startDate = new Date(filterStartDate)
+    startDate.setHours(0, 0, 0, 0)
+    const endDate = new Date(filterEndDate)
+    endDate.setHours(23, 59, 59, 999)
+    return machineCheckinsLoaded.filter((ch) => {
+      const t = new Date(ch.checkedInAt)
+      return t >= startDate && t <= endDate
+    })
+  }, [machineCheckinsLoaded, filterStartDate, filterEndDate])
 
   useEffect(() => {
     let cancelled = false
@@ -708,6 +891,10 @@ export default function MetricsPage() {
           setEmployeeRows([])
           setMachineCheckinsLoaded([])
           setEmployeeDayRecordsLoaded([])
+          setMaintenanceSessionsLoaded([])
+          setYtdProductionBaseRows([])
+          setProductSkusRows([])
+          setAlertsLoaded([])
           setDataLoading(false)
           setDataError(null)
         }
@@ -722,8 +909,11 @@ export default function MetricsPage() {
       try {
         const fromIso = new Date(`${filterStartDate}T00:00:00`).toISOString()
         const toIso = new Date(`${filterEndDate}T23:59:59.999`).toISOString()
+        const ytdYear = new Date().getFullYear()
+        const ytdFromIso = new Date(`${ytdYear}-01-01T00:00:00`).toISOString()
+        const ytdToIso = new Date().toISOString()
 
-        const [events, employees, apiMachines, checkins, goals, metrics, dayRecords] =
+        const [events, employees, apiMachines, checkins, goals, metrics, dayRecords, maintenanceSessions, ytdEvents, productSkus, alerts, bonusCfg] =
           await Promise.all([
           getProductionEvents(token, { from: fromIso, to: toIso, limit: 120_000 }),
           getEmployees(token),
@@ -736,6 +926,11 @@ export default function MetricsPage() {
             to: filterEndDate,
             limit: 5000,
           }).catch(() => [] as ApiEmployeeDayRecord[]),
+          getMaintenanceSessions(token, { from: fromIso, to: toIso, limit: 5000 }),
+          getProductionEvents(token, { from: ytdFromIso, to: ytdToIso, limit: 120_000 }),
+          getProductSkus(token),
+          getAlerts(token).catch(() => [] as ApiAlert[]),
+          getBonusProductionConfigForMonth(token, filterStartDate.slice(0, 7)).catch(() => null),
         ])
         if (cancelled) return
 
@@ -744,8 +939,22 @@ export default function MetricsPage() {
         setMetricsRows(metrics)
         setMachineCheckinsLoaded(checkins)
         setEmployeeDayRecordsLoaded(dayRecords)
+        setMaintenanceSessionsLoaded(maintenanceSessions)
+        setProductSkusRows(productSkus)
+        setAlertsLoaded(alerts)
+        setBonusConfigData(
+          bonusCfg ? normalizeBonusProductionConfig(bonusCfg.config) : DEFAULT_BONUS_PRODUCTION_CONFIG,
+        )
+        setMachinesLoaded(filterFloorMachines(apiMachines))
+
+        const actualByGoalId = await fetchActualByGoalId(token, goals, apiMachines, metrics)
+        if (cancelled) return
+        setGoalActualByGoalId(actualByGoalId)
 
         const mapped = mapEventsToProductionBaseRows(events, checkins, employees, apiMachines)
+        const ytdMapped = mapEventsToProductionBaseRows(ytdEvents, checkins, employees, apiMachines)
+        if (cancelled) return
+        setYtdProductionBaseRows(ytdMapped)
 
         if (isMetricasDebugEnabled()) {
           const prodRows = mapped.filter((r) => r.event === "Producción")
@@ -784,6 +993,10 @@ export default function MetricsPage() {
           setProductionBaseRows([])
           setMachineCheckinsLoaded([])
           setEmployeeDayRecordsLoaded([])
+          setMaintenanceSessionsLoaded([])
+          setYtdProductionBaseRows([])
+          setProductSkusRows([])
+          setAlertsLoaded([])
           setDataError(err instanceof Error ? err.message : "No se pudieron cargar los datos")
         }
       } finally {
@@ -839,17 +1052,7 @@ export default function MetricsPage() {
   ]
 
   const analytics = useMemo(() => {
-    // Parse filter dates
-    const startDate = new Date(filterStartDate)
-    startDate.setHours(0, 0, 0, 0)
-    const endDate = new Date(filterEndDate)
-    endDate.setHours(23, 59, 59, 999)
-
-    // Filter rows by selected date range
-    const rows14d = productionBaseRows.filter((r) => {
-      const rowDate = new Date(r.timestamp)
-      return rowDate >= startDate && rowDate <= endDate
-    })
+    const rows14d = scopedProductionRows
 
     const produced14d = rows14d
       .filter((r) => r.event === "Producción")
@@ -859,70 +1062,20 @@ export default function MetricsPage() {
     const changeoversPer1k = produced14d > 0 ? (changeovers14d / produced14d) * 1000 : 0
 
     const dailyAgg = new Map<string, { produced: number; downtime: number }>()
-    const dailyShiftAgg = new Map<
-      string,
-      {
-        date: string
-        matutinoProduced: number
-        vespertinoProduced: number
-        matutinoDowntime: number
-        vespertinoDowntime: number
-      }
-    >()
     const operatorAgg = new Map<string, { units: number; downtime: number }>()
     const packerAgg = new Map<string, { units: number; jobs: number }>()
+    const personAgg = new Map<string, PersonProductionAgg>()
     const skuAgg = new Map<string, number>()
     const machineAgg = new Map<string, { produced: number; downtime: number }>()
-
-    const shiftAgg = {
-      matutino: {
-        produced: 0,
-        downtime: 0,
-        changeovers: 0,
-      },
-      vespertino: {
-        produced: 0,
-        downtime: 0,
-        changeovers: 0,
-      },
-    }
 
     for (const r of rows14d) {
       const ts = new Date(r.timestamp)
       const dayKey = formatDate(ts)
-      const shift = getShift(ts)
 
       const day = dailyAgg.get(dayKey) ?? { produced: 0, downtime: 0 }
       if (r.event === "Producción") day.produced += r.count
       if (["Parada"].includes(r.event)) day.downtime += 1
       dailyAgg.set(dayKey, day)
-
-      if (shift) {
-        const d =
-          dailyShiftAgg.get(dayKey) ??
-          {
-            date: dayKey.slice(5),
-            matutinoProduced: 0,
-            vespertinoProduced: 0,
-            matutinoDowntime: 0,
-            vespertinoDowntime: 0,
-          }
-
-        if (r.event === "Producción") {
-          if (shift === "matutino") d.matutinoProduced += r.count
-          if (shift === "vespertino") d.vespertinoProduced += r.count
-        }
-        if (["Parada"].includes(r.event)) {
-          if (shift === "matutino") d.matutinoDowntime += 1
-          if (shift === "vespertino") d.vespertinoDowntime += 1
-        }
-        dailyShiftAgg.set(dayKey, d)
-
-        const s = shiftAgg[shift]
-        if (r.event === "Producción") s.produced += r.count
-        if (r.event === "Cambio SKU") s.changeovers += 1
-        if (["Parada"].includes(r.event)) s.downtime += 1
-      }
 
       const op = operatorAgg.get(r.operator) ?? { units: 0, downtime: 0 }
       if (r.event === "Producción") op.units += r.count
@@ -937,6 +1090,17 @@ export default function MetricsPage() {
       if (r.event === "Producción") {
         skuAgg.set(r.sku, (skuAgg.get(r.sku) ?? 0) + r.count)
 
+        const operatorsList = [r.operator, r.operator_2].filter((p) => p && p !== "—")
+        const nOps = operatorsList.length
+        if (nOps > 0) {
+          const opShare = r.count / nOps
+          for (const name of operatorsList) {
+            const ag = personAgg.get(name) ?? { operatorUnits: 0, packerUnits: 0 }
+            ag.operatorUnits += opShare
+            personAgg.set(name, ag)
+          }
+        }
+
         const packersList =
           r.packersAttributed?.filter((p) => p && p !== "—").length > 0
             ? r.packersAttributed.filter((p) => p && p !== "—")
@@ -949,6 +1113,10 @@ export default function MetricsPage() {
             ag.units += share
             ag.jobs += 1
             packerAgg.set(name, ag)
+
+            const person = personAgg.get(name) ?? { operatorUnits: 0, packerUnits: 0 }
+            person.packerUnits += share
+            personAgg.set(name, person)
           }
         }
       }
@@ -957,10 +1125,6 @@ export default function MetricsPage() {
     const dailySeries = [...dailyAgg.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([date, v]) => ({ date: date.slice(5), produced: v.produced, downtime: v.downtime }))
-
-    const shiftDailySeries = [...dailyShiftAgg.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([, v]) => v)
 
     const topOperators = [...operatorAgg.entries()]
       .map(([name, v]) => ({
@@ -992,27 +1156,26 @@ export default function MetricsPage() {
       .map(([sku, units]) => ({ sku, units }))
       .sort((a, b) => b.units - a.units)
 
-    const packerDistribution = [...packerAgg.entries()]
-      .map(([name, v]) => ({ name, units: Number(v.units.toFixed(1)), jobs: v.jobs }))
+    const nameToRole = buildEmployeeNameToRoleLabelMap(employeeRows)
+    const totalPersonUnits = [...personAgg.values()].reduce(
+      (sum, v) => sum + v.operatorUnits + v.packerUnits,
+      0,
+    )
+    const personRoleComparison = [...personAgg.entries()]
+      .map(([name, v]) => {
+        const units = v.operatorUnits + v.packerUnits
+        return {
+          name,
+          role: resolvePersonRoleLabel(name, v, nameToRole),
+          units: Math.round(units * 10) / 10,
+          operatorUnits: Math.round(v.operatorUnits * 10) / 10,
+          packerUnits: Math.round(v.packerUnits * 10) / 10,
+          sharePct:
+            totalPersonUnits > 0 ? Math.round((units / totalPersonUnits) * 1000) / 10 : 0,
+        }
+      })
+      .filter((x) => x.units > 0)
       .sort((a, b) => b.units - a.units)
-
-    const shiftComparisonMetrics = [
-      {
-        metric: "Producción",
-        matutino: shiftAgg.matutino.produced,
-        vespertino: shiftAgg.vespertino.produced,
-      },
-      {
-        metric: "Paros (conteo)",
-        matutino: shiftAgg.matutino.downtime,
-        vespertino: shiftAgg.vespertino.downtime,
-      },
-      {
-        metric: "Cambios SKU",
-        matutino: shiftAgg.matutino.changeovers,
-        vespertino: shiftAgg.vespertino.changeovers,
-      },
-    ]
 
     const machineScatter = [...machineAgg.entries()]
       .map(([machine, v]) => ({
@@ -1027,30 +1190,68 @@ export default function MetricsPage() {
       changeovers14d,
       changeoversPer1k,
       dailySeries,
-      shiftDailySeries,
-      shiftComparisonMetrics,
       topOperators,
       operatorDistributionPie,
       topPackers,
       topSkus,
       skuDistribution,
-      packerDistribution,
+      personRoleComparison,
       machineScatter,
     }
-  }, [productionBaseRows, filterStartDate, filterEndDate])
+  }, [scopedProductionRows, employeeRows])
 
-  // Último día del rango que tenga al menos un evento de producción.
+  // Último día del rango con producción o paro/inactividad.
   const lastDayWithData = useMemo(() => {
     let best: string | null = null
-    for (const r of productionBaseRows) {
-      if (r.event !== "Producción") continue
+    for (const r of scopedProductionRows) {
+      if (r.event !== "Producción" && r.event !== "Parada") continue
       const ts = new Date(r.timestamp)
       if (Number.isNaN(ts.getTime())) continue
       const dayStr = formatDate(ts)
       if (!best || dayStr > best) best = dayStr
     }
     return best
-  }, [productionBaseRows])
+  }, [scopedProductionRows])
+
+  const activityRows = useMemo(
+    () =>
+      scopedProductionRows.map((r) => ({
+        machine_id: r.machine_id,
+        machineIdRaw: r.machineIdRaw,
+        timestamp: r.timestamp,
+        event: r.event,
+        eventRaw: r.eventRaw,
+        count: r.count,
+      })),
+    [scopedProductionRows],
+  )
+
+  const machineActivity = useMemo(
+    () =>
+      buildMachineActivitySummary(activityRows, {
+        refDay: lastDayWithData ?? filterEndDate,
+      }),
+    [activityRows, lastDayWithData, filterEndDate],
+  )
+
+  const inactivityDailySeries = useMemo(
+    () => buildDailyInactivitySeries(activityRows),
+    [activityRows],
+  )
+
+  const alertRoleCounts = useMemo(
+    () =>
+      buildAlertRoleCounts({
+        alerts: alertsLoaded,
+        startDate: filterStartDate,
+        endDate: filterEndDate,
+        productionAlertRows: scopedProductionRows.map((r) => ({
+          eventRaw: r.eventRaw,
+          timestamp: r.timestamp,
+        })),
+      }),
+    [alertsLoaded, filterStartDate, filterEndDate, scopedProductionRows],
+  )
 
   const hourlyProductionData = useMemo(() => {
     // Use the last day with real production data in the range.
@@ -1063,7 +1264,7 @@ export default function MetricsPage() {
     end.setHours(23, 59, 59, 999)
 
     const byHour = new Map<string, number>()
-    for (const r of productionBaseRows) {
+    for (const r of scopedProductionRows) {
       if (r.event !== "Producción") continue
       const ts = new Date(r.timestamp)
       if (Number.isNaN(ts.getTime())) continue
@@ -1075,7 +1276,7 @@ export default function MetricsPage() {
     return [...byHour.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([hour, production]) => ({ hour: `${hour}:00`, production }))
-  }, [productionBaseRows, lastDayWithData, filterEndDate])
+  }, [scopedProductionRows, lastDayWithData, filterEndDate])
 
   const topMachinesData = useMemo(() => {
     const start = new Date(filterStartDate)
@@ -1086,7 +1287,7 @@ export default function MetricsPage() {
 
     /** Operador con más unidades atribuidas en el rango (evita mostrar solo el último evento del bucle). */
     const operatorUnitsByMachine = new Map<string, Map<string, number>>()
-    for (const r of productionBaseRows) {
+    for (const r of scopedProductionRows) {
       if (r.event !== "Producción") continue
       const op = r.operator?.trim()
       if (!op || op === "—") continue
@@ -1122,40 +1323,140 @@ export default function MetricsPage() {
         uptime,
       }
     })
-  }, [analytics.machineScatter, productionBaseRows, filterStartDate, filterEndDate])
-
-  const productionMetricId = useMemo(
-    () => metricsRows.find((m) => m.name.trim().toLowerCase() === "producción")?.id ?? null,
-    [metricsRows],
-  )
+  }, [analytics.machineScatter, scopedProductionRows, filterStartDate, filterEndDate])
 
   const monthlyGoalSummary = useMemo(() => {
-    if (!productionMetricId) return null
-    const rangeStart = filterStartDate
-    const rangeEnd = filterEndDate
-    const monthlyGoals = goalsRows.filter((g) => {
-      if (g.metricId !== productionMetricId) return false
-      if (g.period !== "monthly") return false
-      if (g.sku?.trim()) return false
-      return g.startDate <= rangeEnd && g.endDate >= rangeStart
+    return summarizeMonthlyGoalProgress(goalsRows, goalActualByGoalId, metricsRows, {
+      shiftFilter,
     })
-    if (monthlyGoals.length === 0) return null
-    const target = monthlyGoals.reduce((acc, g) => acc + Number(g.targetValue || 0), 0)
-    if (target <= 0) return null
-    const actual = analytics.produced14d
-    const pct = Math.round((actual / target) * 100)
-    return { target, actual, pct }
+  }, [goalsRows, goalActualByGoalId, metricsRows, shiftFilter])
+
+  const maintenanceMetrics = useMemo(() => {
+    const startDate = new Date(filterStartDate)
+    startDate.setHours(0, 0, 0, 0)
+    const endDate = new Date(filterEndDate)
+    endDate.setHours(23, 59, 59, 999)
+
+    const sessionsInRange = maintenanceSessionsLoaded.filter((s) =>
+      matchesShiftFilter(s.startedAt, shiftFilter),
+    )
+    const productionForClassification = productionBaseRows.filter((r) => {
+      const rowDate = new Date(r.timestamp)
+      return rowDate >= startDate && rowDate <= endDate
+    })
+
+    return buildMaintenanceAnalytics(sessionsInRange, productionForClassification)
   }, [
-    goalsRows,
-    productionMetricId,
+    maintenanceSessionsLoaded,
+    productionBaseRows,
     filterStartDate,
     filterEndDate,
-    analytics.produced14d,
+    shiftFilter,
   ])
 
+  const maintenanceVisitRowsDisplay = useMemo(() => {
+    const codeToName = buildEmployeeCodeToNameMap(employeeRows)
+    return maintenanceMetrics.visits
+      .slice()
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .map((v) => ({
+        ...v,
+        technician:
+          v.employeeCode
+            ? codeToName.get(v.employeeCode) ??
+              codeToName.get(v.employeeCode.toLowerCase()) ??
+              v.employeeCode
+            : "—",
+      }))
+  }, [maintenanceMetrics.visits, employeeRows])
+
+  const maintenanceTechnicianRows = useMemo(() => {
+    const codeToName = buildEmployeeCodeToNameMap(employeeRows)
+    return maintenanceMetrics.byTechnician.map((row) => ({
+      ...row,
+      technician:
+        row.employeeCode === "—"
+          ? "—"
+          : codeToName.get(row.employeeCode) ??
+            codeToName.get(row.employeeCode.toLowerCase()) ??
+            row.employeeCode,
+    }))
+  }, [maintenanceMetrics.byTechnician, employeeRows])
+
+  const shiftIncidentsAnalytics = useMemo(() => {
+    const built = buildShiftIncidentsAnalytics({
+      productionRows: productionRowsForIncidents,
+      checkins: checkinsForIncidents,
+      machines: machinesLoaded,
+      goals: goalsRows,
+      bonusConfig: bonusConfigData,
+      employees: employeeRows,
+      from: filterStartDate,
+      to: filterEndDate,
+    })
+    if (shiftFilter === "all") return built
+    const incidents = built.incidents.filter((i) => i.shift === shiftFilter)
+    return {
+      ...built,
+      incidents,
+      summary: {
+        overtimeCount: incidents.filter((i) => i.kind === "overtime_production").length,
+        earlyLeaveCount: incidents.filter((i) => i.kind === "early_leave_under_goal").length,
+        postCleaningCount: incidents.filter((i) => i.kind === "post_cleaning_production").length,
+        cleaningProductionCount: incidents.filter((i) => i.kind === "production_during_cleaning")
+          .length,
+        total: incidents.length,
+      },
+    }
+  }, [
+    productionRowsForIncidents,
+    checkinsForIncidents,
+    machinesLoaded,
+    goalsRows,
+    bonusConfigData,
+    employeeRows,
+    filterStartDate,
+    filterEndDate,
+    shiftFilter,
+  ])
+
+  function shiftIncidentRowClass(row: ShiftIncidentRow): string {
+    if (row.kind === "post_cleaning_production") {
+      return "bg-red-600 text-white hover:bg-red-600/95 [&_td]:border-red-500"
+    }
+    if (row.severity === "incident") return "bg-red-50"
+    if (row.severity === "warning") return "bg-amber-50"
+    return ""
+  }
+
+  const ytdScopedProductionRows = useMemo(() => {
+    return ytdProductionBaseRows.filter((r) => matchesShiftFilter(r.timestamp, shiftFilter))
+  }, [ytdProductionBaseRows, shiftFilter])
+
+  const raffiaYearSummary = useMemo(() => {
+    const year = new Date().getFullYear()
+    return aggregateRaffiaYearConsumption(
+      ytdScopedProductionRows.map((r) => ({
+        sku: r.sku,
+        timestamp: r.timestamp,
+        event: r.event,
+        count: r.count,
+        unitsPerBox: r.unitsPerBox,
+      })),
+      {
+        year,
+        catalog: productSkusRows.map((s) => ({ code: s.code, unitsPerBox: s.unitsPerBox })),
+      },
+    )
+  }, [ytdScopedProductionRows, productSkusRows])
+
   const attendanceFromCheckins = useMemo(
-    () => machineCheckinsToAttendanceRecords(machineCheckinsLoaded, employeeRows),
-    [machineCheckinsLoaded, employeeRows],
+    () =>
+      mergeAttendanceWithDayRecords(
+        machineCheckinsToAttendanceRecords(shiftFilteredCheckins, employeeRows),
+        shiftFilteredDayRecords,
+      ),
+    [shiftFilteredCheckins, employeeRows, shiftFilteredDayRecords],
   )
 
   // Filtro por calendario (los check-ins ya vienen acotados por API, esto alinea con Desde/Hasta).
@@ -1174,11 +1475,11 @@ export default function MetricsPage() {
 
   const vacationDaysByEmployee = useMemo(
     () =>
-      aggregateEmployeeVacationDays(employeeDayRecordsLoaded, {
+      aggregateEmployeeVacationDays(shiftFilteredDayRecords, {
         from: filterStartDate,
         to: filterEndDate,
       }),
-    [employeeDayRecordsLoaded, filterStartDate, filterEndDate],
+    [shiftFilteredDayRecords, filterStartDate, filterEndDate],
   )
 
   const vacationSummary = useMemo(() => {
@@ -1192,8 +1493,8 @@ export default function MetricsPage() {
   }, [vacationDaysByEmployee])
 
   const personnelMovements = useMemo(
-    () => buildPersonnelMovementsFromCheckins(machineCheckinsLoaded, employeeRows).slice(0, 40),
-    [machineCheckinsLoaded, employeeRows],
+    () => buildPersonnelMovementsFromCheckins(shiftFilteredCheckins, employeeRows).slice(0, 40),
+    [shiftFilteredCheckins, employeeRows],
   )
 
   const personnelMonthSummary = useMemo(() => {
@@ -1202,7 +1503,7 @@ export default function MetricsPage() {
       const d = new Date(ts)
       return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()
     }
-    const all = buildPersonnelMovementsFromCheckins(machineCheckinsLoaded, employeeRows)
+    const all = buildPersonnelMovementsFromCheckins(shiftFilteredCheckins, employeeRows)
     let ingresos = 0
     let salidas = 0
     for (const m of all) {
@@ -1220,7 +1521,12 @@ export default function MetricsPage() {
       salPct: Math.round((salidas / max) * 100),
       monthLabel: now.toLocaleDateString("es-MX", { month: "long", year: "numeric" }),
     }
-  }, [machineCheckinsLoaded, employeeRows])
+  }, [shiftFilteredCheckins, employeeRows])
+
+  const turnoverMetrics = useMemo(
+    () => computeMonthlyTurnover(employeeRows),
+    [employeeRows],
+  )
 
   const handleGenerateProductionReport = async () => {
     const codeToName = buildEmployeeCodeToNameMap(employeeRows)
@@ -1292,15 +1598,15 @@ export default function MetricsPage() {
           getGoals(token),
           getMetrics(token),
         ])
-        const productionMetricId =
-          metrics.find((m) => m.name.trim().toLowerCase() === "producción")?.id ?? null
-        reportConfiguredSkus = productionMetricId
+        const productionMetricIds = getProductionMetricIds(metrics)
+        reportConfiguredSkus =
+          productionMetricIds.size > 0
           ? [
               ...new Set(
                 goals
                   .filter((g) => {
                     const sku = g.sku?.trim()
-                    if (!sku || g.metricId !== productionMetricId) return false
+                    if (!sku || !productionMetricIds.has(g.metricId)) return false
                     return g.startDate <= monthBounds.end && g.endDate >= monthBounds.start
                   })
                   .map((g) => g.sku!.trim()),
@@ -1482,7 +1788,7 @@ export default function MetricsPage() {
       if (token) {
         try {
           const cfg = await getBonusProductionConfigForMonth(token, bonusReportDate)
-          productionConfig = cfg.config
+          productionConfig = normalizeBonusProductionConfig(cfg.config)
         } catch {
           // usa DEFAULT_BONUS_PRODUCTION_CONFIG en el generador
         }
@@ -1550,7 +1856,7 @@ export default function MetricsPage() {
   const avgPerMinute = useMemo(() => {
     let total = 0
     const minuteSlots = new Set<string>()
-    for (const r of productionBaseRows) {
+    for (const r of scopedProductionRows) {
       if (r.event !== "Producción") continue
       const ts = new Date(r.timestamp)
       if (Number.isNaN(ts.getTime())) continue
@@ -1559,7 +1865,7 @@ export default function MetricsPage() {
     }
     if (minuteSlots.size === 0 || total === 0) return null
     return Math.round((total / minuteSlots.size) * 100) / 100
-  }, [productionBaseRows])
+  }, [scopedProductionRows])
 
 
   const todayStr = formatDate(new Date())
@@ -1638,7 +1944,35 @@ export default function MetricsPage() {
             Mostrando del{" "}
             <span className="font-medium">{filterStartDate}</span> al{" "}
             <span className="font-medium">{filterEndDate}</span>
+            {shiftFilter !== "all" ? (
+              <>
+                {" "}
+                · <span className="font-medium">{SHIFT_FILTER_LABELS[shiftFilter]}</span>
+              </>
+            ) : null}
           </p>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+            <span className="text-xs font-medium text-muted-foreground">Turno global:</span>
+            <ToggleGroup
+              type="single"
+              value={shiftFilter}
+              onValueChange={(v) => {
+                if (v === "all" || v === "matutino" || v === "vespertino") setShiftFilter(v)
+              }}
+              className="justify-start"
+            >
+              <ToggleGroupItem value="all" size="sm">
+                Todos
+              </ToggleGroupItem>
+              <ToggleGroupItem value="matutino" size="sm">
+                Matutino
+              </ToggleGroupItem>
+              <ToggleGroupItem value="vespertino" size="sm">
+                Vespertino
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
         </div>
 
         {/* Custom date-range dialog */}
@@ -1808,8 +2142,10 @@ export default function MetricsPage() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
             <TabsTrigger value="produccion">Producción</TabsTrigger>
+            <TabsTrigger value="incidencias">Incidencias</TabsTrigger>
+            <TabsTrigger value="mantenimiento">Mantenimiento</TabsTrigger>
             <TabsTrigger value="operadores">Operadores & Empacadores</TabsTrigger>
             <TabsTrigger value="asistencia">Asistencia</TabsTrigger>
             <TabsTrigger value="rotacion">Rotación</TabsTrigger>
@@ -1887,7 +2223,7 @@ export default function MetricsPage() {
             </Dialog>
 
             {/* KPI Cards */}
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
               <KpiCard
                 title={productionDayLabel}
                 value={productionToday == null ? "—" : productionToday.toLocaleString()}
@@ -1917,6 +2253,159 @@ export default function MetricsPage() {
                 icon={Target}
                 iconColor="text-teal-600"
               />
+              <KpiCard
+                title={`Rafia acumulada ${raffiaYearSummary.year}`}
+                value={formatRaffiaKg(raffiaYearSummary.totalKg)}
+                subtitle={`${raffiaYearSummary.totalMeters.toLocaleString("es-MX", { maximumFractionDigits: 0 })} m totales`}
+                icon={Scale}
+                iconColor="text-violet-600"
+              />
+              <KpiCard
+                title="SKUs con rafia"
+                value={raffiaYearSummary.bySku.length.toLocaleString()}
+                subtitle={
+                  raffiaYearSummary.unrecognizedSkuCount > 0
+                    ? `${raffiaYearSummary.unrecognizedSkuCount} prod. sin SKU hook válido`
+                    : "Referencias parseadas del año"
+                }
+                icon={Package}
+                iconColor="text-violet-600"
+              />
+            </div>
+
+            {/* Raffia consumption */}
+            <div className="rounded-xl border border-border bg-card p-6 space-y-6">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-foreground">Consumo de rafia acumulado ({raffiaYearSummary.year})</h3>
+                  <p className="mt-1 text-sm text-muted-foreground max-w-3xl">
+                    Calculado desde producción del año y el formato de SKU (
+                    <span className="font-mono text-xs">[gancho][embobinado][metros][color][rafia]</span>
+                    ). Metros = vuelta principal + caída libre; kg = metros ÷ calibre (1000, 1200 o 1500 m/kg).
+                    Con varios colores, cada color suma los metros completos por pieza.
+                  </p>
+                </div>
+                <Button variant="outline" size="sm" asChild>
+                  <Link href="/administracion/gestion-skus">Catálogo de SKUs</Link>
+                </Button>
+              </div>
+
+              {raffiaYearSummary.totalKg <= 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">
+                  Sin consumo de rafia calculable en {raffiaYearSummary.year}. Verifica que los eventos
+                  PROD incluyan SKU hook (ej. 522pk18+4l-10).
+                </p>
+              ) : (
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <div className="rounded-xl border border-border bg-background p-4">
+                    <h4 className="text-sm font-semibold text-foreground mb-3">Kilos por color de rafia</h4>
+                    <ChartContainer
+                      className="h-[min(320px,40vh)] w-full aspect-auto"
+                      config={{ kg: { label: "Kilos", color: "#8b5cf6" } }}
+                    >
+                      <BarChart
+                        layout="vertical"
+                        data={raffiaYearSummary.byColor}
+                        margin={{ left: 8, right: 16, top: 8, bottom: 8 }}
+                      >
+                        <CartesianGrid horizontal={false} />
+                        <XAxis type="number" tick={{ fontSize: 12 }} />
+                        <YAxis
+                          type="category"
+                          dataKey="colorLabel"
+                          width={72}
+                          tick={{ fontSize: 12 }}
+                        />
+                        <ChartTooltip
+                          content={
+                            <ChartTooltipContent
+                              formatter={(value, _name, item) => {
+                                const row = item?.payload as { meters?: number }
+                                const kg = typeof value === "number" ? value : Number(value)
+                                return (
+                                  <span>
+                                    {formatRaffiaKg(kg)}
+                                    {row?.meters != null
+                                      ? ` · ${row.meters.toLocaleString("es-MX", { maximumFractionDigits: 0 })} m`
+                                      : ""}
+                                  </span>
+                                )
+                              }}
+                            />
+                          }
+                        />
+                        <Bar dataKey="kg" fill="var(--color-kg)" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ChartContainer>
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-background p-4">
+                    <h4 className="text-sm font-semibold text-foreground mb-3">Metros y kilos por color</h4>
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Color</TableHead>
+                            <TableHead className="text-right">Metros</TableHead>
+                            <TableHead className="text-right">Kilos</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {raffiaYearSummary.byColor.map((row) => (
+                            <TableRow key={row.colorCode}>
+                              <TableCell className="font-medium">{row.colorLabel}</TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {row.meters.toLocaleString("es-MX", { maximumFractionDigits: 0 })}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {formatRaffiaKg(row.kg)}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {raffiaYearSummary.bySku.length > 0 && (
+                <div className="rounded-xl border border-border bg-background p-4">
+                  <h4 className="text-sm font-semibold text-foreground mb-3">Detalle por SKU</h4>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>SKU</TableHead>
+                          <TableHead>Colores</TableHead>
+                          <TableHead className="text-right">m/pieza</TableHead>
+                          <TableHead className="text-right">Calibre</TableHead>
+                          <TableHead className="text-right">Piezas</TableHead>
+                          <TableHead className="text-right">Metros</TableHead>
+                          <TableHead className="text-right">Kilos</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {raffiaYearSummary.bySku.slice(0, 20).map((row) => (
+                          <TableRow key={row.sku}>
+                            <TableCell className="font-mono text-xs">{row.sku}</TableCell>
+                            <TableCell className="text-sm">{row.colors.join(", ")}</TableCell>
+                            <TableCell className="text-right tabular-nums">{row.totalMetersPerPiece}</TableCell>
+                            <TableCell className="text-right tabular-nums">{row.rafiaMKg} m/kg</TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {row.pieces.toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {row.meters.toLocaleString("es-MX", { maximumFractionDigits: 0 })}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">{formatRaffiaKg(row.kg)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Production Charts */}
@@ -2011,110 +2500,808 @@ export default function MetricsPage() {
               </div>
             </div>
 
-            {/* Advanced Metrics - KPIs */}
-            <div className="rounded-xl border border-border bg-card p-6">
-              <h3 className="font-semibold text-foreground mb-4">Métricas Avanzadas</h3>
-              <div className="grid gap-4 sm:grid-cols-2">
+            {/* Advanced Metrics */}
+            <div className="rounded-xl border border-border bg-card p-6 space-y-6">
+              <h3 className="font-semibold text-foreground">Métricas Avanzadas</h3>
+              <KpiCard
+                title="Cambios SKU"
+                value={analytics.changeovers14d.toLocaleString()}
+                subtitle={`${analytics.changeoversPer1k.toFixed(2)}/1k uds`}
+                icon={RefreshCw}
+                iconColor="text-primary"
+              />
+              <div className="space-y-6">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <KpiCard
+                    title="Tiempo inactivo"
+                    value={formatDurationMinutes(machineActivity.totalInactiveMinutes)}
+                    subtitle={
+                      machineActivity.refDay
+                        ? `Día ${new Date(`${machineActivity.refDay}T12:00:00`).toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}`
+                        : "Sin paros en el rango"
+                    }
+                    icon={Clock}
+                    iconColor="text-amber-600"
+                  />
+                  <KpiCard
+                    title="Horas con producción"
+                    value={String(machineActivity.totalActiveHours)}
+                    subtitle="Horas del día con al menos un evento PROD"
+                    icon={CheckCircle}
+                    iconColor="text-green-600"
+                  />
+                  <KpiCard
+                    title="Tiempo activo"
+                    value={`${machineActivity.activePct}%`}
+                    subtitle="Producción vs inactividad (día de referencia)"
+                    icon={Clock}
+                    iconColor="text-teal-600"
+                  />
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <KpiCard
+                    title="Alertas de operador"
+                    value={String(alertRoleCounts.operator)}
+                    subtitle="Sin check-in, contador no en 0, ALERT_NO_CHECKIN"
+                    icon={Users}
+                    iconColor="text-blue-600"
+                  />
+                  <KpiCard
+                    title="Alertas de empacador"
+                    value={String(alertRoleCounts.packager)}
+                    subtitle="Producción en verde sin empacador en roster"
+                    icon={Package}
+                    iconColor="text-violet-600"
+                  />
+                </div>
+
+                <div className="rounded-xl border border-border bg-background p-4">
+                  <h3 className="text-sm font-semibold text-foreground mb-1">
+                    Actividad por hora
+                  </h3>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    Verde: minutos con producción · Naranja: tiempo inactivo (ALERT_15 = 15 min,
+                    ALERT_45 = 45 min)
+                  </p>
+                  {machineActivity.hourlyTimeline.length === 0 ? (
+                    <p className="py-12 text-center text-sm text-muted-foreground">
+                      Sin datos de actividad en el día seleccionado.
+                    </p>
+                  ) : (
+                    <ChartContainer
+                      className="h-[320px] w-full aspect-auto"
+                      config={{
+                        activeMinutes: { label: "Activo (min)", color: "#22c55e" },
+                        inactiveMinutes: { label: "Inactivo (min)", color: "#f97316" },
+                      }}
+                    >
+                      <BarChart data={machineActivity.hourlyTimeline} margin={{ left: 8, right: 8 }}>
+                        <CartesianGrid vertical={false} />
+                        <XAxis dataKey="hour" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 12 }} domain={[0, 60]} unit=" min" />
+                        <ChartTooltip
+                          content={
+                            <ChartTooltipContent
+                              formatter={(value, name) => {
+                                const v = typeof value === "number" ? value : Number(value)
+                                const label =
+                                  name === "activeMinutes" ? "Produciendo" : "Inactivo"
+                                return (
+                                  <span>
+                                    {label}: {Number.isFinite(v) ? `${v} min` : "—"}
+                                  </span>
+                                )
+                              }}
+                            />
+                          }
+                        />
+                        <Bar
+                          dataKey="activeMinutes"
+                          stackId="activity"
+                          fill="var(--color-activeMinutes)"
+                          radius={[0, 0, 0, 0]}
+                        />
+                        <Bar
+                          dataKey="inactiveMinutes"
+                          stackId="activity"
+                          fill="var(--color-inactiveMinutes)"
+                          radius={[4, 4, 0, 0]}
+                        />
+                      </BarChart>
+                    </ChartContainer>
+                  )}
+                </div>
+
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <div className="rounded-xl border border-border bg-background p-4">
+                    <h3 className="text-sm font-semibold text-foreground mb-3">
+                      Inactividad diaria (rango)
+                    </h3>
+                    <ChartContainer
+                      className="h-[280px] w-full aspect-auto"
+                      config={{
+                        inactiveMinutes: { label: "Inactivo (min)", color: "#f97316" },
+                        activeHours: { label: "Horas activas", color: "#22c55e" },
+                      }}
+                    >
+                      <AreaChart data={inactivityDailySeries} margin={{ left: 8, right: 8 }}>
+                        <CartesianGrid vertical={false} />
+                        <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                        <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
+                        <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12 }} />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Area
+                          yAxisId="left"
+                          type="monotone"
+                          dataKey="inactiveMinutes"
+                          stroke="var(--color-inactiveMinutes)"
+                          fill="var(--color-inactiveMinutes)"
+                          fillOpacity={0.2}
+                          strokeWidth={2}
+                        />
+                        <Line
+                          yAxisId="right"
+                          type="monotone"
+                          dataKey="activeHours"
+                          stroke="var(--color-activeHours)"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                      </AreaChart>
+                    </ChartContainer>
+                  </div>
+
+                  <div className="rounded-xl border border-border bg-background p-4">
+                    <h3 className="text-sm font-semibold text-foreground mb-3">Por máquina</h3>
+                    <div className="overflow-x-auto max-h-[280px] overflow-y-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Máquina</TableHead>
+                            <TableHead className="text-right">Hrs activas</TableHead>
+                            <TableHead className="text-right">Inactivo</TableHead>
+                            <TableHead className="text-right">Paros</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {machineActivity.byMachine.length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={4} className="text-center text-muted-foreground">
+                                Sin actividad registrada.
+                              </TableCell>
+                            </TableRow>
+                          ) : (
+                            machineActivity.byMachine.map((row) => (
+                              <TableRow key={row.machine}>
+                                <TableCell className="font-medium">{row.machine}</TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  {row.activeHours}h
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  {formatDurationMinutes(row.inactiveMinutes)}
+                                </TableCell>
+                                <TableCell className="text-right tabular-nums">
+                                  {row.inactivityEpisodes}
+                                </TableCell>
+                              </TableRow>
+                            ))
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                </div>
+
+                {machineActivity.episodes.length > 0 && (
+                  <div className="rounded-xl border border-border bg-background p-4">
+                    <h3 className="text-sm font-semibold text-foreground mb-3">
+                      Detalle de paros / inactividad
+                    </h3>
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Máquina</TableHead>
+                            <TableHead>Inicio (aprox.)</TableHead>
+                            <TableHead>Fin</TableHead>
+                            <TableHead>Duración</TableHead>
+                            <TableHead>Tipo</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {machineActivity.episodes.slice(0, 20).map((ep, idx) => (
+                            <TableRow key={`${ep.machine}-${ep.endedAt}-${idx}`}>
+                              <TableCell className="font-medium">{ep.machine}</TableCell>
+                              <TableCell className="whitespace-nowrap text-sm">
+                                {new Date(ep.startedAt).toLocaleString("es-MX", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </TableCell>
+                              <TableCell className="whitespace-nowrap text-sm">
+                                {new Date(ep.endedAt).toLocaleString("es-MX", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </TableCell>
+                              <TableCell>{formatDurationMinutes(ep.minutes)}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground">
+                                {ep.alertTypes.join(", ")}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* ========== INCIDENCIAS TAB ========== */}
+          <TabsContent value="incidencias" className="space-y-6">
+            <div className="rounded-xl border border-border bg-card p-6 space-y-6">
+              <div>
+                <h3 className="font-semibold text-foreground">Incidencias de turno</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Detecta producción fuera de horario, salidas anticipadas sin cumplir la cuota
+                  diaria y excesos después de la ventana de limpieza nocturna.
+                </p>
+                <ul className="mt-3 space-y-1 text-xs text-muted-foreground list-disc pl-5">
+                  {shiftIncidentsAnalytics.scheduleNotes.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <KpiCard
-                  title="Cambios SKU"
-                  value={analytics.changeovers14d.toLocaleString()}
-                  subtitle={`${analytics.changeoversPer1k.toFixed(2)}/1k uds`}
-                  icon={RefreshCw}
-                  iconColor="text-primary"
+                  title="Total incidencias"
+                  value={String(shiftIncidentsAnalytics.summary.total)}
+                  subtitle="En el rango seleccionado"
+                  icon={AlertTriangle}
+                  iconColor="text-red-600"
                 />
                 <KpiCard
-                  title="Producción "
-                  value={analytics.produced14d.toLocaleString()}
-                  subtitle="Unidades"
-                  icon={TrendingUp}
+                  title="Después del turno"
+                  value={String(shiftIncidentsAnalytics.summary.overtimeCount)}
+                  subtitle={`Matutino &gt; ${timeLabel(SHIFT_SCHEDULE.matutino.productionEnd.hour)} · Noche &gt; ${timeLabel(23, 0)}`}
+                  icon={Clock}
+                  iconColor="text-orange-600"
+                />
+                <KpiCard
+                  title="Salida sin meta"
+                  value={String(shiftIncidentsAnalytics.summary.earlyLeaveCount)}
+                  subtitle="Check-out anticipado sin cuota diaria cumplida"
+                  icon={Users}
+                  iconColor="text-amber-600"
+                />
+                <KpiCard
+                  title="Post-limpieza"
+                  value={String(shiftIncidentsAnalytics.summary.postCleaningCount)}
+                  subtitle={`Producción después de ${timeLabel(23, 30)}`}
+                  icon={AlertTriangle}
+                  iconColor="text-red-700"
+                />
+              </div>
+
+              {shiftIncidentsAnalytics.summary.cleaningProductionCount > 0 ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  {shiftIncidentsAnalytics.summary.cleaningProductionCount} evento(s) con producción
+                  durante la limpieza ({timeLabel(23, 0)}–{timeLabel(23, 30)}). No es incidencia
+                  formal, pero conviene revisar.
+                </div>
+              ) : null}
+
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Fecha / hora</TableHead>
+                      <TableHead>Turno</TableHead>
+                      <TableHead>Empleado</TableHead>
+                      <TableHead>Máquina</TableHead>
+                      <TableHead>Tipo</TableHead>
+                      <TableHead className="text-right">Uds.</TableHead>
+                      <TableHead>Detalle</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {shiftIncidentsAnalytics.incidents.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={7} className="text-center text-muted-foreground py-10">
+                          Sin incidencias de turno en este periodo.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      shiftIncidentsAnalytics.incidents.map((row) => (
+                        <TableRow key={row.id} className={shiftIncidentRowClass(row)}>
+                          <TableCell className="whitespace-nowrap text-sm">
+                            {new Date(row.occurredAt).toLocaleString("es-MX", {
+                              day: "2-digit",
+                              month: "short",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className="font-normal capitalize">
+                              {row.shift}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="font-medium">{row.employeeName}</TableCell>
+                          <TableCell>{row.machineLabel}</TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={
+                                row.kind === "post_cleaning_production" ? "destructive" : "secondary"
+                              }
+                              className="font-normal whitespace-nowrap"
+                            >
+                              {row.title}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {row.kind === "early_leave_under_goal"
+                              ? `${Math.round(row.goalActual ?? row.units).toLocaleString()} / ${Math.round(row.goalTarget ?? 0).toLocaleString()}`
+                              : row.units > 0
+                                ? row.units.toLocaleString()
+                                : "—"}
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "text-sm max-w-[280px]",
+                              row.kind === "post_cleaning_production"
+                                ? "text-red-100"
+                                : "text-muted-foreground",
+                            )}
+                          >
+                            {row.detail}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* ========== MANTENIMIENTO TAB ========== */}
+          <TabsContent value="mantenimiento" className="space-y-6">
+            <div className="rounded-xl border border-border bg-card p-6 space-y-6">
+              <div>
+                <h3 className="font-semibold text-foreground">Mantenimiento</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Sesiones NFC de técnicos de mantenimiento. Preventivo: sin producción previa ese día.
+                  Correctivo: la máquina ya había producido antes del check-in. Las unidades excluidas son
+                  piezas del PLC registradas durante la ventana de mantenimiento.
+                </p>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <KpiCard
+                  title="Check-ins"
+                  value={maintenanceMetrics.total.toLocaleString()}
+                  subtitle="Entradas NFC en el período"
+                  icon={Wrench}
+                  iconColor="text-blue-600"
+                />
+                <KpiCard
+                  title="Preventivos"
+                  value={maintenanceMetrics.preventive.toLocaleString()}
+                  subtitle={`${maintenanceMetrics.preventivePct}% del total`}
+                  icon={Wrench}
+                  iconColor="text-teal-600"
+                />
+                <KpiCard
+                  title="Correctivos"
+                  value={maintenanceMetrics.corrective.toLocaleString()}
+                  subtitle={`${maintenanceMetrics.correctivePct}% del total`}
+                  icon={Wrench}
+                  iconColor="text-amber-600"
+                />
+                <KpiCard
+                  title="Sesiones activas"
+                  value={maintenanceMetrics.activeNow.toLocaleString()}
+                  subtitle="Máquinas en mantenimiento ahora"
+                  icon={Timer}
+                  iconColor="text-slate-600"
+                />
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <KpiCard
+                  title="Tiempo en mantenimiento"
+                  value={formatMaintenanceDuration(maintenanceMetrics.totalDurationMinutes)}
+                  subtitle="Suma de duración de sesiones"
+                  icon={Timer}
+                  iconColor="text-indigo-600"
+                />
+                <KpiCard
+                  title="Duración promedio"
+                  value={
+                    maintenanceMetrics.avgDurationMinutes == null
+                      ? "—"
+                      : formatMaintenanceDuration(maintenanceMetrics.avgDurationMinutes)
+                  }
+                  subtitle="Sesiones cerradas"
+                  icon={Clock}
+                  iconColor="text-indigo-600"
+                />
+                <KpiCard
+                  title="Unidades excluidas"
+                  value={maintenanceMetrics.totalExcludedUnits.toLocaleString()}
+                  subtitle="Producción PLC no contabilizada"
+                  icon={Package}
+                  iconColor="text-orange-600"
+                />
+                <KpiCard
+                  title="Máquinas / técnicos"
+                  value={`${maintenanceMetrics.uniqueMachines} / ${maintenanceMetrics.uniqueTechnicians}`}
+                  subtitle="Atendidas · técnicos distintos"
+                  icon={Users}
                   iconColor="text-primary"
                 />
               </div>
-            </div>
 
-            {/* Advanced Tabs */}
-            <Tabs defaultValue="prod-vs-downtime" className="space-y-4">
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="prod-vs-downtime">Producción vs Paros</TabsTrigger>
-                <TabsTrigger value="skus">SKUs</TabsTrigger>
-                <TabsTrigger value="turnos">Comparación de Turnos</TabsTrigger>
-              </TabsList>
-
-              {/* Producción vs Paros */}
-              <TabsContent value="prod-vs-downtime" className="space-y-4">
-                <div className="rounded-xl border border-border bg-background p-4">
-                  <h3 className="text-sm font-semibold text-foreground mb-3">Producción vs Paros (Diario)</h3>
-                  <ChartContainer
-                    className="h-[300px] w-full aspect-auto"
-                    config={{
-                      produced: { label: "Producción", color: "#22c55e" },
-                      downtime: { label: "Paros", color: "#f97316" },
-                    }}
-                  >
-                    <AreaChart data={analytics.dailySeries} margin={{ left: 8, right: 8 }}>
-                      <CartesianGrid vertical={false} />
-                      <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                      <YAxis tick={{ fontSize: 12 }} />
-                      <ChartTooltip content={<ChartTooltipContent />} />
-                      <Area type="monotone" dataKey="produced" stroke="var(--color-produced)" fill="var(--color-produced)" fillOpacity={0.18} strokeWidth={2} />
-                      <Area type="monotone" dataKey="downtime" stroke="var(--color-downtime)" fill="var(--color-downtime)" fillOpacity={0.12} strokeWidth={2} />
-                    </AreaChart>
-                  </ChartContainer>
-                </div>
-              </TabsContent>
-
-              {/* SKUs */}
-              <TabsContent value="skus" className="space-y-4">
+              <div className="grid gap-6 lg:grid-cols-2">
                 <div className="rounded-xl border border-border bg-background p-4">
                   <h3 className="text-sm font-semibold text-foreground mb-3">
-                    SKUs más producidos (top 10)
+                    Check-ins por día
                   </h3>
-                  <ChartContainer
-                    className="h-[320px] w-full aspect-auto"
-                    config={{ units: { label: "Unidades" } }}
-                  >
-                    <BarChart data={analytics.skuDistribution.slice(0, 10)} margin={{ left: 8, right: 8 }}>
-                      <CartesianGrid vertical={false} />
-                      <XAxis dataKey="sku" tick={{ fontSize: 12 }} />
-                      <YAxis tick={{ fontSize: 12 }} />
-                      <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="units" radius={[4, 4, 0, 0]}>
-                        {analytics.skuDistribution.slice(0, 10).map((s, index) => (
-                          <Cell key={s.sku} fill={skuPalette[index % skuPalette.length]} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ChartContainer>
+                  {maintenanceMetrics.dailySeries.length === 0 ? (
+                    <p className="py-12 text-center text-sm text-muted-foreground">
+                      Sin check-ins en el rango seleccionado.
+                    </p>
+                  ) : (
+                    <ChartContainer
+                      className="h-[280px] w-full aspect-auto"
+                      config={{
+                        preventive: { label: "Preventivo", color: "#14b8a6" },
+                        corrective: { label: "Correctivo", color: "#f59e0b" },
+                      }}
+                    >
+                      <BarChart data={maintenanceMetrics.dailySeries} margin={{ left: 8, right: 8 }}>
+                        <CartesianGrid vertical={false} />
+                        <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                        <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <Bar dataKey="preventive" stackId="maint" fill="var(--color-preventive)" />
+                        <Bar
+                          dataKey="corrective"
+                          stackId="maint"
+                          fill="var(--color-corrective)"
+                          radius={[4, 4, 0, 0]}
+                        />
+                      </BarChart>
+                    </ChartContainer>
+                  )}
                 </div>
-              </TabsContent>
 
-              {/* Turnos */}
-              <TabsContent value="turnos" className="space-y-4">
                 <div className="rounded-xl border border-border bg-background p-4">
-                  <h3 className="text-sm font-semibold text-foreground mb-3">Matutino vs Vespertino</h3>
-                  <ChartContainer
-                    className="h-[300px] w-full aspect-auto"
-                    config={{
-                      matutino: { label: "Matutino", color: "#3b82f6" },
-                      vespertino: { label: "Vespertino", color: "#f97316" },
-                    }}
-                  >
-                    <BarChart data={analytics.shiftComparisonMetrics} margin={{ left: 8, right: 8 }}>
-                      <CartesianGrid vertical={false} />
-                      <XAxis dataKey="metric" tick={{ fontSize: 12 }} />
-                      <YAxis tick={{ fontSize: 12 }} />
-                      <ChartTooltip content={<ChartTooltipContent />} />
-                      <Bar dataKey="matutino" fill="var(--color-matutino)" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="vespertino" fill="var(--color-vespertino)" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ChartContainer>
+                  <h3 className="text-sm font-semibold text-foreground mb-3">
+                    Preventivo vs correctivo
+                  </h3>
+                  {maintenanceMetrics.total === 0 ? (
+                    <p className="py-12 text-center text-sm text-muted-foreground">Sin datos.</p>
+                  ) : (
+                    <ChartContainer
+                      className="h-[280px] w-full aspect-auto"
+                      config={{
+                        preventive: { label: "Preventivo", color: "#14b8a6" },
+                        corrective: { label: "Correctivo", color: "#f59e0b" },
+                      }}
+                    >
+                      <PieChart>
+                        <Pie
+                          data={maintenanceMetrics.typeDistribution.filter((d) => d.count > 0)}
+                          dataKey="count"
+                          nameKey="label"
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={90}
+                          label={({ label, percent }) =>
+                            `${label} ${(percent * 100).toFixed(0)}%`
+                          }
+                        >
+                          {maintenanceMetrics.typeDistribution.map((entry) => (
+                            <Cell
+                              key={entry.type}
+                              fill={
+                                entry.type === "preventive"
+                                  ? "var(--color-preventive)"
+                                  : "var(--color-corrective)"
+                              }
+                            />
+                          ))}
+                        </Pie>
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                      </PieChart>
+                    </ChartContainer>
+                  )}
                 </div>
-              </TabsContent>
-            </Tabs>
+              </div>
+
+              <div className="grid gap-6 lg:grid-cols-2">
+                <div className="rounded-xl border border-border bg-background p-4">
+                  <h3 className="text-sm font-semibold text-foreground mb-3">
+                    Máquinas con más intervenciones
+                  </h3>
+                  <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Máquina</TableHead>
+                          <TableHead className="text-right">Visitas</TableHead>
+                          <TableHead className="text-right">Prev.</TableHead>
+                          <TableHead className="text-right">Corr.</TableHead>
+                          <TableHead className="text-right">Tiempo</TableHead>
+                          <TableHead className="text-right">Uds excl.</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {maintenanceMetrics.byMachine.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={6} className="text-center text-muted-foreground">
+                              Sin intervenciones.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          maintenanceMetrics.byMachine.slice(0, 12).map((row) => (
+                            <TableRow key={row.machineId}>
+                              <TableCell className="font-medium">{row.machineCode}</TableCell>
+                              <TableCell className="text-right tabular-nums">{row.visits}</TableCell>
+                              <TableCell className="text-right tabular-nums">{row.preventive}</TableCell>
+                              <TableCell className="text-right tabular-nums">{row.corrective}</TableCell>
+                              <TableCell className="text-right tabular-nums text-sm">
+                                {formatMaintenanceDuration(row.durationMinutes)}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {row.excludedUnits.toLocaleString()}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-border bg-background p-4">
+                  <h3 className="text-sm font-semibold text-foreground mb-3">Por técnico</h3>
+                  <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Técnico</TableHead>
+                          <TableHead className="text-right">Visitas</TableHead>
+                          <TableHead className="text-right">Prev.</TableHead>
+                          <TableHead className="text-right">Corr.</TableHead>
+                          <TableHead className="text-right">Tiempo</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {maintenanceTechnicianRows.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={5} className="text-center text-muted-foreground">
+                              Sin técnicos registrados.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          maintenanceTechnicianRows.slice(0, 12).map((row) => (
+                            <TableRow key={row.employeeCode}>
+                              <TableCell className="font-medium">{row.technician}</TableCell>
+                              <TableCell className="text-right tabular-nums">{row.visits}</TableCell>
+                              <TableCell className="text-right tabular-nums">{row.preventive}</TableCell>
+                              <TableCell className="text-right tabular-nums">{row.corrective}</TableCell>
+                              <TableCell className="text-right tabular-nums text-sm">
+                                {formatMaintenanceDuration(row.durationMinutes)}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-border bg-background p-4">
+                <h3 className="text-sm font-semibold text-foreground mb-3">
+                  Detalle de sesiones
+                </h3>
+                {maintenanceVisitRowsDisplay.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    Sin check-ins de mantenimiento en este rango.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Entrada</TableHead>
+                          <TableHead>Salida</TableHead>
+                          <TableHead>Máquina</TableHead>
+                          <TableHead>Técnico</TableHead>
+                          <TableHead>Tipo</TableHead>
+                          <TableHead className="text-right">Duración</TableHead>
+                          <TableHead className="text-right">Uds excl.</TableHead>
+                          <TableHead className="text-right">Estado</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {maintenanceVisitRowsDisplay.map((row) => (
+                          <TableRow key={row.sessionId}>
+                            <TableCell className="whitespace-nowrap text-sm">
+                              {new Date(row.startedAt).toLocaleString("es-MX", {
+                                day: "2-digit",
+                                month: "short",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
+                              {row.endedAt
+                                ? new Date(row.endedAt).toLocaleString("es-MX", {
+                                    day: "2-digit",
+                                    month: "short",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })
+                                : "—"}
+                            </TableCell>
+                            <TableCell className="font-medium">{row.machineCode}</TableCell>
+                            <TableCell>{row.technician}</TableCell>
+                            <TableCell>
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  row.visitType === "preventive"
+                                    ? "border-teal-200 bg-teal-50 text-teal-800"
+                                    : "border-amber-200 bg-amber-50 text-amber-900",
+                                )}
+                              >
+                                {MAINTENANCE_VISIT_TYPE_LABELS[row.visitType]}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-sm">
+                              {row.durationMinutes == null
+                                ? "—"
+                                : formatMaintenanceDuration(row.durationMinutes)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {row.excludedUnits > 0 ? row.excludedUnits.toLocaleString() : "—"}
+                            </TableCell>
+                            <TableCell className="text-right text-sm text-muted-foreground">
+                              {row.isActive ? (
+                                <Badge className="bg-blue-100 text-blue-800">Activa</Badge>
+                              ) : (
+                                "Cerrada"
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </div>
+            </div>
           </TabsContent>
 
           {/* ========== OPERADORES & EMPACADORES TAB ========== */}
           <TabsContent value="operadores" className="space-y-6">
+            {/* Comparativa por persona y rol */}
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="font-semibold text-foreground mb-1">Comparativa por persona y rol</h3>
+              <p className="mb-4 text-xs text-muted-foreground">
+                Unidades atribuidas en el período seleccionado. El reparto sigue el roster del evento
+                (÷ operadores activos y ÷ empacadores activos). El rol muestra el maestro de empleados
+                o la atribución dominante en producción.
+              </p>
+              {analytics.personRoleComparison.length === 0 ? (
+                <div className="flex min-h-[200px] items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+                  Sin unidades atribuidas a personas en este rango.
+                </div>
+              ) : (
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <ChartContainer
+                    className="h-[min(420px,50vh)] w-full aspect-auto"
+                    config={{ units: { label: "Unidades", color: "#22c55e" } }}
+                  >
+                    <BarChart
+                      layout="vertical"
+                      data={analytics.personRoleComparison.slice(0, 14)}
+                      margin={{ left: 8, right: 16, top: 8, bottom: 8 }}
+                    >
+                      <CartesianGrid horizontal={false} />
+                      <XAxis type="number" tick={{ fontSize: 12 }} />
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        width={108}
+                        tick={{ fontSize: 11 }}
+                        interval={0}
+                      />
+                      <ChartTooltip
+                        content={
+                          <ChartTooltipContent
+                            formatter={(value, _name, item) => {
+                              const row = item?.payload as {
+                                role?: string
+                                sharePct?: number
+                              }
+                              const u = typeof value === "number" ? value : Number(value)
+                              const uTxt = Number.isFinite(u)
+                                ? u.toLocaleString("es-MX", { maximumFractionDigits: 1 })
+                                : String(value)
+                              return (
+                                <span>
+                                  {uTxt} uds
+                                  {row?.role ? ` · ${row.role}` : ""}
+                                  {row?.sharePct != null ? ` (${row.sharePct}% del total)` : ""}
+                                </span>
+                              )
+                            }}
+                          />
+                        }
+                      />
+                      <Bar dataKey="units" radius={[0, 4, 4, 0]}>
+                        {analytics.personRoleComparison.slice(0, 14).map((entry) => (
+                          <Cell key={entry.name} fill={personRoleBarColor(entry.role)} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ChartContainer>
+
+                  <div className="max-h-[min(420px,50vh)] overflow-y-auto rounded-lg border border-border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Persona</TableHead>
+                          <TableHead>Rol</TableHead>
+                          <TableHead className="text-right">Unidades</TableHead>
+                          <TableHead className="text-right">% total</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {analytics.personRoleComparison.map((row) => (
+                          <TableRow key={row.name}>
+                            <TableCell className="font-medium">{row.name}</TableCell>
+                            <TableCell>
+                              <span
+                                className="inline-flex items-center gap-1.5 text-sm"
+                                title={
+                                  row.operatorUnits > 0 && row.packerUnits > 0
+                                    ? `Operador: ${row.operatorUnits.toLocaleString("es-MX")} · Empacador: ${row.packerUnits.toLocaleString("es-MX")}`
+                                    : undefined
+                                }
+                              >
+                                <span
+                                  className="inline-block h-2 w-2 shrink-0 rounded-full"
+                                  style={{ backgroundColor: personRoleBarColor(row.role) }}
+                                />
+                                {row.role}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {row.units.toLocaleString("es-MX", { maximumFractionDigits: 1 })}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums text-muted-foreground">
+                              {row.sharePct}%
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Top Operadores & Empacadores */}
             <div className="grid gap-6 lg:grid-cols-2">
               {/* Top Operadores */}
@@ -2157,60 +3344,6 @@ export default function MetricsPage() {
                     </Bar>
                   </BarChart>
                 </ChartContainer>
-              </div>
-            </div>
-
-            {/* Distribución empacadores */}
-            <div className="grid gap-6">
-              <div className="rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-4">Distribución de Empacadores</h3>
-                <p className="mb-2 text-xs text-muted-foreground">
-                  Unidades atribuidas por registro de producción (reparto entre empacadores listados en el payload o en el check-in de la máquina).
-                </p>
-                <div className="h-[300px]">
-                  {analytics.packerDistribution.length === 0 ? (
-                    <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
-                      Sin unidades atribuidas a empacadores en este rango. Revisa que los registros PROD incluyan PACKAGER_1/2 o el array
-                      <code className="mx-1 rounded bg-muted px-1">packagers</code>, o que exista check-in con empacadores en la máquina.
-                    </div>
-                  ) : (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={analytics.packerDistribution.slice(0, 8)}
-                          dataKey="units"
-                          nameKey="name"
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={55}
-                          outerRadius={90}
-                          paddingAngle={2}
-                          label={({ name, value }) => {
-                            const u = typeof value === "number" ? value : Number(value)
-                            if (!Number.isFinite(u) || u <= 0) return ""
-                            const n = String(name ?? "")
-                            const short = n.length > 14 ? `${n.slice(0, 14)}…` : n
-                            const uTxt = u % 1 !== 0 ? u.toFixed(1) : String(Math.round(u))
-                            return `${short}: ${uTxt}`
-                          }}
-                        >
-                          {analytics.packerDistribution.slice(0, 8).map((p, index) => (
-                            <Cell key={p.name} fill={skuPalette[index % skuPalette.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip
-                          formatter={(value: number | string) => {
-                            const u = typeof value === "number" ? value : Number(value)
-                            const txt = Number.isFinite(u)
-                              ? `${u.toLocaleString("es-MX", { maximumFractionDigits: 1 })} uds`
-                              : String(value)
-                            return [txt, "Unidades atribuidas"]
-                          }}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  )}
-                </div>
               </div>
             </div>
 
@@ -2359,8 +3492,12 @@ export default function MetricsPage() {
             <div className="rounded-xl border border-border bg-card p-6">
               <h3 className="font-semibold text-foreground mb-4">Registros de asistencias</h3>
               <p className="mb-4 text-sm text-muted-foreground">
-                Generado a partir de <strong>check-in en máquina</strong> (entrada/salida y equipo asignado en{" "}
-                <code className="text-xs">machine_checkins</code>). No sustituye un módulo de asistencia de RR.HH.
+                Combina <strong>check-in en máquina</strong> con registros de día en{" "}
+                <Link href="/empleados" className="text-primary underline">
+                  Gestión de empleados
+                </Link>{" "}
+                (vacaciones, incapacidad, faltas justificadas, PSG, TXT). El registro de día prevalece
+                sobre el estado del check-in para la misma persona y fecha.
               </p>
               <AttendanceTable records={filteredAttendanceRecords} onDelete={() => {}} />
             </div>
@@ -2369,13 +3506,20 @@ export default function MetricsPage() {
           {/* ========== ROTACIÓN TAB ========== */}
           <TabsContent value="rotacion" className="space-y-6">
             {/* KPIs */}
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
               <KpiCard
                 title="Personal Activo"
-                value={employeeRows.length.toString()}
-                subtitle="Colaboradores"
+                value={employeeRows.filter((e) => e.status === "active").length.toString()}
+                subtitle="Colaboradores activos"
                 icon={Users}
                 iconColor="text-primary"
+              />
+              <KpiCard
+                title="Turnover"
+                value={formatTurnoverPercent(turnoverMetrics.turnoverPercent)}
+                subtitle={`Bajas / (plantilla mes ant. + altas) · ${turnoverMetrics.monthLabel}`}
+                icon={Percent}
+                iconColor="text-violet-600"
               />
               <KpiCard
                 title="Ingresos"
@@ -2398,10 +3542,54 @@ export default function MetricsPage() {
                     ? `+${personnelMonthSummary.net}`
                     : String(personnelMonthSummary.net)
                 }
-                subtitle="Ingresos − salidas (movimientos)"
+                subtitle="Ingresos − salidas (movimientos NFC)"
                 icon={RefreshCw}
                 iconColor="text-yellow-600"
               />
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-6">
+              <h3 className="font-semibold text-foreground mb-1">Turnover de personal</h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                <span className="capitalize">{turnoverMetrics.monthLabel}</span>
+                {" · "}
+                (Bajas del mes ÷ (empleados al cierre del mes anterior + altas del mes)) × 100
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+                <div className="rounded-lg border border-border bg-muted/30 px-4 py-3">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">Bajas del mes</p>
+                  <p className="text-2xl font-bold tabular-nums text-red-700">
+                    {turnoverMetrics.terminations}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-muted/30 px-4 py-3">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">Altas del mes</p>
+                  <p className="text-2xl font-bold tabular-nums text-green-700">
+                    {turnoverMetrics.hires}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-muted/30 px-4 py-3">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">
+                    Plantilla mes anterior
+                  </p>
+                  <p className="text-2xl font-bold tabular-nums">
+                    {turnoverMetrics.totalEmployeesLastMonth}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-violet-200 bg-violet-50/50 px-4 py-3">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">Turnover</p>
+                  <p className="text-2xl font-bold tabular-nums text-violet-800">
+                    {formatTurnoverPercent(turnoverMetrics.turnoverPercent)}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Denominador: {turnoverMetrics.denominator}
+                  </p>
+                </div>
+              </div>
+              <p className="mt-4 text-xs text-muted-foreground">
+                Bajas: empleados con estado <strong>baja</strong> cuya última actualización cae en el mes.
+                Altas: fecha de ingreso en el mes. Plantilla anterior: activos al último día del mes previo.
+              </p>
             </div>
 
             {/* Historial y Resumen (datos reales: machine_checkins) */}

@@ -1,6 +1,6 @@
 "use client"
 
-import { AttendanceRecord, AttendanceStatus } from "@/lib/mock-data"
+import { AttendanceRecord, AttendanceStatus } from "@/lib/types"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,10 +14,15 @@ interface AttendanceTableProps {
 }
 
 const statusConfig: Record<AttendanceStatus, { color: string; label: string }> = {
-  "Asistente": { color: "bg-green-100 text-green-800", label: "Asistente" },
-  "Ausente": { color: "bg-red-100 text-red-800", label: "Ausente" },
-  "Retardo": { color: "bg-yellow-100 text-yellow-800", label: "Retardo" },
-  "Permiso": { color: "bg-blue-100 text-blue-800", label: "Permiso" },
+  Asistente: { color: "bg-green-100 text-green-800", label: "Asistente" },
+  Ausente: { color: "bg-red-100 text-red-800", label: "Ausente" },
+  Retardo: { color: "bg-yellow-100 text-yellow-800", label: "Retardo" },
+  Permiso: { color: "bg-blue-100 text-blue-800", label: "Permiso" },
+  Vacaciones: { color: "bg-emerald-100 text-emerald-800", label: "Vacaciones" },
+  Incapacidad: { color: "bg-purple-100 text-purple-800", label: "Incapacidad" },
+  "Falta justificada": { color: "bg-amber-100 text-amber-900", label: "Falta justificada" },
+  "Permiso sin goce": { color: "bg-slate-100 text-slate-800", label: "Permiso sin goce" },
+  "Tiempo por tiempo": { color: "bg-cyan-100 text-cyan-900", label: "Tiempo por tiempo" },
 }
 
 export function AttendanceTable({ records, onDelete }: AttendanceTableProps) {
@@ -75,7 +80,7 @@ export function AttendanceTable({ records, onDelete }: AttendanceTableProps) {
           </thead>
           <tbody>
             {records.map((record) => {
-              const config = statusConfig[record.status]
+              const config = statusConfig[record.status] ?? statusConfig.Asistente
               return (
                 <tr
                   key={record.id}

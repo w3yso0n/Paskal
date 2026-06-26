@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Bell,
   AlertTriangle,
@@ -18,6 +18,8 @@ import {
   Search,
   Plus,
   Loader2,
+  Save,
+  StickyNote,
 } from "lucide-react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -25,6 +27,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import {
   Select,
@@ -36,6 +39,8 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -55,11 +60,13 @@ import {
   deleteAlert,
   getAlerts,
   getBusinessAlertThresholds,
+  getDowntimeNotes,
   getEmployees,
   getMachines,
   getProductionEvents,
   getProductSkus,
   updateAlert,
+  upsertDowntimeNote,
   type AlertRuleSeverity,
   type ApiAlert,
   type ApiEmployee,
@@ -68,6 +75,10 @@ import {
   type ApiProductSku,
 } from "@/lib/api"
 import { toast } from "sonner"
+import {
+  buildDowntimeNoteContextFromAlert,
+  isDowntimeParoAlert,
+} from "@/lib/employee-downtime-analytics"
 import { useAlertRules } from "./hooks/use-alert-rules"
 import { EspIdleAlertConfigCard } from "./EspIdleAlertConfigCard"
 
@@ -245,6 +256,8 @@ export default function AlertasClient() {
 
   // --- Alerts state ---
   const [alerts, setAlerts] = useState<Alert[]>([])
+  const [apiAlertsById, setApiAlertsById] = useState<Map<string, ApiAlert>>(new Map())
+  const [notesBySourceKey, setNotesBySourceKey] = useState<Map<string, string>>(new Map())
   const [alertsLoading, setAlertsLoading] = useState(true)
   const [machineRows, setMachineRows] = useState<ApiMachine[]>([])
   const [machineCounters, setMachineCounters] = useState<Record<string, number>>({})
@@ -257,6 +270,24 @@ export default function AlertasClient() {
   const [assignOperator, setAssignOperator] = useState<string>("")
   const [assignSku, setAssignSku] = useState<string>("")
   const [assigning, setAssigning] = useState(false)
+  const [noteAlertId, setNoteAlertId] = useState<string | null>(null)
+  const [noteDraft, setNoteDraft] = useState("")
+  const [savingNote, setSavingNote] = useState(false)
+
+  const loadDowntimeNotes = useCallback(async () => {
+    try {
+      const token = await getAccessToken()
+      if (!token) return
+      const notes = await getDowntimeNotes(token)
+      const map = new Map<string, string>()
+      for (const n of notes) {
+        if (n.notes?.trim()) map.set(n.sourceKey, n.notes.trim())
+      }
+      setNotesBySourceKey(map)
+    } catch {
+      setNotesBySourceKey(new Map())
+    }
+  }, [getAccessToken])
 
   useEffect(() => {
     let cancelled = false
@@ -265,7 +296,10 @@ export default function AlertasClient() {
       try {
         const token = await getAccessToken()
         if (!token) {
-          if (!cancelled) setAlerts([])
+          if (!cancelled) {
+            setAlerts([])
+            setApiAlertsById(new Map())
+          }
           return
         }
         const [apiAlerts, apiMachines, apiEmployees, apiSkus] = await Promise.all([
@@ -278,16 +312,18 @@ export default function AlertasClient() {
         setMachineRows(apiMachines)
         setEmployees(apiEmployees)
         setSkus(apiSkus)
+        setApiAlertsById(new Map(apiAlerts.map((a) => [a.id, a])))
         setAlerts(apiAlerts.map(mapApiAlertToUi))
       } finally {
         if (!cancelled) setAlertsLoading(false)
       }
     }
     load()
+    void loadDowntimeNotes()
     return () => {
       cancelled = true
     }
-  }, [getAccessToken])
+  }, [getAccessToken, loadDowntimeNotes])
 
   useEffect(() => {
     if (view !== "production") return
@@ -421,6 +457,42 @@ export default function AlertasClient() {
     setAssignOperator("")
     setAssignSku("")
     setAssignAlert(alert)
+  }
+
+  const openNoteDialog = (alertId: string) => {
+    const apiAlert = apiAlertsById.get(alertId)
+    if (!apiAlert) return
+    const ctx = buildDowntimeNoteContextFromAlert(apiAlert)
+    if (!ctx) return
+    setNoteDraft(notesBySourceKey.get(ctx.sourceKey) ?? "")
+    setNoteAlertId(alertId)
+  }
+
+  const handleSaveNote = async () => {
+    if (!noteAlertId) return
+    const apiAlert = apiAlertsById.get(noteAlertId)
+    if (!apiAlert) return
+    const ctx = buildDowntimeNoteContextFromAlert(apiAlert)
+    if (!ctx) return
+    const token = await getAccessToken()
+    if (!token) return
+    setSavingNote(true)
+    try {
+      await upsertDowntimeNote(token, {
+        sourceKey: ctx.sourceKey,
+        machineId: ctx.machineId,
+        occurredAt: ctx.occurredAt,
+        alertStage: ctx.alertStage,
+        notes: noteDraft.trim() || null,
+      })
+      toast.success("Nota guardada")
+      setNoteAlertId(null)
+      await loadDowntimeNotes()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo guardar la nota")
+    } finally {
+      setSavingNote(false)
+    }
   }
 
   const submitAssign = async () => {
@@ -859,6 +931,10 @@ export default function AlertasClient() {
                   const TypeIcon = typeIcons[alert.type]
                   const CategoryIcon = categoryIcons[alert.category]
                   const colors = typeColors[alert.type]
+                  const apiAlert = apiAlertsById.get(alert.id)
+                  const noteCtx = apiAlert ? buildDowntimeNoteContextFromAlert(apiAlert) : null
+                  const alertNote = noteCtx ? notesBySourceKey.get(noteCtx.sourceKey) : undefined
+                  const canAddNote = apiAlert ? isDowntimeParoAlert(apiAlert.title) : false
 
                   return (
                     <div
@@ -902,6 +978,11 @@ export default function AlertasClient() {
                               )}
                             </div>
                             <p className="mt-1 text-sm text-muted-foreground">{alert.message}</p>
+                            {alertNote ? (
+                              <p className="mt-2 text-sm rounded-md bg-muted/60 px-3 py-2 border border-border">
+                                <span className="font-medium text-foreground">Nota:</span> {alertNote}
+                              </p>
+                            ) : null}
                             <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
                               <span className="flex items-center gap-1">
                                 <CategoryIcon className="h-3 w-3" />
@@ -918,6 +999,16 @@ export default function AlertasClient() {
                           </div>
 
                           <div className="flex shrink-0 items-center gap-2">
+                            {canAddNote && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openNoteDialog(alert.id)}
+                              >
+                                <StickyNote className="mr-1 h-3 w-3" />
+                                {alertNote ? "Editar nota" : "Añadir nota"}
+                              </Button>
+                            )}
                             {isOrphanAlert(alert) && !alert.isRead && (
                               <Button
                                 size="sm"
@@ -1033,6 +1124,43 @@ export default function AlertasClient() {
               </Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={noteAlertId !== null}
+        onOpenChange={(open) => {
+          if (!open) setNoteAlertId(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Nota de supervisión</DialogTitle>
+            <DialogDescription>
+              {noteAlertId && apiAlertsById.get(noteAlertId)
+                ? apiAlertsById.get(noteAlertId)!.title
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="alert-downtime-note">Notas</Label>
+            <Textarea
+              id="alert-downtime-note"
+              value={noteDraft}
+              onChange={(e) => setNoteDraft(e.target.value)}
+              placeholder="Ej. Cambio de rollo, falta de material, ajuste de máquina…"
+              rows={4}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNoteAlertId(null)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleSaveNote} disabled={savingNote} className="gap-1.5">
+              {savingNote ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Guardar nota
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </DashboardLayout>

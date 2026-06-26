@@ -692,13 +692,15 @@ export interface ApiEmployee {
   /** UID de tarjeta NFC (hex, minúsculas). El backend resuelve los taps por este campo. */
   nfcCardUid: string | null;
   fullName: string;
-  email: string | null;
-  phone: string | null;
+  rfc: string | null;
+  imss: string | null;
   position: string | null;
   primaryRole: import("@/lib/employee-production-role").EmployeeProductionRole | null;
   secondaryRole: import("@/lib/employee-production-role").EmployeeSecondaryRole | null;
   status: ApiEmployeeStatus;
   hiredAt: string | null;
+  /** Apoyo de transporte fijo para personal local. */
+  localTransportSupport: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -707,13 +709,14 @@ export interface CreateEmployeePayload {
   fullName: string;
   employeeCode?: string | null;
   nfcCardUid?: string | null;
-  email?: string | null;
-  phone?: string | null;
+  rfc?: string | null;
+  imss?: string | null;
   position?: string | null;
   primaryRole?: import("@/lib/employee-production-role").EmployeeProductionRole | null;
   secondaryRole?: import("@/lib/employee-production-role").EmployeeSecondaryRole | null;
   status?: ApiEmployeeStatus;
   hiredAt?: string | Date | null;
+  localTransportSupport?: boolean;
 }
 
 export interface UpdateEmployeePayload extends Partial<CreateEmployeePayload> {}
@@ -861,11 +864,19 @@ export interface ApiMaintenanceSession {
 
 export async function getMaintenanceSessions(
   accessToken: string,
-  params: { machineId?: string; active?: boolean; limit?: number } = {},
+  params: {
+    machineId?: string
+    active?: boolean
+    from?: string
+    to?: string
+    limit?: number
+  } = {},
 ): Promise<ApiMaintenanceSession[]> {
   const q = new URLSearchParams()
   if (params.machineId) q.set("machineId", params.machineId)
   if (params.active) q.set("active", "true")
+  if (params.from) q.set("from", params.from)
+  if (params.to) q.set("to", params.to)
   if (params.limit) q.set("limit", String(params.limit))
   const qs = q.toString()
   const res = await fetchWithAuth(`/maintenance${qs ? `?${qs}` : ""}`, { accessToken })
@@ -1430,5 +1441,48 @@ export async function updateBusinessAlertThresholds(
     body: JSON.stringify(payload),
   })
   return parseResponse<AlertThresholdsConfig>(res)
+}
+
+export interface ApiDowntimeNote {
+  id: string
+  sourceKey: string
+  employeeId: string | null
+  machineId: string | null
+  occurredAt: string
+  alertStage: number
+  notes: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export async function getDowntimeNotes(
+  accessToken: string,
+  params?: { from?: string; to?: string },
+): Promise<ApiDowntimeNote[]> {
+  const q = new URLSearchParams()
+  if (params?.from) q.set("from", params.from)
+  if (params?.to) q.set("to", params.to)
+  const suffix = q.toString() ? `?${q}` : ""
+  const res = await fetchWithAuth(`/business-rules/downtime-notes${suffix}`, { accessToken })
+  return parseResponse<ApiDowntimeNote[]>(res)
+}
+
+export async function upsertDowntimeNote(
+  accessToken: string,
+  payload: {
+    sourceKey: string
+    employeeId?: string | null
+    machineId?: string | null
+    occurredAt: string
+    alertStage: number
+    notes?: string | null
+  },
+): Promise<ApiDowntimeNote> {
+  const res = await fetchWithAuth("/business-rules/downtime-notes", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+    accessToken,
+  })
+  return parseResponse<ApiDowntimeNote>(res)
 }
 

@@ -29,6 +29,7 @@ import { useAuth } from "@/contexts/auth-context"
 import {
   createManualDataCapture,
   deleteManualDataCapture,
+  getBusinessAlertThresholds,
   getEmployees,
   getManualDataCaptures,
   type ApiDataCaptureCategory,
@@ -40,11 +41,17 @@ import {
   HISTORICAL_MONTHLY_SOURCE_KEY,
   MONTH_LABELS,
   ROLLER_MACHINES,
-  SCRAP_SOURCE_KEY,
+  SCRAP_MATERIALS,
   SHIFT_OPTIONS,
   WINDING_MACHINES,
   sourceKeyLabel,
 } from "@/lib/data-capture-config"
+import { DEFAULT_ALERT_THRESHOLDS, type AlertThresholdsConfig } from "@/lib/business-rules"
+import {
+  computeScrapCostMxn,
+  formatScrapCostMxn,
+  scrapCostPerKgMxn,
+} from "@/lib/scrap-cost"
 import { ClipboardList, Loader2, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -97,8 +104,9 @@ function useProductionStaff(employees: ApiEmployee[]) {
 }
 
 interface ScrapFormState {
-  recordDate: string
-  sku: string
+  recordYear: string
+  recordMonth: string
+  materialKey: string
   scrapQty: string
   notes: string
 }
@@ -420,15 +428,36 @@ function DailyCaptureSection({
 
 function ScrapCaptureSection() {
   const { getAccessToken } = useAuth()
+  const currentYear = new Date().getFullYear()
+  const [filterYear, setFilterYear] = useState(String(currentYear))
   const [rows, setRows] = useState<ApiManualDataCapture[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [costConfig, setCostConfig] = useState<AlertThresholdsConfig>(DEFAULT_ALERT_THRESHOLDS)
   const [form, setForm] = useState<ScrapFormState>({
-    recordDate: todayIso(),
-    sku: "",
+    recordYear: String(currentYear),
+    recordMonth: String(new Date().getMonth() + 1),
+    materialKey: SCRAP_MATERIALS[0].key,
     scrapQty: "",
     notes: "",
   })
+
+  const yearOptions = useMemo(() => {
+    const years: number[] = []
+    for (let y = currentYear; y >= currentYear - 15; y--) years.push(y)
+    return years
+  }, [currentYear])
+
+  const loadCosts = useCallback(async () => {
+    try {
+      const token = await getAccessToken()
+      if (!token) return
+      const thresholds = await getBusinessAlertThresholds(token)
+      setCostConfig(thresholds)
+    } catch {
+      setCostConfig(DEFAULT_ALERT_THRESHOLDS)
+    }
+  }, [getAccessToken])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -438,25 +467,64 @@ function ScrapCaptureSection() {
         setRows([])
         return
       }
-      const data = await getManualDataCaptures(token, { category: "scrap", limit: 100 })
-      setRows(data)
+      const data = await getManualDataCaptures(token, {
+        category: "scrap",
+        recordYear: Number(filterYear),
+        limit: 200,
+      })
+      setRows(
+        [...data].sort((a, b) => {
+          const monthDiff = (a.recordMonth ?? 0) - (b.recordMonth ?? 0)
+          if (monthDiff !== 0) return monthDiff
+          return a.sourceKey.localeCompare(b.sourceKey)
+        }),
+      )
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Error al cargar scrap")
       setRows([])
     } finally {
       setLoading(false)
     }
-  }, [getAccessToken])
+  }, [filterYear, getAccessToken])
+
+  useEffect(() => {
+    loadCosts()
+  }, [loadCosts])
 
   useEffect(() => {
     load()
   }, [load])
 
+  const previewKg = Number(form.scrapQty)
+  const previewCost = computeScrapCostMxn(
+    Number.isFinite(previewKg) ? previewKg : 0,
+    form.materialKey,
+    costConfig,
+  )
+  const previewRate = scrapCostPerKgMxn(form.materialKey, costConfig)
+
+  const monthlyTotalCost = useMemo(
+    () =>
+      rows.reduce(
+        (sum, row) => sum + computeScrapCostMxn(row.scrapQty, row.sourceKey, costConfig),
+        0,
+      ),
+    [rows, costConfig],
+  )
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    const year = Number(form.recordYear)
+    const month = Number(form.recordMonth)
     const qty = Number(form.scrapQty)
-    if (!form.recordDate || !Number.isFinite(qty) || qty < 0) {
-      toast.error("Completa fecha y cantidad de scrap válida.")
+    if (
+      !Number.isFinite(year) ||
+      !Number.isFinite(month) ||
+      !Number.isFinite(qty) ||
+      qty < 0 ||
+      !form.materialKey
+    ) {
+      toast.error("Completa año, mes, material y cantidad de scrap válida (kg).")
       return
     }
     setSaving(true)
@@ -465,14 +533,15 @@ function ScrapCaptureSection() {
       if (!token) throw new Error("Sesión inválida")
       await createManualDataCapture(token, {
         category: "scrap",
-        sourceKey: SCRAP_SOURCE_KEY,
-        recordDate: form.recordDate,
-        sku: form.sku.trim() || null,
+        sourceKey: form.materialKey,
+        recordYear: year,
+        recordMonth: month,
         scrapQty: qty,
         notes: form.notes.trim() || null,
       })
-      toast.success("Scrap registrado")
-      setForm((f) => ({ ...f, scrapQty: "", sku: "", notes: "" }))
+      toast.success("Scrap mensual registrado")
+      setForm((f) => ({ ...f, scrapQty: "", notes: "" }))
+      setFilterYear(String(year))
       await load()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "No se pudo guardar")
@@ -498,34 +567,72 @@ function ScrapCaptureSection() {
     <div className="grid gap-6 lg:grid-cols-2">
       <Card>
         <CardHeader>
-          <CardTitle>Registro de scrap</CardTitle>
+          <CardTitle>Registro mensual de scrap</CardTitle>
           <CardDescription>
-            Merma y material desechado de productos. Se usa para completar reportes diarios y mensuales.
+            Merma acumulada por mes y material (kg). El costo en pesos se calcula con los precios
+            configurados en Reglas de negocio → Umbrales de alertas.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="scrap-date">Fecha</Label>
-              <Input
-                id="scrap-date"
-                type="date"
-                value={form.recordDate}
-                onChange={(e) => setForm((f) => ({ ...f, recordDate: e.target.value }))}
-                required
-              />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Año</Label>
+                <Select
+                  value={form.recordYear}
+                  onValueChange={(v) => setForm((f) => ({ ...f, recordYear: v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {yearOptions.map((y) => (
+                      <SelectItem key={y} value={String(y)}>
+                        {y}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Mes</Label>
+                <Select
+                  value={form.recordMonth}
+                  onValueChange={(v) => setForm((f) => ({ ...f, recordMonth: v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {MONTH_LABELS.map((label, i) => (
+                      <SelectItem key={label} value={String(i + 1)}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="scrap-sku">Producto / SKU (opcional)</Label>
-              <Input
-                id="scrap-sku"
-                value={form.sku}
-                onChange={(e) => setForm((f) => ({ ...f, sku: e.target.value.toUpperCase() }))}
-                placeholder="Producto o familia de scrap"
-              />
+              <Label>Material</Label>
+              <Select
+                value={form.materialKey}
+                onValueChange={(v) => setForm((f) => ({ ...f, materialKey: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SCRAP_MATERIALS.map((m) => (
+                    <SelectItem key={m.key} value={m.key}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="scrap-qty">Scrap (unidades o kg)</Label>
+              <Label htmlFor="scrap-qty">Scrap (kg)</Label>
               <Input
                 id="scrap-qty"
                 type="number"
@@ -535,6 +642,25 @@ function ScrapCaptureSection() {
                 onChange={(e) => setForm((f) => ({ ...f, scrapQty: e.target.value }))}
                 required
               />
+            </div>
+            <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm space-y-1">
+              <p>
+                Costo por kg:{" "}
+                <span className="font-medium">
+                  {previewRate > 0 ? formatScrapCostMxn(previewRate) : "Sin configurar"}
+                </span>
+              </p>
+              <p>
+                Pérdida estimada:{" "}
+                <span className="font-semibold text-destructive">
+                  {previewRate > 0 ? formatScrapCostMxn(previewCost) : "—"}
+                </span>
+              </p>
+              {previewRate <= 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Configura el costo por kg en Reglas de negocio → Umbrales de alertas.
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label htmlFor="scrap-notes">Notas / causa</Label>
@@ -548,15 +674,35 @@ function ScrapCaptureSection() {
             </div>
             <Button type="submit" disabled={saving}>
               {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-              Registrar scrap
+              Registrar scrap del mes
             </Button>
           </form>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>Historial de scrap</CardTitle>
+        <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-4">
+          <div>
+            <CardTitle>Historial de scrap</CardTitle>
+            <CardDescription>
+              Total pérdida {filterYear}:{" "}
+              <span className="font-semibold text-destructive">
+                {formatScrapCostMxn(monthlyTotalCost)}
+              </span>
+            </CardDescription>
+          </div>
+          <Select value={filterYear} onValueChange={setFilterYear}>
+            <SelectTrigger className="w-[120px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {yearOptions.map((y) => (
+                <SelectItem key={y} value={String(y)}>
+                  {y}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -565,36 +711,49 @@ function ScrapCaptureSection() {
               Cargando…
             </div>
           ) : rows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Sin registros de scrap.</p>
+            <p className="text-sm text-muted-foreground">Sin registros de scrap para {filterYear}.</p>
           ) : (
             <div className="max-h-[480px] overflow-auto rounded-md border">
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Fecha</TableHead>
-                    <TableHead>Producto</TableHead>
-                    <TableHead className="text-right">Scrap</TableHead>
+                    <TableHead>Mes</TableHead>
+                    <TableHead>Material</TableHead>
+                    <TableHead className="text-right">Kg</TableHead>
+                    <TableHead className="text-right">Costo</TableHead>
                     <TableHead />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((r) => (
-                    <TableRow key={r.id}>
-                      <TableCell>{r.recordDate ?? "—"}</TableCell>
-                      <TableCell>{r.sku ?? "—"}</TableCell>
-                      <TableCell className="text-right">{formatQty(r.scrapQty)}</TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleDelete(r.id)}
-                        >
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {rows.map((r) => {
+                    const cost = computeScrapCostMxn(r.scrapQty, r.sourceKey, costConfig)
+                    const monthLabel =
+                      r.recordMonth != null ? MONTH_LABELS[r.recordMonth - 1] ?? r.recordMonth : "—"
+                    return (
+                      <TableRow key={r.id}>
+                        <TableCell>
+                          {monthLabel}
+                          {r.recordYear ? ` ${r.recordYear}` : ""}
+                          {!r.recordMonth && r.recordDate ? ` (${r.recordDate})` : ""}
+                        </TableCell>
+                        <TableCell>{sourceKeyLabel(r.sourceKey)}</TableCell>
+                        <TableCell className="text-right">{formatQty(r.scrapQty)}</TableCell>
+                        <TableCell className="text-right font-medium text-destructive">
+                          {cost > 0 ? formatScrapCostMxn(cost) : "—"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDelete(r.id)}
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             </div>

@@ -1,5 +1,9 @@
 import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
-import { getShiftConfigSlice, getWorkingDaysForShift } from "@/lib/bonus-production-config"
+import {
+  META_110_FACTOR,
+  getShiftConfigSlice,
+  getWorkingDaysForShift,
+} from "@/lib/bonus-production-config"
 
 export type VacationRecordType = "vacation" | "incident" | "excused_unpaid" | "time_exchange"
 
@@ -55,8 +59,8 @@ export type PersonBonusMetaAdjustments = {
   baseWorkingDays: number
   vacationDays: number
   effectiveWorkingDays: number
-  turboMetaPieces: number
-  tailMetaPieces: number
+  dailyMeta100: number
+  dailyMeta110: number
   combinedMeta100: number
   combinedMeta110: number
 }
@@ -64,21 +68,19 @@ export type PersonBonusMetaAdjustments = {
 export function computePersonBonusMetaAdjustments(
   baseWorkingDays: number,
   vacationDays: number,
-  turboDailyMeta: number,
-  tailDailyMeta: number,
-  meta110Factor = 1.1,
+  dailyMeta100: number,
+  meta110Factor = META_110_FACTOR,
 ): PersonBonusMetaAdjustments {
   const effectiveWorkingDays = effectiveBonusWorkingDays(baseWorkingDays, vacationDays)
-  const turboMetaPieces = turboDailyMeta * effectiveWorkingDays
-  const tailMetaPieces = tailDailyMeta * effectiveWorkingDays
-  const combinedMeta100 = turboMetaPieces + tailMetaPieces
+  const dailyMeta110 = dailyMeta100 * meta110Factor
+  const combinedMeta100 = dailyMeta100 * effectiveWorkingDays
   const combinedMeta110 = combinedMeta100 * meta110Factor
   return {
     baseWorkingDays,
     vacationDays,
     effectiveWorkingDays,
-    turboMetaPieces,
-    tailMetaPieces,
+    dailyMeta100,
+    dailyMeta110,
     combinedMeta100,
     combinedMeta110,
   }
@@ -149,14 +151,13 @@ export function buildEmployeeVacationBonusAdjustments(
       )?.employeeName ?? personKey
 
     const shiftNumber = shift === "matutino" ? 1 : 2
-    const { reportMeta } = getShiftConfigSlice(config, shiftNumber)
+    const { winding } = getShiftConfigSlice(config, shiftNumber)
     const baseWorkingDays =
       baseDays > 0 ? baseDays : getWorkingDaysForShift(config, shiftNumber)
     const adj = computePersonBonusMetaAdjustments(
       baseWorkingDays,
       days.size,
-      reportMeta.turboDailyMeta,
-      reportMeta.tailDailyMeta,
+      winding.dailyMeta100,
     )
 
     rows.push({

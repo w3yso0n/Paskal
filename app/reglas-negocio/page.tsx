@@ -577,7 +577,7 @@ export default function ReglasNegocioPage() {
               </TabsContent>
 
               <TabsContent value="thresholds">
-                <Card className="max-w-2xl">
+                <Card className="max-w-3xl">
                   <CardHeader>
                     <CardTitle className="text-lg">Umbrales de alertas</CardTitle>
                     <CardDescription>
@@ -612,6 +612,36 @@ export default function ReglasNegocioPage() {
                             setThresholds((t) => ({
                               ...t,
                               scrapPercentWarning: Number(e.target.value) || 1,
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label>Scrap metal — costo por kg (MXN)</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          value={thresholds.scrapMetalCostPerKgMxn}
+                          onChange={(e) =>
+                            setThresholds((t) => ({
+                              ...t,
+                              scrapMetalCostPerKgMxn: Number(e.target.value) || 0,
+                            }))
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-2">
+                        <Label>Scrap twine/rafia — costo por kg (MXN)</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          value={thresholds.scrapTwineCostPerKgMxn}
+                          onChange={(e) =>
+                            setThresholds((t) => ({
+                              ...t,
+                              scrapTwineCostPerKgMxn: Number(e.target.value) || 0,
                             }))
                           }
                         />
@@ -664,8 +694,9 @@ export default function ReglasNegocioPage() {
                   <CardHeader>
                     <CardTitle className="text-lg">Configuración de bono</CardTitle>
                     <CardDescription>
-                      Metas Tail, Turbo, Roller, Bending y reglas de bono por mes. Al guardar se
-                      sincronizan las metas en Metas y los reportes Excel.
+                      Metas por área: Winding, Bending (81 600 fijo por turno) y Roller, más reglas
+                      de bono por mes. Al guardar se sincronizan las metas en Metas y los reportes
+                      Excel.
                     </CardDescription>
                   </CardHeader>
                   <CardContent>

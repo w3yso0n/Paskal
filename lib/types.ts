@@ -68,7 +68,16 @@ export interface ProductionGoal {
 }
 
 export type ShiftType = "Mañana" | "Tarde" | "Noche"
-export type AttendanceStatus = "Asistente" | "Ausente" | "Retardo" | "Permiso"
+export type AttendanceStatus =
+  | "Asistente"
+  | "Ausente"
+  | "Retardo"
+  | "Permiso"
+  | "Vacaciones"
+  | "Incapacidad"
+  | "Falta justificada"
+  | "Permiso sin goce"
+  | "Tiempo por tiempo"
 
 export interface AttendanceRecord {
   id: string
@@ -80,6 +89,9 @@ export interface AttendanceRecord {
   status: AttendanceStatus
   hoursWorked?: number
   notes?: string
+  /** Vinculado a employee_day_records cuando aplica. */
+  dayRecordId?: string
+  dayRecordType?: import("@/lib/api").ApiEmployeeDayRecordType
 }
 
 export interface ShiftRotation {

@@ -29,6 +29,10 @@ import {
   type ApiProductionEvent,
 } from "@/lib/api"
 import { filterFloorMachines } from "@/lib/machine-floor"
+import {
+  fetchActualByGoalId,
+  summarizeMonthlyGoalProgress,
+} from "@/lib/goal-actual-progress"
 
 const DASHBOARD_TIMEZONE = "America/Mexico_City"
 
@@ -328,29 +332,6 @@ export default function HomePage() {
           now,
           DASHBOARD_TIMEZONE,
         )
-        const monthStartKey = new Intl.DateTimeFormat("en-CA", {
-          timeZone: DASHBOARD_TIMEZONE,
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-        }).format(startOfMonthTz)
-        const monthEndKey = new Intl.DateTimeFormat("en-CA", {
-          timeZone: DASHBOARD_TIMEZONE,
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-        }).format(new Date(endOfMonthTz.getTime() - 1))
-        const productionMetricId =
-          metrics.find((m) => m.name.trim().toLowerCase() === "producción")?.id ?? null
-        const monthlyGoals = productionMetricId
-          ? goals.filter((g) => {
-              if (g.metricId !== productionMetricId) return false
-              if (g.period !== "monthly") return false
-              if (g.sku?.trim()) return false
-              return g.startDate <= monthEndKey && g.endDate >= monthStartKey
-            })
-          : []
-        const monthlyTarget = monthlyGoals.reduce((acc, g) => acc + Number(g.targetValue || 0), 0)
         const { start: shiftStart, end: shiftEnd } = getShiftBoundsInTimeZone(
           now,
           selectedShift,
@@ -420,15 +401,19 @@ export default function HomePage() {
         setOperatorStats(Object.fromEntries(statsByOperator))
         setTotalProduced(total)
         setProducedToday(today)
-        if (monthlyTarget > 0) {
-          setMonthlyGoal({
-            actual: total,
-            target: monthlyTarget,
-            pct: Math.round((total / monthlyTarget) * 100),
-          })
-        } else {
-          setMonthlyGoal(null)
-        }
+
+        const actualByGoalId = await fetchActualByGoalId(token, goals, apiMachines, metrics)
+        if (cancelled) return
+        const monthlySummary = summarizeMonthlyGoalProgress(goals, actualByGoalId, metrics)
+        setMonthlyGoal(
+          monthlySummary
+            ? {
+                actual: monthlySummary.actual,
+                target: monthlySummary.target,
+                pct: monthlySummary.pct,
+              }
+            : null,
+        )
       } finally {
         if (!cancelled && !silent) setLoading(false)
       }

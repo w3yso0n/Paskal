@@ -36,9 +36,7 @@ import {
   getBonusProductionConfigForMonth,
   getGoals,
   getMachines,
-  getMetricPoints,
   getMetrics,
-  getProductionEvents,
   updateGoal,
   type ApiGoal,
   type ApiGoalPeriod,
@@ -52,17 +50,16 @@ import {
   monthDateBounds,
 } from "@/lib/bonus-goals-bridge"
 import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
-import { DEFAULT_BONUS_PRODUCTION_CONFIG } from "@/lib/bonus-production-config"
+import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
 import {
   normalizeSku,
-  productionUnitsFromEvent,
-  resolveProductionEventSku,
 } from "@/lib/production-goal-events"
 import {
   goalComplianceDateRange,
   isGoalActive,
   todayYmd,
 } from "@/lib/goal-compliance-range"
+import { fetchActualByGoalId, isProductionMetricName } from "@/lib/goal-actual-progress"
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -74,24 +71,9 @@ const periodLabels: Record<ApiGoalPeriod, string> = {
   yearly: "Anual",
 }
 
-/** Misma ventana que en `app/metricas`: 06:00–13:59 matutino, 14:00–21:59 vespertino (hora local del navegador). */
-function productionShiftFromMeasuredAt(iso: string): ApiGoalShift | null {
-  const hour = new Date(iso).getHours()
-  if (hour >= 6 && hour < 14) return "matutino"
-  if (hour >= 14 && hour < 22) return "vespertino"
-  return null
-}
-
 const shiftLabels: Record<ApiGoalShift, string> = {
   matutino: "Matutino (06:00–13:59)",
   vespertino: "Vespertino (14:00–21:59)",
-}
-
-function toDateTimeRange(dateOnlyStart: string, dateOnlyEnd: string) {
-  return {
-    from: `${dateOnlyStart}T00:00:00.000Z`,
-    to: `${dateOnlyEnd}T23:59:59.999Z`,
-  }
 }
 
 type GoalStatus = "on-track" | "at-risk" | "behind" | "completed" | "exceeded"
@@ -148,7 +130,11 @@ const statusConfig: Record<
 }
 
 function isProductionMetric(metric: ApiMetric | undefined): boolean {
-  return metric?.name.trim().toLowerCase() === "producción"
+  return metric != null && isProductionMetricName(metric.name)
+}
+
+function isExcludedGoalMetric(metric: ApiMetric): boolean {
+  return metric.name.trim().toLowerCase() === "oee"
 }
 
 function buildMachineMaps(machines: ApiMachine[]) {
@@ -390,6 +376,11 @@ export default function MetasPage() {
     return prod?.id ?? null
   }, [metrics])
 
+  const selectableMetrics = useMemo(
+    () => metrics.filter((m) => !isExcludedGoalMetric(m)),
+    [metrics],
+  )
+
   const bonusMonthBounds = useMemo(
     () => monthDateBounds(bonusConfigMonth),
     [bonusConfigMonth],
@@ -492,7 +483,7 @@ export default function MetasPage() {
 
       try {
         const cfg = await getBonusProductionConfigForMonth(token, bonusConfigMonth)
-        setBonusConfig(cfg.config)
+        setBonusConfig(normalizeBonusProductionConfig(cfg.config))
       } catch {
         setBonusConfig(DEFAULT_BONUS_PRODUCTION_CONFIG)
       }
@@ -502,94 +493,7 @@ export default function MetasPage() {
         return
       }
 
-      const metricIds = Array.from(new Set(goalsData.map((g) => g.metricId)))
-      const activeGoals = goalsData.filter((g) => isGoalActive(g))
-      const skuGoals = activeGoals.filter((g) => normalizeSku(g.sku))
-      const nonSkuGoals = activeGoals.filter((g) => !normalizeSku(g.sku))
-
-      const complianceRanges = activeGoals.map((g) => goalComplianceDateRange(g))
-      const minStart =
-        complianceRanges.length > 0
-          ? complianceRanges.reduce(
-              (min, r) => (r.startDate < min ? r.startDate : min),
-              complianceRanges[0].startDate,
-            )
-          : goalsData[0]?.startDate ?? todayYmd()
-      const maxEnd =
-        complianceRanges.length > 0
-          ? complianceRanges.reduce(
-              (max, r) => (r.endDate > max ? r.endDate : max),
-              complianceRanges[0].endDate,
-            )
-          : goalsData[0]?.endDate ?? todayYmd()
-      const range = toDateTimeRange(minStart, maxEnd)
-      const { skuById, upbById } = buildMachineMaps(machinesData)
-
-      const [pointsByMetric, productionEvents] = await Promise.all([
-        nonSkuGoals.length > 0
-          ? Promise.all(
-              metricIds.map((metricId) =>
-                getMetricPoints(token, {
-                  metricId,
-                  from: range.from,
-                  to: range.to,
-                  limit: 5000,
-                }),
-              ),
-            )
-          : Promise.resolve([] as Awaited<ReturnType<typeof getMetricPoints>>[]),
-        skuGoals.length > 0
-          ? getProductionEvents(token, { from: range.from, to: range.to, limit: 10000 })
-          : Promise.resolve([]),
-      ])
-
-      const points = pointsByMetric.flat()
-      const actual: Record<string, number> = {}
-
-      for (const g of nonSkuGoals) {
-        const range = goalComplianceDateRange(g)
-        const { from, to } = toDateTimeRange(range.startDate, range.endDate)
-        const shift = g.shift ?? null
-        const sum = points
-          .filter((p) => p.metricId === g.metricId)
-          .filter((p) => (g.plantId ? p.plantId === g.plantId : true))
-          .filter((p) => (g.lineId ? p.lineId === g.lineId : true))
-          .filter((p) => (g.machineId ? p.machineId === g.machineId : true))
-          .filter((p) => p.measuredAt >= from && p.measuredAt <= to)
-          .filter((p) => {
-            if (!shift) return true
-            const s = productionShiftFromMeasuredAt(p.measuredAt)
-            return s === shift
-          })
-          .reduce((acc, p) => acc + Number(p.value ?? 0), 0)
-        actual[g.id] = sum
-      }
-
-      for (const g of skuGoals) {
-        const goalSku = normalizeSku(g.sku)?.toLowerCase()
-        if (!goalSku) continue
-        const range = goalComplianceDateRange(g)
-        const { from, to } = toDateTimeRange(range.startDate, range.endDate)
-        const shift = g.shift ?? null
-        const sum = productionEvents
-          .filter((e) => (g.machineId ? e.machineId === g.machineId : true))
-          .filter((e) => e.occurredAt >= from && e.occurredAt <= to)
-          .filter((e) => {
-            if (!shift) return true
-            return productionShiftFromMeasuredAt(e.occurredAt) === shift
-          })
-          .filter((e) => {
-            const eventSku = resolveProductionEventSku(e, skuById)
-            return eventSku?.trim().toLowerCase() === goalSku
-          })
-          .reduce((acc, e) => acc + productionUnitsFromEvent(e, upbById), 0)
-        actual[g.id] = sum
-      }
-      for (const g of goalsData) {
-        if (!isGoalActive(g)) {
-          actual[g.id] = 0
-        }
-      }
+      const actual = await fetchActualByGoalId(token, goalsData, machinesData, metricsData)
       setActualByGoalId(actual)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al cargar metas")
@@ -613,8 +517,11 @@ export default function MetasPage() {
 
   const openCreate = () => {
     setEditingGoal(null)
+    const defaultMetric =
+      selectableMetrics.find((m) => m.name.toLowerCase() === "producción") ??
+      selectableMetrics[0]
     setFormData({
-      metricId: metrics[0]?.id ?? "",
+      metricId: defaultMetric?.id ?? "",
       period: "daily",
       shift: "matutino",
       targetValue: "",
@@ -761,7 +668,7 @@ export default function MetasPage() {
                       <SelectValue placeholder="Seleccionar" />
                     </SelectTrigger>
                     <SelectContent>
-                      {metrics.map((m) => (
+                      {selectableMetrics.map((m) => (
                         <SelectItem key={m.id} value={m.id}>
                           {m.name}
                         </SelectItem>
@@ -898,7 +805,7 @@ export default function MetasPage() {
 
         <Card className="border-primary/20 bg-primary/5">
           <CardContent className="pt-6 text-sm text-muted-foreground">
-            Las metas de Tail, Turbo, Roller y Bending provienen de{" "}
+            Las metas de Winding, Bending y Roller provienen de{" "}
             <Link href="/reglas-negocio?tab=bono" className="font-medium text-primary underline">
               Reglas de negocio → Configuración de bono
             </Link>

@@ -7,6 +7,8 @@ import {
   DEFAULT_BONUS_PRODUCTION_CONFIG,
   getShiftConfigSlice,
   getWorkingDaysForShift,
+  meta110From100,
+  monthlyMeta100FromDaily,
 } from "@/lib/bonus-production-config"
 import type { ProductionShiftReportSourceRow } from "@/lib/production-shift-report-excel"
 import { getShiftBoundsForCalendarDate, getPartsInTimeZone } from "@/lib/shift-timezone"
@@ -712,10 +714,10 @@ function writeSectionHeaders(
   sheet.getCell(row2, 25).value = `Semana ${days[15] ? isoWeek(days[15]) : 4}`
   sheet.getCell(row2, 27).value = "Promedio"
   sheet.getCell(row2, 28).value = "Porcentaje"
-  sheet.getCell(row2, 29).value = "Turbo"
-  sheet.getCell(row2, 30).value = "Piezas"
-  sheet.getCell(row2, 31).value = "Tail"
-  sheet.getCell(row2, 32).value = "Piezas"
+  sheet.getCell(row2, 29).value = "Días"
+  sheet.getCell(row2, 30).value = "Meta / día 100%"
+  sheet.getCell(row2, 31).value = "Meta / día 110%"
+  sheet.getCell(row2, 32).value = "Meta mes 100%"
   sheet.getCell(row2, 33).value = "100%"
   sheet.getCell(row2, 34).value = "110%"
   sheet.getCell(row2, 35).value = "100%"
@@ -751,12 +753,14 @@ function writeSectionDataRows(
 ): number {
   const rules = productionConfig.bonusRules
   const shiftSlice = getShiftConfigSlice(productionConfig, shiftNumber)
-  const { reportMeta } = shiftSlice
+  const { winding } = shiftSlice
   const workingDays =
     dayIsos.length > 0
       ? dayIsos.length
       : getWorkingDaysForShift(productionConfig, shiftNumber)
   const meta110Factor = 1.1
+  const monthlyMeta100 =
+    winding.dailyMeta100 * winding.workingDaysPerMonth
 
   names.forEach((name, idx) => {
     const row = rowStart + idx
@@ -770,8 +774,7 @@ function writeSectionDataRows(
     const personMeta = computePersonBonusMetaAdjustments(
       workingDays,
       vacationDays,
-      reportMeta.turboDailyMeta,
-      reportMeta.tailDailyMeta,
+      winding.dailyMeta100,
       meta110Factor,
     )
     sheet.getCell(row, 1).value = name
@@ -855,9 +858,9 @@ function writeSectionDataRows(
     }
     sheet.getCell(row, 28).value = { formula: `Z${row}/(AH${row}/${meta110Factor})/100` }
     sheet.getCell(row, 29).value = personWorkingDays
-    sheet.getCell(row, 30).value = personMeta.turboMetaPieces
-    sheet.getCell(row, 31).value = personWorkingDays
-    sheet.getCell(row, 32).value = personMeta.tailMetaPieces
+    sheet.getCell(row, 30).value = personMeta.dailyMeta100
+    sheet.getCell(row, 31).value = personMeta.dailyMeta110
+    sheet.getCell(row, 32).value = monthlyMeta100
     sheet.getCell(row, 33).value = personMeta.combinedMeta100
     sheet.getCell(row, 34).value = personMeta.combinedMeta110
     sheet.getCell(row, 35).value = { formula: `Z${row}--AG${row}` }
@@ -1057,8 +1060,7 @@ function configureTemplateSheet(
 }
 
 const INFO_SHEET = {
-  TAIL: "FFF3E8FF",
-  TURBO: "FFE0F2FE",
+  WINDING: "FFE0F2FE",
   ROLLER: "FFF1F5F9",
   BENDING: "FFE2F0D9",
   RULES: "FFFAE2D6",
@@ -1163,11 +1165,9 @@ function buildInformationSheet(
   reportDate: string,
   productionConfig: BonusProductionConfigData,
 ) {
-  const { roller48, roller36, tail, turbo, bending, bonusRules } = productionConfig
-  const t1 = tail.shift1
-  const t2 = tail.shift2
-  const tb1 = turbo.shift1
-  const tb2 = turbo.shift2
+  const { roller48, roller36, winding, bending, bonusRules } = productionConfig
+  const w1 = winding.shift1
+  const w2 = winding.shift2
   const b1 = bending.shift1
   const b2 = bending.shift2
   const monthLabel = formatInfoMonth(reportDate)
@@ -1195,71 +1195,35 @@ function buildInformationSheet(
   )
   sheet.getCell(2, 5).alignment = { horizontal: "right", vertical: "middle", wrapText: true }
 
-  // —— Tail ——
+  // —— Winding ——
   let row = 4
-  infoMergeWrite(sheet, row, 1, 6, "Producción Tail", INFO_SHEET.TAIL, { fontSize: 10 })
-  row++
-  infoWriteHeaderRow(sheet, row, [
-    { col: 1, text: "Turno" },
-    { col: 2, text: "Meta" },
-    { col: 3, text: "Máquina" },
-    { col: 4, text: "Empaque" },
-    { col: 5, text: "Tail" },
-    { col: 6, text: "Turbo" },
-  ])
-  row++
-  const tailStart = row
-  infoWriteCell(sheet, row, 1, "1", { bold: true })
-  infoWriteCell(sheet, row, 2, "100%")
-  infoWriteCell(sheet, row, 3, t1.machine100, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 4, { formula: `C${row}*${t1.packMultiplier}` }, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 5, { formula: `C${row}*${t1.tailMultiplier100}` }, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 6, { formula: `${t1.turboDaily100}*${t1.turboPeriodFactor}` }, { numFmt: "#,##0" })
-  row++
-  infoWriteCell(sheet, row, 1, "1", { bold: true })
-  infoWriteCell(sheet, row, 2, "110%")
-  infoWriteCell(sheet, row, 3, t1.machine110, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 4, { formula: `C${row}*${t1.packMultiplier}` }, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 5, { formula: `C${row}*${t1.tailMultiplier110}` }, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 6, { formula: `${t1.turboDaily110}*${t1.turboPeriodFactor}` }, { numFmt: "#,##0" })
-  row++
-  infoWriteCell(sheet, row, 1, "2", { bold: true })
-  infoWriteCell(sheet, row, 2, "100%")
-  infoWriteCell(sheet, row, 3, t2.machine100, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 4, { formula: `C${row}*${t2.packMultiplier}` }, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 5, { formula: `C${row}*${t2.tailMultiplier100}` }, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 6, { formula: `${t2.turboDaily100}*${t2.turboPeriodFactor}` }, { numFmt: "#,##0" })
-  row++
-  infoWriteCell(sheet, row, 1, "2", { bold: true })
-  infoWriteCell(sheet, row, 2, "110%")
-  infoWriteCell(sheet, row, 3, t2.machine110, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 4, { formula: `C${row}*${t2.packMultiplier}` }, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 5, { formula: `C${row}*${t2.tailMultiplier110}` }, { numFmt: "#,##0" })
-  infoWriteCell(sheet, row, 6, { formula: `${t2.turboDaily110}*${t2.turboPeriodFactor}` }, { numFmt: "#,##0" })
-  infoPaintBlock(sheet, tailStart - 2, 1, row, 6, INFO_SHEET.TAIL)
-  sheet.getCell(tailStart - 2, 1).font = { bold: true, size: 10 }
-
-  // —— Turbo ——
-  row += 2
-  const turboTitleRow = row
-  infoMergeWrite(sheet, row, 1, 6, "Producción Turbo", INFO_SHEET.TURBO, { fontSize: 10 })
+  const windingTitleRow = row
+  infoMergeWrite(sheet, row, 1, 6, "Winding", INFO_SHEET.WINDING, { fontSize: 10 })
   row++
   infoWriteHeaderRow(sheet, row, [
     { col: 1, text: "Turno" },
     { col: 2, text: "Período" },
-    { col: 3, text: "Máq. 100%" },
-    { col: 4, text: "Máq. 110%" },
-    { col: 5, text: "Emp. 100%" },
-    { col: 6, text: "Emp. 110%" },
+    { col: 3, text: "Meta 100%" },
+    { col: 4, text: "Meta 110%" },
+    { col: 5, text: "Días / mes" },
+    { col: 6, text: "" },
   ])
   row++
-  const turboStart = row
-
-  const writeTurboBlock = (turno: string, tb: typeof tb1, startRow: number) => {
+  const writeWindingBlock = (
+    turno: string,
+    wind: typeof w1,
+    startRow: number,
+  ) => {
+    const daily110 = meta110From100(wind.dailyMeta100)
+    const monthly100 = monthlyMeta100FromDaily(wind.dailyMeta100, wind.workingDaysPerMonth)
+    const monthly110 = meta110From100(monthly100)
     const periods = [
-      { label: "Día", m100: tb.machine100Daily, m110: tb.machine110Daily },
-      { label: "Semana", m100: { formula: `C${startRow}*${tb.daysPerWeek}` }, m110: { formula: `D${startRow}*${tb.daysPerWeek}` } },
-      { label: "Mes", m100: { formula: `C${startRow + 1}*${tb.weeksPerMonth}` }, m110: { formula: `D${startRow + 1}*${tb.weeksPerMonth}` } },
+      { label: "Día", m100: wind.dailyMeta100, m110: daily110 },
+      {
+        label: "Mes",
+        m100: monthly100,
+        m110: monthly110,
+      },
     ]
     periods.forEach((p, i) => {
       const r = startRow + i
@@ -1267,19 +1231,20 @@ function buildInformationSheet(
       infoWriteCell(sheet, r, 2, p.label, { align: "left" })
       infoWriteCell(sheet, r, 3, p.m100, { numFmt: "#,##0" })
       infoWriteCell(sheet, r, 4, p.m110, { numFmt: "#,##0" })
-      infoWriteCell(sheet, r, 5, { formula: `C${r}*${tb.packMultiplier}` }, { numFmt: "#,##0" })
-      infoWriteCell(sheet, r, 6, { formula: `D${r}*${tb.packMultiplier}` }, { numFmt: "#,##0" })
+      if (i === 0) {
+        infoWriteCell(sheet, r, 5, wind.workingDaysPerMonth, { numFmt: "#,##0" })
+      }
     })
-    return startRow + 2
+    return startRow + 1
   }
 
-  const turboT2Start = writeTurboBlock("1", tb1, row) + 1
-  writeTurboBlock("2", tb2, turboT2Start)
-  infoPaintBlock(sheet, turboTitleRow, 1, turboT2Start + 2, 6, INFO_SHEET.TURBO)
-  sheet.getCell(turboTitleRow, 1).font = { bold: true, size: 10 }
+  const windT2Start = writeWindingBlock("1", w1, row) + 1
+  writeWindingBlock("2", w2, windT2Start)
+  infoPaintBlock(sheet, windingTitleRow, 1, windT2Start + 1, 5, INFO_SHEET.WINDING)
+  sheet.getCell(windingTitleRow, 1).font = { bold: true, size: 10 }
 
   // —— Roller (dos bloques lado a lado) ——
-  row = turboT2Start + 4
+  row = windT2Start + 4
   const rollerTitleRow = row
   infoMergeWrite(sheet, row, 1, 5, "Roller 48 m", INFO_SHEET.ROLLER, { fontSize: 10 })
   infoMergeWrite(sheet, row, 6, LAST_COL, "Roller 36 m", INFO_SHEET.ROLLER, { fontSize: 10 })
@@ -1345,16 +1310,19 @@ function buildInformationSheet(
   infoMergeWrite(sheet, row, 6, LAST_COL, "Bending — Turno 2", INFO_SHEET.BENDING, { fontSize: 10 })
   row++
   const bendDataStart = row
+  const bendMonthly110T1 = meta110From100(b1.monthlyMeta100)
+  const bendMonthly110T2 = meta110From100(b2.monthlyMeta100)
   const bendRows = [
-    [`1.5 máquinas`, `${b1.oneHalfMachinesDailyBoxes} cajas/día`, `${b2.oneHalfMachinesDailyBoxes} cajas/día`],
-    [`2 máquinas`, `${b1.twoMachinesDailyBoxes} cajas/día`, `${b2.twoMachinesDailyBoxes} cajas/día`],
-    [`Por máquina`, `${b1.boxesPerMachine} cajas`, `${b2.boxesPerMachine} cajas`],
+    ["100%", b1.monthlyMeta100, b2.monthlyMeta100],
+    ["110%", bendMonthly110T1, bendMonthly110T2],
   ]
   for (const [label, t1Val, t2Val] of bendRows) {
     infoWriteCell(sheet, row, 1, label, { align: "left", bold: true })
-    infoMergeWrite(sheet, row, 2, 5, t1Val, INFO_SHEET.BENDING, { bold: false, fontSize: 9 })
+    infoWriteCell(sheet, row, 2, "Meta mensual", { align: "left" })
+    infoMergeWrite(sheet, row, 3, 5, t1Val, INFO_SHEET.BENDING, { bold: false, fontSize: 9, numFmt: "#,##0" })
     infoWriteCell(sheet, row, 6, label, { align: "left", bold: true })
-    infoMergeWrite(sheet, row, 7, LAST_COL, t2Val, INFO_SHEET.BENDING, { bold: false, fontSize: 9 })
+    infoWriteCell(sheet, row, 7, "Meta mensual", { align: "left" })
+    infoMergeWrite(sheet, row, 8, LAST_COL, t2Val, INFO_SHEET.BENDING, { bold: false, fontSize: 9, numFmt: "#,##0" })
     row++
   }
   infoPaintBlock(sheet, bendTitleRow, 1, row - 1, 5, INFO_SHEET.BENDING)

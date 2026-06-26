@@ -17,7 +17,12 @@ import {
   type ApiBonusProductionConfig,
 } from "@/lib/api"
 import {
+  BENDING_MONTHLY_META_PER_SHIFT,
   DEFAULT_BONUS_PRODUCTION_CONFIG,
+  meta110From100,
+  monthlyMeta100FromDaily,
+  monthlyMeta110FromDaily,
+  normalizeBonusProductionConfig,
   type BonusProductionConfigData,
 } from "@/lib/bonus-production-config"
 import {
@@ -32,11 +37,13 @@ function NumField({
   value,
   onChange,
   step = 1,
+  disabled = false,
 }: {
   label: string
   value: number
   onChange: (v: number) => void
   step?: number
+  disabled?: boolean
 }) {
   return (
     <div className="space-y-1">
@@ -44,6 +51,7 @@ function NumField({
       <Input
         type="number"
         step={step}
+        disabled={disabled}
         value={Number.isFinite(value) ? value : 0}
         onChange={(e) => onChange(Number(e.target.value) || 0)}
       />
@@ -51,12 +59,25 @@ function NumField({
   )
 }
 
-function ShiftPairSection({
-  title,
+function ReadOnlyField({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <Input
+        type="text"
+        readOnly
+        disabled
+        className="bg-muted/50"
+        value={value.toLocaleString("es-MX", { maximumFractionDigits: 0 })}
+      />
+    </div>
+  )
+}
+
+function WindingShiftSection({
   config,
   onChange,
 }: {
-  title: string
   config: BonusProductionConfigData
   onChange: (next: BonusProductionConfigData) => void
 }) {
@@ -64,40 +85,83 @@ function ShiftPairSection({
     <div className="grid gap-6 lg:grid-cols-2">
       {(["shift1", "shift2"] as const).map((sk, idx) => {
         const shiftLabel = idx === 0 ? "Turno 1" : "Turno 2"
-        const tail = config.tail[sk]
-        const turbo = config.turbo[sk]
-        const bending = config.bending[sk]
-        const meta = config.shiftReportMeta[sk]
+        const winding = config.winding[sk]
+        const daily110 = meta110From100(winding.dailyMeta100)
+        const monthly100 = monthlyMeta100FromDaily(
+          winding.dailyMeta100,
+          winding.workingDaysPerMonth,
+        )
+        const monthly110 = monthlyMeta110FromDaily(
+          winding.dailyMeta100,
+          winding.workingDaysPerMonth,
+        )
+
+        const updateWinding = (patch: Partial<typeof winding>) =>
+          onChange({
+            ...config,
+            winding: {
+              ...config.winding,
+              [sk]: { ...winding, ...patch },
+            },
+          })
+
         return (
           <div key={sk} className="rounded-lg border border-border p-4 space-y-4">
-            <h3 className="font-semibold text-foreground">
-              {title} — {shiftLabel}
-            </h3>
+            <h3 className="font-semibold text-foreground">Winding — {shiftLabel}</h3>
             <div className="grid grid-cols-2 gap-3">
-              <NumField label="Tail máq. 100%" value={tail.machine100} onChange={(v) => onChange({ ...config, tail: { ...config.tail, [sk]: { ...tail, machine100: v } } })} />
-              <NumField label="Tail máq. 110%" value={tail.machine110} onChange={(v) => onChange({ ...config, tail: { ...config.tail, [sk]: { ...tail, machine110: v } } })} />
-              <NumField label="Mult. empaque" value={tail.packMultiplier} onChange={(v) => onChange({ ...config, tail: { ...config.tail, [sk]: { ...tail, packMultiplier: v } } })} />
-              <NumField label="Mult. tail 100%" value={tail.tailMultiplier100} onChange={(v) => onChange({ ...config, tail: { ...config.tail, [sk]: { ...tail, tailMultiplier100: v } } })} />
-              <NumField label="Turbo diario 100%" value={tail.turboDaily100} onChange={(v) => onChange({ ...config, tail: { ...config.tail, [sk]: { ...tail, turboDaily100: v } } })} />
-              <NumField label="Meta turbo (AC)" value={meta.turboDailyMeta} onChange={(v) => onChange({ ...config, shiftReportMeta: { ...config.shiftReportMeta, [sk]: { ...meta, turboDailyMeta: v } } })} />
-              <NumField label="Meta tail (AE)" value={meta.tailDailyMeta} onChange={(v) => onChange({ ...config, shiftReportMeta: { ...config.shiftReportMeta, [sk]: { ...meta, tailDailyMeta: v } } })} />
+              <NumField
+                label="Meta diaria 100% (piezas)"
+                value={winding.dailyMeta100}
+                onChange={(v) => updateWinding({ dailyMeta100: v })}
+              />
+              <ReadOnlyField label="Meta diaria 110% (auto)" value={daily110} />
+              <NumField
+                label="Días laborables / mes"
+                value={winding.workingDaysPerMonth}
+                onChange={(v) => updateWinding({ workingDaysPerMonth: v })}
+              />
+              <ReadOnlyField label="Meta mensual 100% (auto)" value={monthly100} />
+              <ReadOnlyField label="Meta mensual 110% (auto)" value={monthly110} />
             </div>
-            <p className="text-xs font-medium text-muted-foreground pt-2">Turbo</p>
+            <p className="text-xs text-muted-foreground">
+              Meta mensual = diaria × días laborables (p. ej. 3,650 × 20 = 73,000 piezas).
+            </p>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function BendingShiftSection({ config }: { config: BonusProductionConfigData }) {
+  const workingDays = config.winding.shift1.workingDaysPerMonth || 20
+
+  return (
+    <div className="grid gap-6 lg:grid-cols-2 max-w-4xl">
+      {(["shift1", "shift2"] as const).map((sk, idx) => {
+        const shiftLabel = idx === 0 ? "Turno 1" : "Turno 2"
+        const bending = config.bending[sk]
+        const monthly110 = meta110From100(bending.monthlyMeta100)
+        const daily100 = Math.round(bending.monthlyMeta100 / workingDays)
+
+        return (
+          <div key={sk} className="rounded-lg border border-border p-4 space-y-4">
+            <h3 className="font-semibold text-foreground">Bending — {shiftLabel}</h3>
             <div className="grid grid-cols-2 gap-3">
-              <NumField label="Máq. 100% / día" value={turbo.machine100Daily} onChange={(v) => onChange({ ...config, turbo: { ...config.turbo, [sk]: { ...turbo, machine100Daily: v } } })} />
-              <NumField label="Máq. 110% / día" value={turbo.machine110Daily} onChange={(v) => onChange({ ...config, turbo: { ...config.turbo, [sk]: { ...turbo, machine110Daily: v } } })} />
-              <NumField label="Días / semana" value={turbo.daysPerWeek} onChange={(v) => onChange({ ...config, turbo: { ...config.turbo, [sk]: { ...turbo, daysPerWeek: v } } })} />
-              <NumField label="Semanas / mes" value={turbo.weeksPerMonth} onChange={(v) => onChange({ ...config, turbo: { ...config.turbo, [sk]: { ...turbo, weeksPerMonth: v } } })} />
-            </div>
-            <p className="text-xs font-medium text-muted-foreground pt-2">Bending</p>
-            <div className="grid grid-cols-2 gap-3">
-              <NumField label="Cajas/día (1.5 máq.)" value={bending.oneHalfMachinesDailyBoxes} onChange={(v) => onChange({ ...config, bending: { ...config.bending, [sk]: { ...bending, oneHalfMachinesDailyBoxes: v } } })} />
-              <NumField label="Cajas/día (2 máq.)" value={bending.twoMachinesDailyBoxes} onChange={(v) => onChange({ ...config, bending: { ...config.bending, [sk]: { ...bending, twoMachinesDailyBoxes: v } } })} />
-              <NumField label="Cajas por máquina" value={bending.boxesPerMachine} step={0.1} onChange={(v) => onChange({ ...config, bending: { ...config.bending, [sk]: { ...bending, boxesPerMachine: v } } })} />
+              <ReadOnlyField label="Meta mensual 100% (fija)" value={bending.monthlyMeta100} />
+              <ReadOnlyField label="Meta mensual 110% (auto)" value={monthly110} />
+              <ReadOnlyField
+                label={`Meta diaria derivada (${workingDays} días)`}
+                value={daily100}
+              />
             </div>
           </div>
         )
       })}
+      <p className="col-span-full text-sm text-muted-foreground">
+        La meta de Bending es fija: {BENDING_MONTHLY_META_PER_SHIFT.toLocaleString("es-MX")} piezas
+        por turno al mes. El 110% se calcula automáticamente.
+      </p>
     </div>
   )
 }
@@ -178,7 +242,7 @@ export function BonusConfigPanel({ onSaved }: BonusConfigPanelProps) {
   useEffect(() => {
     const match = versions.find((r) => r.effectiveMonth === effectiveMonth)
     if (match) {
-      setConfig(match.config)
+      setConfig(normalizeBonusProductionConfig(match.config))
       setConfigName(match.name)
     } else {
       setConfig(structuredClone(DEFAULT_BONUS_PRODUCTION_CONFIG))
@@ -193,12 +257,13 @@ export function BonusConfigPanel({ onSaved }: BonusConfigPanelProps) {
     try {
       const token = await getAccessToken()
       if (!token) return
+      const normalized = normalizeBonusProductionConfig(config)
       const saved = await upsertBonusProductionConfig(token, {
         name: configName.trim() || `Configuración ${effectiveMonth}`,
         effectiveMonth,
-        config,
+        config: normalized,
       })
-      const synced = await syncGoalsFromBonusConfig(token, config, effectiveMonth)
+      const synced = await syncGoalsFromBonusConfig(token, normalized, effectiveMonth)
       setVersions((prev) => {
         const rest = prev.filter((v) => v.effectiveMonth !== saved.effectiveMonth)
         return [saved, ...rest].sort((a, b) => b.effectiveMonth.localeCompare(a.effectiveMonth))
@@ -220,15 +285,42 @@ export function BonusConfigPanel({ onSaved }: BonusConfigPanelProps) {
       <div className="rounded-lg border border-border p-4 space-y-4">
         <h3 className="font-semibold">{label}</h3>
         <div className="grid grid-cols-2 gap-3 max-w-md">
-          <NumField label="Días laborables" value={r.workingDays} onChange={(v) => setConfig({ ...config, [key]: { ...r, workingDays: v } })} />
-          <NumField label="Bono base ($)" value={r.baseBonus} onChange={(v) => setConfig({ ...config, [key]: { ...r, baseBonus: v } })} />
+          <NumField
+            label="Días laborables"
+            value={r.workingDays}
+            onChange={(v) => setConfig({ ...config, [key]: { ...r, workingDays: v } })}
+          />
+          <NumField
+            label="Bono base ($)"
+            value={r.baseBonus}
+            onChange={(v) => setConfig({ ...config, [key]: { ...r, baseBonus: v } })}
+          />
         </div>
         {(["shift1", "shift2"] as const).map((sk, i) => (
           <div key={sk} className="grid grid-cols-3 gap-3">
             <p className="col-span-3 text-sm font-medium text-muted-foreground">Turno {i + 1}</p>
-            <NumField label="Meta diaria (cajas)" value={r[sk].dailyBoxes} onChange={(v) => setConfig({ ...config, [key]: { ...r, [sk]: { ...r[sk], dailyBoxes: v } } })} />
-            <NumField label="Meta mensual (cajas)" value={r[sk].monthlyBoxes} onChange={(v) => setConfig({ ...config, [key]: { ...r, [sk]: { ...r[sk], monthlyBoxes: v } } })} />
-            <NumField label="$/caja >100%" value={r[sk].over100PerBox} step={0.01} onChange={(v) => setConfig({ ...config, [key]: { ...r, [sk]: { ...r[sk], over100PerBox: v } } })} />
+            <NumField
+              label="Meta diaria (cajas)"
+              value={r[sk].dailyBoxes}
+              onChange={(v) =>
+                setConfig({ ...config, [key]: { ...r, [sk]: { ...r[sk], dailyBoxes: v } } })
+              }
+            />
+            <NumField
+              label="Meta mensual (cajas)"
+              value={r[sk].monthlyBoxes}
+              onChange={(v) =>
+                setConfig({ ...config, [key]: { ...r, [sk]: { ...r[sk], monthlyBoxes: v } } })
+              }
+            />
+            <NumField
+              label="$/caja >100%"
+              value={r[sk].over100PerBox}
+              step={0.01}
+              onChange={(v) =>
+                setConfig({ ...config, [key]: { ...r, [sk]: { ...r[sk], over100PerBox: v } } })
+              }
+            />
           </div>
         ))}
       </div>
@@ -239,8 +331,8 @@ export function BonusConfigPanel({ onSaved }: BonusConfigPanelProps) {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground max-w-2xl">
-          Fuente única de metas Tail, Turbo, Roller, Bending y reglas de bono. Al guardar, se
-          sincronizan automáticamente las metas en Metas y los reportes Excel.
+          Metas por área: Winding, Bending (fija) y Roller, más reglas de pago. Al guardar se
+          sincronizan las metas en Metas y los reportes Excel.
         </p>
         <Button onClick={handleSave} disabled={saving} className="gap-2 shrink-0">
           <Save className="h-4 w-4" />
@@ -272,7 +364,7 @@ export function BonusConfigPanel({ onSaved }: BonusConfigPanelProps) {
           }}
         >
           <Plus className="h-4 w-4" />
-          Restaurar valores ago-2024
+          Restaurar valores por defecto
         </Button>
       </div>
 
@@ -294,15 +386,20 @@ export function BonusConfigPanel({ onSaved }: BonusConfigPanelProps) {
         </div>
       )}
 
-      <Tabs defaultValue="production" className="space-y-4">
+      <Tabs defaultValue="winding" className="space-y-4">
         <TabsList>
-          <TabsTrigger value="production">Tail / Turbo / Bending</TabsTrigger>
+          <TabsTrigger value="winding">Winding</TabsTrigger>
+          <TabsTrigger value="bending">Bending</TabsTrigger>
           <TabsTrigger value="roller">Roller</TabsTrigger>
           <TabsTrigger value="rules">Reglas de bono</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="production">
-          <ShiftPairSection title="Producción" config={config} onChange={setConfig} />
+        <TabsContent value="winding">
+          <WindingShiftSection config={config} onChange={setConfig} />
+        </TabsContent>
+
+        <TabsContent value="bending">
+          <BendingShiftSection config={config} />
         </TabsContent>
 
         <TabsContent value="roller" className="grid gap-6 lg:grid-cols-2">
@@ -312,11 +409,51 @@ export function BonusConfigPanel({ onSaved }: BonusConfigPanelProps) {
 
         <TabsContent value="rules">
           <div className="rounded-lg border border-border p-4 grid grid-cols-2 md:grid-cols-3 gap-4 max-w-3xl">
-            <NumField label="Bono 100% ($)" value={config.bonusRules.baseBonus100} onChange={(v) => setConfig({ ...config, bonusRules: { ...config.bonusRules, baseBonus100: v } })} />
-            <NumField label="Máq. >100% ($/pieza)" value={config.bonusRules.machineOver100Rate} step={0.01} onChange={(v) => setConfig({ ...config, bonusRules: { ...config.bonusRules, machineOver100Rate: v } })} />
-            <NumField label="Máq. >110% ($/pieza)" value={config.bonusRules.machineOver110Rate} step={0.01} onChange={(v) => setConfig({ ...config, bonusRules: { ...config.bonusRules, machineOver110Rate: v } })} />
-            <NumField label="Empaque >100% ($/pieza)" value={config.bonusRules.packOver100Rate} step={0.01} onChange={(v) => setConfig({ ...config, bonusRules: { ...config.bonusRules, packOver100Rate: v } })} />
-            <NumField label="Empaque >110% ($/pieza)" value={config.bonusRules.packOver110Rate} step={0.01} onChange={(v) => setConfig({ ...config, bonusRules: { ...config.bonusRules, packOver110Rate: v } })} />
+            <NumField
+              label="Bono 100% ($)"
+              value={config.bonusRules.baseBonus100}
+              onChange={(v) =>
+                setConfig({ ...config, bonusRules: { ...config.bonusRules, baseBonus100: v } })
+              }
+            />
+            <NumField
+              label="Máq. >100% ($/pieza)"
+              value={config.bonusRules.machineOver100Rate}
+              step={0.01}
+              onChange={(v) =>
+                setConfig({
+                  ...config,
+                  bonusRules: { ...config.bonusRules, machineOver100Rate: v },
+                })
+              }
+            />
+            <NumField
+              label="Máq. >110% ($/pieza)"
+              value={config.bonusRules.machineOver110Rate}
+              step={0.01}
+              onChange={(v) =>
+                setConfig({
+                  ...config,
+                  bonusRules: { ...config.bonusRules, machineOver110Rate: v },
+                })
+              }
+            />
+            <NumField
+              label="Empaque >100% ($/pieza)"
+              value={config.bonusRules.packOver100Rate}
+              step={0.01}
+              onChange={(v) =>
+                setConfig({ ...config, bonusRules: { ...config.bonusRules, packOver100Rate: v } })
+              }
+            />
+            <NumField
+              label="Empaque >110% ($/pieza)"
+              value={config.bonusRules.packOver110Rate}
+              step={0.01}
+              onChange={(v) =>
+                setConfig({ ...config, bonusRules: { ...config.bonusRules, packOver110Rate: v } })
+              }
+            />
           </div>
         </TabsContent>
       </Tabs>

@@ -24,6 +24,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { Textarea } from "@/components/ui/textarea"
+import {
   Users,
   Plus,
   Trash2,
@@ -31,12 +39,15 @@ import {
   Briefcase,
   Pencil,
   Search,
-  Mail,
-  Phone,
   Hash,
   Palmtree,
   Scale,
   AlertTriangle,
+  Timer,
+  ChevronDown,
+  Gift,
+  IdCard,
+  Bus,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
@@ -75,6 +86,29 @@ import {
   LFT_VACATION_TABLE_ROWS,
   type EmployeeVacationBalance,
 } from "@/lib/mexico-vacation-law"
+import {
+  buildAllEmployeeDespensaBenefits,
+  DESPENSA_POLICY_SUMMARY,
+  DESPENSA_VOUCHER_TABLE_ROWS,
+  formatDespensaMxn,
+} from "@/lib/mexico-despensa-vouchers"
+import { localTodayYmdMexico } from "@/lib/employee-role-day"
+import { EmployeeDowntimeTab } from "./employee-downtime-tab"
+import { EmployeeTransportTab } from "./employee-transport-tab"
+import {
+  earliestAllowedVacationDate,
+  VACATION_MIN_ADVANCE_DAYS,
+  VACATION_RETROACTIVE_BLOCK_DAYS,
+  validateVacationRecordDate,
+  vacationDateBlockedMessage,
+  expandInclusiveDateRange,
+} from "@/lib/vacation-policy"
+import {
+  INCAPACITY_REGISTRATION_WINDOW_HOURS,
+  incapacityDateBounds,
+  validateIncapacityRecordDate,
+  incapacityDateBlockedMessage,
+} from "@/lib/incapacity-policy"
 
 const RECORD_TYPE_LABELS: Record<ApiEmployeeDayRecordType, string> = {
   vacation: "Vacaciones (V)",
@@ -82,6 +116,10 @@ const RECORD_TYPE_LABELS: Record<ApiEmployeeDayRecordType, string> = {
   incident: "Incidencia (INC)",
   excused_unpaid: "Permiso sin goce (PSG)",
   time_exchange: "Tiempo por tiempo (TXT)",
+}
+
+function usesDayRecordDateRange(recordType: ApiEmployeeDayRecordType): boolean {
+  return recordType === "vacation" || recordType === "incapacity"
 }
 
 const STATUS_LABELS: Record<ApiEmployeeStatus, string> = {
@@ -114,8 +152,8 @@ function vacationRecordsFetchFrom(employees: ApiEmployee[]): string {
 type EmployeeFormState = {
   fullName: string
   nfcCardUid: string
-  email: string
-  phone: string
+  rfc: string
+  imss: string
   position: string
   primaryRole: EmployeeProductionRole
   secondaryRole: EmployeeSecondaryRole | ""
@@ -126,8 +164,8 @@ type EmployeeFormState = {
 const EMPTY_EMPLOYEE_FORM: EmployeeFormState = {
   fullName: "",
   nfcCardUid: "",
-  email: "",
-  phone: "",
+  rfc: "",
+  imss: "",
   position: "",
   primaryRole: "operator",
   secondaryRole: "",
@@ -163,8 +201,8 @@ function employeeToForm(employee: ApiEmployee): EmployeeFormState {
   return {
     fullName: employee.fullName,
     nfcCardUid: employee.nfcCardUid ?? "",
-    email: employee.email ?? "",
-    phone: employee.phone ?? "",
+    rfc: employee.rfc ?? "",
+    imss: employee.imss ?? "",
     position: employee.position ?? "",
     primaryRole,
     secondaryRole: employee.secondaryRole ?? "",
@@ -237,8 +275,7 @@ function EmployeeFormFields({
           onChange={(e) => onChange({ ...form, hiredAt: e.target.value })}
         />
         <p className="text-xs text-muted-foreground">
-          Necesaria para calcular vacaciones LFT (12 días al primer año y periodo de 12 meses para
-          tomarlas).
+          Necesaria para calcular vacaciones LFT y vales de despensa según antigüedad.
         </p>
       </div>
       <div className="space-y-2">
@@ -315,22 +352,24 @@ function EmployeeFormFields({
         </Select>
       </div>
       <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-email`}>Email</Label>
+        <Label htmlFor={`${idPrefix}-rfc`}>RFC</Label>
         <Input
-          id={`${idPrefix}-email`}
-          type="email"
-          value={form.email}
-          onChange={(e) => onChange({ ...form, email: e.target.value })}
-          placeholder="correo@empresa.com"
+          id={`${idPrefix}-rfc`}
+          value={form.rfc}
+          onChange={(e) => onChange({ ...form, rfc: e.target.value.toUpperCase() })}
+          placeholder="Ej: PERJ800101ABC"
+          maxLength={13}
         />
       </div>
       <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-phone`}>Teléfono</Label>
+        <Label htmlFor={`${idPrefix}-imss`}>IMSS (NSS)</Label>
         <Input
-          id={`${idPrefix}-phone`}
-          value={form.phone}
-          onChange={(e) => onChange({ ...form, phone: e.target.value })}
-          placeholder="+52 …"
+          id={`${idPrefix}-imss`}
+          value={form.imss}
+          onChange={(e) => onChange({ ...form, imss: e.target.value.replace(/\D/g, "").slice(0, 11) })}
+          placeholder="11 dígitos"
+          inputMode="numeric"
+          maxLength={11}
         />
       </div>
     </div>
@@ -359,9 +398,12 @@ export default function EmployeesPage() {
   const [dayRecordsLoading, setDayRecordsLoading] = useState(false)
   const [dayRecordsError, setDayRecordsError] = useState<string | null>(null)
   const [isAttendanceDialogOpen, setIsAttendanceDialogOpen] = useState(false)
+  const [dayRecordSaveError, setDayRecordSaveError] = useState<string | null>(null)
+  const [savingDayRecords, setSavingDayRecords] = useState(false)
   const [newDayRecord, setNewDayRecord] = useState({
     employeeId: "",
     recordDate: "",
+    recordDateEnd: "",
     shift: "" as "" | "matutino" | "vespertino",
     recordType: "vacation" as ApiEmployeeDayRecordType,
     notes: "",
@@ -472,12 +514,24 @@ export default function EmployeesPage() {
     [employees, vacationBalanceRecords],
   )
 
+  const despensaBenefits = useMemo(
+    () => buildAllEmployeeDespensaBenefits(employees),
+    [employees],
+  )
+
   const selectedVacationBalance = useMemo(() => {
     if (!newDayRecord.employeeId || newDayRecord.recordType !== "vacation") return null
     const emp = employees.find((e) => e.id === newDayRecord.employeeId)
     if (!emp) return null
     return buildEmployeeVacationBalance(emp, vacationBalanceRecords)
   }, [newDayRecord.employeeId, newDayRecord.recordType, employees, vacationBalanceRecords])
+
+  const pendingDayRecordDates = useMemo(() => {
+    if (!usesDayRecordDateRange(newDayRecord.recordType)) {
+      return newDayRecord.recordDate ? [newDayRecord.recordDate] : []
+    }
+    return expandInclusiveDateRange(newDayRecord.recordDate, newDayRecord.recordDateEnd)
+  }, [newDayRecord.recordDate, newDayRecord.recordDateEnd, newDayRecord.recordType])
 
   useEffect(() => {
     let cancelled = false
@@ -539,8 +593,8 @@ export default function EmployeesPage() {
         e.fullName,
         e.employeeCode,
         e.position,
-        e.email,
-        e.phone,
+        e.rfc,
+        e.imss,
         e.primaryRole ? EMPLOYEE_PRODUCTION_ROLE_LABELS[e.primaryRole] : "",
       ]
         .filter(Boolean)
@@ -574,8 +628,8 @@ export default function EmployeesPage() {
       const payload = {
         fullName,
         nfcCardUid: employeeForm.nfcCardUid.trim() || null,
-        email: employeeForm.email.trim() || null,
-        phone: employeeForm.phone.trim() || null,
+        rfc: employeeForm.rfc.trim() || null,
+        imss: employeeForm.imss.trim() || null,
         position: employeeForm.position.trim() || null,
         primaryRole: employeeForm.primaryRole,
         secondaryRole:
@@ -611,49 +665,148 @@ export default function EmployeesPage() {
     setEmployees((prev) => prev.filter((e) => e.id !== employee.id))
   }
 
+  const openDayRecordDialog = (recordType: ApiEmployeeDayRecordType) => {
+    setDayRecordSaveError(null)
+    const incapBounds = incapacityDateBounds()
+    setNewDayRecord({
+      employeeId: "",
+      recordDate:
+        recordType === "incapacity"
+          ? incapBounds.min
+          : recordType === "vacation"
+            ? earliestAllowedVacationDate()
+            : "",
+      recordDateEnd:
+        recordType === "incapacity"
+          ? incapBounds.max
+          : recordType === "vacation"
+            ? earliestAllowedVacationDate()
+            : "",
+      shift: "",
+      recordType,
+      notes: "",
+    })
+    setIsAttendanceDialogOpen(true)
+  }
+
+  const mergeCreatedDayRecord = (created: ApiEmployeeDayRecord) => {
+    const merge = (prev: ApiEmployeeDayRecord[]) => {
+      const filtered = prev.filter(
+        (r) =>
+          !(
+            r.employeeId === created.employeeId &&
+            r.recordDate === created.recordDate &&
+            (r.shift ?? null) === (created.shift ?? null)
+          ),
+      )
+      return [created, ...filtered]
+    }
+    setDayRecords(merge)
+    setVacationBalanceRecords(merge)
+  }
+
   const handleAddDayRecord = async () => {
-    if (!newDayRecord.employeeId || !newDayRecord.recordDate) return
+    if (!newDayRecord.employeeId) return
+
+    const dates = usesDayRecordDateRange(newDayRecord.recordType)
+      ? expandInclusiveDateRange(newDayRecord.recordDate, newDayRecord.recordDateEnd)
+      : newDayRecord.recordDate
+        ? [newDayRecord.recordDate]
+        : []
+
+    if (dates.length === 0) {
+      setDayRecordSaveError("Indica al menos una fecha válida.")
+      return
+    }
+
+    if (newDayRecord.recordType === "incident" && !newDayRecord.notes.trim()) {
+      setDayRecordSaveError("La justificación de falta requiere una nota con el motivo.")
+      return
+    }
+
+    if (newDayRecord.recordType === "vacation") {
+      const invalid = dates.filter((d) => {
+        try {
+          validateVacationRecordDate(d)
+          return false
+        } catch {
+          return true
+        }
+      })
+      if (invalid.length > 0) {
+        setDayRecordSaveError(
+          invalid.length === 1
+            ? vacationDateBlockedMessage(invalid[0])
+            : `${invalid.length} fechas no cumplen la política de vacaciones (mín. ${VACATION_MIN_ADVANCE_DAYS} días de anticipación). Primera inválida: ${invalid[0]}.`,
+        )
+        return
+      }
+    }
+
+    if (newDayRecord.recordType === "incapacity") {
+      const invalid = dates.filter((d) => {
+        try {
+          validateIncapacityRecordDate(d)
+          return false
+        } catch {
+          return true
+        }
+      })
+      if (invalid.length > 0) {
+        setDayRecordSaveError(
+          invalid.length === 1
+            ? incapacityDateBlockedMessage(invalid[0])
+            : `${invalid.length} fechas ya no están en la ventana de ${INCAPACITY_REGISTRATION_WINDOW_HOURS} h. Primera inválida: ${invalid[0]}.`,
+        )
+        return
+      }
+    }
+
     const token = await getAccessToken()
     if (!token) return
 
-    const created = await createEmployeeDayRecord(token, {
-      employeeId: newDayRecord.employeeId,
-      recordDate: newDayRecord.recordDate,
-      shift: newDayRecord.shift || null,
-      recordType: newDayRecord.recordType,
-      notes: newDayRecord.notes.trim() || null,
-    })
+    setDayRecordSaveError(null)
+    setSavingDayRecords(true)
+    try {
+      const notes = newDayRecord.notes.trim() || null
+      const shift = newDayRecord.shift || null
+      let createdCount = 0
 
-    setDayRecords((prev) => {
-      const filtered = prev.filter(
-        (r) =>
-          !(
-            r.employeeId === created.employeeId &&
-            r.recordDate === created.recordDate &&
-            (r.shift ?? null) === (created.shift ?? null)
-          ),
-      )
-      return [created, ...filtered]
-    })
-    setVacationBalanceRecords((prev) => {
-      const filtered = prev.filter(
-        (r) =>
-          !(
-            r.employeeId === created.employeeId &&
-            r.recordDate === created.recordDate &&
-            (r.shift ?? null) === (created.shift ?? null)
-          ),
-      )
-      return [created, ...filtered]
-    })
-    setNewDayRecord({
-      employeeId: "",
-      recordDate: "",
-      shift: "",
-      recordType: "vacation",
-      notes: "",
-    })
-    setIsAttendanceDialogOpen(false)
+      for (const recordDate of dates) {
+        const created = await createEmployeeDayRecord(token, {
+          employeeId: newDayRecord.employeeId,
+          recordDate,
+          shift,
+          recordType: newDayRecord.recordType,
+          notes,
+        })
+        mergeCreatedDayRecord(created)
+        createdCount += 1
+      }
+
+      setNewDayRecord({
+        employeeId: "",
+        recordDate: "",
+        recordDateEnd: "",
+        shift: "",
+        recordType: "vacation",
+        notes: "",
+      })
+      setIsAttendanceDialogOpen(false)
+      if (createdCount > 1) {
+        setDayRecordSaveError(null)
+      }
+    } catch (e) {
+      const msg =
+        e && typeof e === "object" && "message" in e
+          ? String((e as { message: string }).message)
+          : e instanceof Error
+            ? e.message
+            : "No se pudo guardar el registro"
+      setDayRecordSaveError(msg)
+    } finally {
+      setSavingDayRecords(false)
+    }
   }
 
   const handleDeleteDayRecord = async (id: string) => {
@@ -688,6 +841,14 @@ export default function EmployeesPage() {
       )
       return [created, ...filtered]
     })
+    const todayMx = localTodayYmdMexico()
+    if (created.recordDate === todayMx) {
+      setEmployees((prev) =>
+        prev.map((e) =>
+          e.id === created.employeeId ? { ...e, secondaryRole: created.secondaryRole } : e,
+        ),
+      )
+    }
     setNewRoleEvent({
       employeeId: "",
       recordDate: "",
@@ -701,8 +862,13 @@ export default function EmployeesPage() {
   const handleDeleteRoleEvent = async (id: string) => {
     const token = await getAccessToken()
     if (!token) return
+    const removed = roleEvents.find((r) => r.id === id)
     await deleteEmployeeRoleEvent(token, id)
     setRoleEvents((prev) => prev.filter((r) => r.id !== id))
+    if (removed?.recordDate === localTodayYmdMexico()) {
+      const rows = await getEmployees(token)
+      setEmployees(rows)
+    }
   }
 
   return (
@@ -765,14 +931,22 @@ export default function EmployeesPage() {
         )}
 
         <Tabs defaultValue="employees" className="space-y-4">
-          <TabsList className="grid w-full max-w-2xl grid-cols-3">
+          <TabsList className="grid w-full max-w-4xl grid-cols-2 sm:grid-cols-5">
             <TabsTrigger value="employees" className="gap-1.5">
               <Users className="h-4 w-4" />
               Empleados
             </TabsTrigger>
+            <TabsTrigger value="transport" className="gap-1.5">
+              <Bus className="h-4 w-4" />
+              Transporte
+            </TabsTrigger>
+            <TabsTrigger value="downtime" className="gap-1.5">
+              <Timer className="h-4 w-4" />
+              Paros
+            </TabsTrigger>
             <TabsTrigger value="attendance" className="gap-1.5">
               <CalendarDays className="h-4 w-4" />
-              Vacaciones e incapacidad
+              Vacaciones y asistencia
             </TabsTrigger>
             <TabsTrigger value="roles" className="gap-1.5">
               <Briefcase className="h-4 w-4" />
@@ -869,17 +1043,23 @@ export default function EmployeesPage() {
                               Ingreso: {employee.hiredAt}
                             </p>
                           ) : null}
-                          {employee.email ? (
+                          {employee.rfc ? (
                             <div className="flex items-center gap-2 text-muted-foreground truncate">
-                              <Mail className="h-3.5 w-3.5 shrink-0" />
-                              <span className="truncate">{employee.email}</span>
+                              <IdCard className="h-3.5 w-3.5 shrink-0" />
+                              <span className="font-mono truncate">RFC: {employee.rfc}</span>
                             </div>
                           ) : null}
-                          {employee.phone ? (
+                          {employee.imss ? (
                             <div className="flex items-center gap-2 text-muted-foreground">
-                              <Phone className="h-3.5 w-3.5 shrink-0" />
-                              <span>{employee.phone}</span>
+                              <Hash className="h-3.5 w-3.5 shrink-0" />
+                              <span className="font-mono">IMSS: {employee.imss}</span>
                             </div>
+                          ) : null}
+                          {employee.localTransportSupport ? (
+                            <Badge variant="outline" className="border-sky-200 text-sky-800 font-normal">
+                              <Bus className="mr-1 h-3 w-3" />
+                              Apoyo transporte (local)
+                            </Badge>
                           ) : null}
                         </div>
                         <div className="flex border-t border-border">
@@ -906,6 +1086,17 @@ export default function EmployeesPage() {
                 })}
               </div>
             )}
+          </TabsContent>
+
+          <TabsContent value="transport">
+            <EmployeeTransportTab
+              employees={employees}
+              onEmployeesChange={setEmployees}
+            />
+          </TabsContent>
+
+          <TabsContent value="downtime">
+            <EmployeeDowntimeTab employees={employees} />
           </TabsContent>
 
           <TabsContent value="attendance" className="space-y-4">
@@ -1051,15 +1242,93 @@ export default function EmployeesPage() {
               </CardContent>
             </Card>
 
+            <Card className="border-emerald-200/60 bg-emerald-50/40">
+              <CardContent className="pt-6 space-y-4">
+                <div className="flex items-start gap-3">
+                  <Gift className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700" />
+                  <div className="space-y-2">
+                    <h2 className="text-lg font-semibold text-foreground">Vales de despensa</h2>
+                    <ul className="list-disc space-y-1.5 pl-5 text-sm text-muted-foreground">
+                      {DESPENSA_POLICY_SUMMARY.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-border bg-background">
+                  <table className="w-full min-w-[320px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+                        <th className="px-3 py-2 font-medium">Antigüedad</th>
+                        <th className="px-3 py-2 font-medium text-right">Vale mensual</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {DESPENSA_VOUCHER_TABLE_ROWS.map((row) => (
+                        <tr key={row.yearsLabel} className="border-b border-border last:border-0">
+                          <td className="px-3 py-2">{row.yearsLabel}</td>
+                          <td className="px-3 py-2 text-right font-medium tabular-nums">
+                            {row.monthlyAmountMxn > 0
+                              ? formatDespensaMxn(row.monthlyAmountMxn)
+                              : "No aplica"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-border bg-background">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+                        <th className="px-3 py-2.5 font-medium">Empleado</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Antigüedad</th>
+                        <th className="px-3 py-2.5 font-medium">Rango</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Vale mensual</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {despensaBenefits.map((row) => (
+                        <tr key={row.employeeId} className="border-b border-border last:border-0">
+                          <td className="px-3 py-2.5 font-medium">
+                            {row.employeeName}
+                            {row.employeeCode ? (
+                              <span className="ml-1 text-xs text-muted-foreground">
+                                ({row.employeeCode})
+                              </span>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
+                            {row.status === "not_yet_vested"
+                              ? "Menos de 1 año"
+                              : row.status === "no_hire_date"
+                                ? "—"
+                                : `${row.completedYears} año${row.completedYears === 1 ? "" : "s"}`}
+                          </td>
+                          <td className="px-3 py-2.5 text-muted-foreground">{row.tierLabel}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-emerald-800">
+                            {row.monthlyAmountMxn > 0
+                              ? formatDespensaMxn(row.monthlyAmountMxn)
+                              : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+
             <Card>
               <CardContent className="pt-6 space-y-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <h2 className="text-lg font-semibold">Vacaciones e incapacidad</h2>
+                    <h2 className="text-lg font-semibold">Vacaciones, incapacidad y asistencia</h2>
                     <p className="text-sm text-muted-foreground mt-1">
-                      Registra vacaciones (V) e incapacidad (INCAP) por empleado y día. También puedes
-                      registrar incidencias (INC), permisos sin goce (PSG) y tiempo por tiempo (TXT).
-                      La falta (F) se calcula automáticamente en el reporte de bono.
+                      Registra vacaciones, incapacidad, faltas justificadas y otros permisos. Los
+                      registros se reflejan en la pestaña Asistencia de Métricas. Vacaciones: mínimo{" "}
+                      {VACATION_MIN_ADVANCE_DAYS} días de anticipación. Incapacidad: solo dentro de{" "}
+                      {INCAPACITY_REGISTRATION_WINDOW_HOURS} horas del día de la falta.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1069,40 +1338,52 @@ export default function EmployeesPage() {
                       onChange={(e) => setAttendanceMonth(e.target.value)}
                       className="w-[180px]"
                     />
-                    <Button
-                      variant="outline"
-                      className="gap-2"
-                      onClick={() => {
-                        setNewDayRecord({
-                          employeeId: "",
-                          recordDate: "",
-                          shift: "",
-                          recordType: "vacation",
-                          notes: "",
-                        })
-                        setIsAttendanceDialogOpen(true)
-                      }}
-                    >
-                      <Plus className="h-4 w-4" />
-                      Registrar vacación
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="gap-2"
-                      onClick={() => {
-                        setNewDayRecord({
-                          employeeId: "",
-                          recordDate: "",
-                          shift: "",
-                          recordType: "incapacity",
-                          notes: "",
-                        })
-                        setIsAttendanceDialogOpen(true)
-                      }}
-                    >
-                      <Plus className="h-4 w-4" />
-                      Registrar incapacidad
-                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button className="gap-2">
+                          <Plus className="h-4 w-4" />
+                          Registrar eventualidad
+                          <ChevronDown className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-80">
+                        <DropdownMenuItem onClick={() => openDayRecordDialog("vacation")}>
+                          <div className="flex flex-col gap-0.5 py-0.5">
+                            <span className="font-medium">Vacaciones (V)</span>
+                            <span className="text-xs text-muted-foreground">
+                              Mínimo {VACATION_MIN_ADVANCE_DAYS} días de anticipación
+                            </span>
+                          </div>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => openDayRecordDialog("incapacity")}>
+                          <div className="flex flex-col gap-0.5 py-0.5">
+                            <span className="font-medium">Incapacidad (INCAP)</span>
+                            <span className="text-xs text-muted-foreground">
+                              Solo dentro de {INCAPACITY_REGISTRATION_WINDOW_HOURS} h del día de la falta
+                            </span>
+                          </div>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => openDayRecordDialog("incident")}>
+                          <div className="flex flex-col gap-0.5 py-0.5">
+                            <span className="font-medium">Justificar falta (INC)</span>
+                            <span className="text-xs text-muted-foreground">
+                              Nota obligatoria con el motivo
+                            </span>
+                          </div>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => openDayRecordDialog("excused_unpaid")}>
+                          <div className="flex flex-col gap-0.5 py-0.5">
+                            <span className="font-medium">Permiso sin goce (PSG)</span>
+                          </div>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => openDayRecordDialog("time_exchange")}>
+                          <div className="flex flex-col gap-0.5 py-0.5">
+                            <span className="font-medium">Tiempo por tiempo (TXT)</span>
+                          </div>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
 
@@ -1188,8 +1469,9 @@ export default function EmployeesPage() {
                     <p className="text-sm text-muted-foreground mt-1">
                       Solo para operadores: registra cuando cubren empaque, roller, bending o auxiliar.
                       El rol primordial no cambia; los reportes de bono usan el rol secundario del día.
-                      En secciones que no correspondan aparece{" "}
-                      <span className="font-semibold text-red-600">n/a</span>.
+                      Al cierre del turno (23:35) el rol secundario se quita automáticamente; al día
+                      siguiente hay que registrar de nuevo si aplica. En secciones que no correspondan
+                      aparece <span className="font-semibold text-red-600">n/a</span>.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1323,18 +1605,54 @@ export default function EmployeesPage() {
       </Dialog>
 
       {/* Registrar ausencia */}
-      <Dialog open={isAttendanceDialogOpen} onOpenChange={setIsAttendanceDialogOpen}>
+      <Dialog
+        open={isAttendanceDialogOpen}
+        onOpenChange={(open) => {
+          setIsAttendanceDialogOpen(open)
+          if (!open) setDayRecordSaveError(null)
+        }}
+      >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>
-              {newDayRecord.recordType === "incapacity"
-                ? "Registrar incapacidad"
-                : newDayRecord.recordType === "vacation"
-                  ? "Registrar vacaciones"
-                  : "Registrar ausencia o permiso"}
-            </DialogTitle>
+            <div className="flex flex-wrap items-center gap-2">
+              <DialogTitle>
+                {newDayRecord.recordType === "incapacity"
+                  ? "Registrar incapacidad"
+                  : newDayRecord.recordType === "vacation"
+                    ? "Registrar vacaciones"
+                    : newDayRecord.recordType === "incident"
+                      ? "Justificar falta"
+                      : "Registrar eventualidad"}
+              </DialogTitle>
+              <Badge variant="outline" className="font-normal">
+                {RECORD_TYPE_LABELS[newDayRecord.recordType]}
+              </Badge>
+            </div>
+            {newDayRecord.recordType === "vacation" ? (
+              <DialogDescription>
+                Indica un rango de fechas (inicio y fin). Mínimo {VACATION_MIN_ADVANCE_DAYS} días de
+                anticipación en cada día del rango. La fecha más próxima permitida es{" "}
+                {earliestAllowedVacationDate()}.
+              </DialogDescription>
+            ) : newDayRecord.recordType === "incapacity" ? (
+              <DialogDescription>
+                Indica el rango de días de incapacidad. Cada día debe estar dentro de las{" "}
+                {INCAPACITY_REGISTRATION_WINDOW_HOURS} horas siguientes a esa fecha (hoy o ayer si
+                aplica).
+              </DialogDescription>
+            ) : newDayRecord.recordType === "incident" ? (
+              <DialogDescription>
+                Marca una falta como justificada. La nota es obligatoria y aparecerá en el reporte de
+                asistencia.
+              </DialogDescription>
+            ) : null}
           </DialogHeader>
           <div className="space-y-4 py-2">
+            {dayRecordSaveError ? (
+              <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+                {dayRecordSaveError}
+              </div>
+            ) : null}
             <div className="space-y-2">
               <Label>Empleado</Label>
               <Select
@@ -1393,73 +1711,153 @@ export default function EmployeesPage() {
               ) : null}
             </div>
             <div className="space-y-2">
-              <Label>Fecha</Label>
-              <Input
-                type="date"
-                value={newDayRecord.recordDate}
-                onChange={(e) =>
-                  setNewDayRecord({ ...newDayRecord, recordDate: e.target.value })
-                }
-              />
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Turno (opcional)</Label>
-                <Select
-                  value={newDayRecord.shift || "both"}
-                  onValueChange={(v) =>
-                    setNewDayRecord({
-                      ...newDayRecord,
-                      shift: v === "both" ? "" : (v as "matutino" | "vespertino"),
-                    })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="both">Ambos turnos</SelectItem>
-                    <SelectItem value="matutino">Matutino</SelectItem>
-                    <SelectItem value="vespertino">Vespertino</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Tipo</Label>
-                <Select
-                  value={newDayRecord.recordType}
-                  onValueChange={(v) =>
-                    setNewDayRecord({
-                      ...newDayRecord,
-                      recordType: v as ApiEmployeeDayRecordType,
-                    })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="vacation">Vacaciones (V)</SelectItem>
-                    <SelectItem value="incapacity">Incapacidad (INCAP)</SelectItem>
-                    <SelectItem value="incident">Incidencia (INC)</SelectItem>
-                    <SelectItem value="excused_unpaid">Permiso sin goce (PSG)</SelectItem>
-                    <SelectItem value="time_exchange">Tiempo por tiempo (TXT)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+              {usesDayRecordDateRange(newDayRecord.recordType) ? (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Fecha inicio</Label>
+                      <Input
+                        type="date"
+                        value={newDayRecord.recordDate}
+                        min={
+                          newDayRecord.recordType === "vacation"
+                            ? earliestAllowedVacationDate()
+                            : incapacityDateBounds().min
+                        }
+                        max={
+                          newDayRecord.recordType === "incapacity"
+                            ? incapacityDateBounds().max
+                            : undefined
+                        }
+                        onChange={(e) =>
+                          setNewDayRecord({
+                            ...newDayRecord,
+                            recordDate: e.target.value,
+                            recordDateEnd:
+                              !newDayRecord.recordDateEnd ||
+                              newDayRecord.recordDateEnd < e.target.value
+                                ? e.target.value
+                                : newDayRecord.recordDateEnd,
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Fecha fin</Label>
+                      <Input
+                        type="date"
+                        value={newDayRecord.recordDateEnd || newDayRecord.recordDate}
+                        min={
+                          newDayRecord.recordDate ||
+                          (newDayRecord.recordType === "vacation"
+                            ? earliestAllowedVacationDate()
+                            : incapacityDateBounds().min)
+                        }
+                        max={
+                          newDayRecord.recordType === "incapacity"
+                            ? incapacityDateBounds().max
+                            : undefined
+                        }
+                        onChange={(e) =>
+                          setNewDayRecord({ ...newDayRecord, recordDateEnd: e.target.value })
+                        }
+                      />
+                    </div>
+                  </div>
+                  {pendingDayRecordDates.length > 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Se registrarán{" "}
+                      <strong className="text-foreground">{pendingDayRecordDates.length}</strong>{" "}
+                      día{pendingDayRecordDates.length === 1 ? "" : "s"} (
+                      {pendingDayRecordDates[0]}
+                      {pendingDayRecordDates.length > 1
+                        ? ` — ${pendingDayRecordDates[pendingDayRecordDates.length - 1]}`
+                        : ""}
+                      ).
+                    </p>
+                  ) : null}
+                  {newDayRecord.recordType === "vacation" ? (
+                    <p className="text-xs text-muted-foreground">
+                      Bloqueado: últimos {VACATION_RETROACTIVE_BLOCK_DAYS} días y fechas con menos de{" "}
+                      {VACATION_MIN_ADVANCE_DAYS} días de aviso.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Ventana por día: máx. {INCAPACITY_REGISTRATION_WINDOW_HOURS} h desde el inicio de
+                      cada fecha ({incapacityDateBounds().min} — {incapacityDateBounds().max}).
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Label>Fecha</Label>
+                  <Input
+                    type="date"
+                    value={newDayRecord.recordDate}
+                    onChange={(e) =>
+                      setNewDayRecord({ ...newDayRecord, recordDate: e.target.value })
+                    }
+                  />
+                </>
+              )}
             </div>
             <div className="space-y-2">
-              <Label>Notas (opcional)</Label>
-              <Input
-                value={newDayRecord.notes}
-                onChange={(e) => setNewDayRecord({ ...newDayRecord, notes: e.target.value })}
-                placeholder="Detalle breve"
-              />
+              <Label>Turno (opcional)</Label>
+              <Select
+                value={newDayRecord.shift || "both"}
+                onValueChange={(v) =>
+                  setNewDayRecord({
+                    ...newDayRecord,
+                    shift: v === "both" ? "" : (v as "matutino" | "vespertino"),
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="both">Ambos turnos</SelectItem>
+                  <SelectItem value="matutino">Matutino</SelectItem>
+                  <SelectItem value="vespertino">Vespertino</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>
+                Notas
+                {newDayRecord.recordType === "incident" ? (
+                  <span className="text-destructive"> (obligatorio)</span>
+                ) : (
+                  " (opcional)"
+                )}
+              </Label>
+              {newDayRecord.recordType === "incident" ? (
+                <Textarea
+                  value={newDayRecord.notes}
+                  onChange={(e) => setNewDayRecord({ ...newDayRecord, notes: e.target.value })}
+                  placeholder="Motivo de la justificación (ej. trámite personal autorizado, cita médica…)"
+                  rows={3}
+                />
+              ) : (
+                <Input
+                  value={newDayRecord.notes}
+                  onChange={(e) => setNewDayRecord({ ...newDayRecord, notes: e.target.value })}
+                  placeholder="Detalle breve"
+                />
+              )}
             </div>
           </div>
           <DialogFooter>
-            <Button onClick={handleAddDayRecord} className="w-full sm:w-auto">
-              Guardar registro
+            <Button
+              onClick={handleAddDayRecord}
+              disabled={savingDayRecords}
+              className="w-full sm:w-auto"
+            >
+              {savingDayRecords
+                ? "Guardando…"
+                : pendingDayRecordDates.length > 1
+                  ? `Guardar ${pendingDayRecordDates.length} días`
+                  : "Guardar registro"}
             </Button>
           </DialogFooter>
         </DialogContent>

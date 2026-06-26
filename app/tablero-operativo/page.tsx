@@ -22,7 +22,7 @@ import {
 } from "@/lib/api"
 import { filterFloorMachines } from "@/lib/machine-floor"
 import { bonusConfigToGoalDefinitions } from "@/lib/bonus-goals-bridge"
-import { DEFAULT_BONUS_PRODUCTION_CONFIG } from "@/lib/bonus-production-config"
+import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
 import {
   productionShiftFromMeasuredAt,
   resolveOperatorDailyGoalProgress,
@@ -417,16 +417,6 @@ function getRankingRangeBounds(
   return getSemesterBoundsInTimeZone(now, timeZone)
 }
 
-function formatMinuteKeyInTz(date: Date, timeZone: string): string {
-  const p = getPartsInTimeZone(date, timeZone)
-  const y = String(p.year)
-  const m = String(p.month).padStart(2, "0")
-  const d = String(p.day).padStart(2, "0")
-  const h = String(p.hour).padStart(2, "0")
-  const min = String(p.minute).padStart(2, "0")
-  return `${y}-${m}-${d}T${h}:${min}`
-}
-
 function buildMachineMaps(machines: ApiMachine[]) {
   const skuById = new Map<string, string>()
   const upbById = new Map<string, number>()
@@ -441,7 +431,7 @@ function buildMachineMaps(machines: ApiMachine[]) {
   return { skuById, upbById, byId }
 }
 
-function buildOperatorRankingPerMinute(
+function buildOperatorRanking(
   events: ApiProductionEvent[],
   employees: ApiEmployee[],
   machines: ApiMachine[],
@@ -460,7 +450,6 @@ function buildOperatorRankingPerMinute(
     string,
     {
       units: number
-      minuteSlots: Set<string>
       machine: string
       sku: string
       machineId: string | null
@@ -516,14 +505,8 @@ function buildOperatorRankingPerMinute(
     const machineName = machineEntity?.name?.trim() || ""
     const unitsPerBox = machineEntity?.unitsPerBox ?? null
 
-    const ts = new Date(e.occurredAt)
-    const minuteKey = Number.isNaN(ts.getTime())
-      ? ""
-      : formatMinuteKeyInTz(ts, TABLERO_TIMEZONE)
-
     const current = byOperatorCode.get(opCode) ?? {
       units: 0,
-      minuteSlots: new Set<string>(),
       machine,
       sku,
       machineId: catalogMachineId,
@@ -531,12 +514,10 @@ function buildOperatorRankingPerMinute(
       machineName,
       unitsPerBox,
     }
-    if (minuteKey) current.minuteSlots.add(minuteKey)
     const nextMachineId = catalogMachineId ?? current.machineId
     const nextMachine = machineById.get(nextMachineId ?? "")
     byOperatorCode.set(opCode, {
       units: current.units + count,
-      minuteSlots: current.minuteSlots,
       machine: pickMoreReadableMachineLabel(current.machine, machine),
       sku: current.sku !== "—" ? current.sku : sku,
       machineId: nextMachineId,
@@ -551,8 +532,6 @@ function buildOperatorRankingPerMinute(
 
   return [...byOperatorCode.entries()]
     .map(([opCode, v]) => {
-      const slots = v.minuteSlots.size
-      const rate = slots > 0 ? v.units / slots : 0
       const displayName = resolveOperatorDisplayName(opCode, codeToName)
       const shift =
         productionShiftFromMeasuredAt(new Date().toISOString()) ??
@@ -583,7 +562,7 @@ function buildOperatorRankingPerMinute(
         name: displayName,
         machine: v.machine,
         sku: v.sku,
-        units: Math.round(rate * 100) / 100,
+        units: Math.round(v.units),
         percentage: goalProgress.percentage,
         goalRemaining: goalProgress.goalRemaining,
         machineId: v.machineId,
@@ -661,12 +640,12 @@ export default function OperationsBoardPage() {
         let goalDefinitions = bonusConfigToGoalDefinitions(DEFAULT_BONUS_PRODUCTION_CONFIG)
         try {
           const cfg = await getBonusProductionConfigForMonth(token, bonusMonth)
-          goalDefinitions = bonusConfigToGoalDefinitions(cfg.config)
+          goalDefinitions = bonusConfigToGoalDefinitions(normalizeBonusProductionConfig(cfg.config))
         } catch {
           // Usa valores por defecto si no hay config de bono del mes.
         }
 
-        const rows = buildOperatorRankingPerMinute(
+        const rows = buildOperatorRanking(
           events,
           employees,
           machines,
@@ -689,7 +668,7 @@ export default function OperationsBoardPage() {
         }
 
         if (debug) {
-          console.info("[TableroOperativo] ranking por minuto", {
+          console.info("[TableroOperativo] ranking por unidades totales", {
             range: rankingRange,
             events: events.length,
             top: rows[0] ?? null,
@@ -780,7 +759,7 @@ export default function OperationsBoardPage() {
                       operator={topThree[1]}
                       rank={2}
                       density="compact"
-                      unitsLabel="uds/min"
+                      unitsLabel="unidades totales"
                       progressTitle="Meta diaria"
                     />
                   </div>
@@ -791,7 +770,7 @@ export default function OperationsBoardPage() {
                       operator={topThree[0]}
                       rank={1}
                       density="compact"
-                      unitsLabel="uds/min"
+                      unitsLabel="unidades totales"
                       progressTitle="Meta diaria"
                     />
                   </div>
@@ -802,7 +781,7 @@ export default function OperationsBoardPage() {
                       operator={topThree[2]}
                       rank={3}
                       density="compact"
-                      unitsLabel="uds/min"
+                      unitsLabel="unidades totales"
                       progressTitle="Meta diaria"
                     />
                   </div>
@@ -819,7 +798,7 @@ export default function OperationsBoardPage() {
                     operator={operator}
                     rank={4 + index * 2}
                     density="compact"
-                    unitsLabel="uds/min"
+                    unitsLabel="unidades totales"
                     progressTitle="Relativo"
                   />
                 ))}
@@ -831,7 +810,7 @@ export default function OperationsBoardPage() {
                     operator={operator}
                     rank={5 + index * 2}
                     density="compact"
-                    unitsLabel="uds/min"
+                    unitsLabel="unidades totales"
                     progressTitle="Relativo"
                   />
                 ))}
@@ -846,7 +825,7 @@ export default function OperationsBoardPage() {
 
         {/* Footer info */}
         <div className="text-center text-xs text-muted-foreground">
-          {`Actualización automática • Ranking por minuto (${rankingRangeLabel})`}
+          {`Actualización automática • Ranking por unidades totales (${rankingRangeLabel})`}
         </div>
       </div>
     </DashboardLayout>

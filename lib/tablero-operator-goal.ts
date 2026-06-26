@@ -7,8 +7,7 @@ import {
 } from "@/lib/production-goal-events"
 
 export type OperatorGoalSection =
-  | "turbo"
-  | "tail"
+  | "winding"
   | "roller48"
   | "roller36"
   | "bending"
@@ -37,11 +36,6 @@ function machineIncludesAny(text: string, keywords: string[]): boolean {
   return keywords.some((k) => v.includes(k))
 }
 
-function inferWindingCodeFromSku(sku: string): "pk" | "nf" | "tl" | null {
-  const m = sku.trim().toLowerCase().match(/^\d{3}(pk|nf|tl)/)
-  return m ? (m[1] as "pk" | "nf" | "tl") : null
-}
-
 export function inferOperatorGoalSection(ctx: {
   machineCode: string
   machineName: string
@@ -58,21 +52,12 @@ export function inferOperatorGoalSection(ctx: {
     return "roller48"
   }
 
-  const winding = inferWindingCodeFromSku(ctx.sku)
-  if (winding === "tl") return "tail"
-  if (winding === "pk" || winding === "nf") return "turbo"
-
-  const skuLower = ctx.sku.trim().toLowerCase()
-  if (skuLower.includes("tail") || skuLower.includes("tl")) return "tail"
-  if (skuLower.includes("turbo") || skuLower.includes("pk")) return "turbo"
-
-  return "turbo"
+  return "winding"
 }
 
 function sectionToSourceKey(section: OperatorGoalSection, shift: ApiGoalShift): string | null {
   const turn = shift === "matutino" ? "t1" : "t2"
-  if (section === "turbo") return `turbo-${turn}-daily`
-  if (section === "tail") return `tail-${turn}-daily`
+  if (section === "winding") return `winding-${turn}-daily`
   if (section === "roller48") return `roller48-${turn}-daily`
   if (section === "roller36") return `roller36-${turn}-daily`
   if (section === "bending") return `bending-${turn}-daily`
@@ -89,10 +74,7 @@ function goalSpecificityScore(goal: ApiGoal): number {
 
 function goalUsesBoxes(sourceKey: string | null): boolean {
   if (!sourceKey) return false
-  return (
-    sourceKey.startsWith("roller") ||
-    sourceKey.startsWith("bending")
-  )
+  return sourceKey.startsWith("roller")
 }
 
 function findGoalByBonusDefinition(
