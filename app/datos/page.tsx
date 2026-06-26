@@ -72,7 +72,7 @@ const TABLES: TableDef[] = [
       "select m.code, m.status, m.current_sku, m.units_per_box, m.orphan_units,\n" +
       "  c.operator_code, c.operator_2_code,\n" +
       "  c.packager_1_code, c.packager_2_code, c.packager_3_code, c.packager_4_code,\n" +
-      "  m.last_seen_at, m.last_abs_count, m.last_production_at, m.count_at_checkout,\n" +
+      "  m.last_seen_at, m.last_abs_count, m.last_seq, m.last_production_at, m.count_at_checkout,\n" +
       "  m.floor_row, m.floor_col, m.id\n" +
       "from machines m\n" +
       "left join machine_checkins c on c.machine_id = m.id and c.is_active = true\n" +
@@ -110,6 +110,10 @@ const TABLES: TableDef[] = [
   { table: "business_holidays", label: "Días festivos", group: "Reglas y registros" },
   { table: "alert_rules", label: "Reglas de alerta (legado)", group: "Reglas y registros" },
   { table: "notification_targets", label: "Destinos de notificación", group: "Reglas y registros" },
+  { table: "shifts", label: "Turnos", group: "Personal" },
+  { table: "shift_assignments", label: "Asignaciones de turno", group: "Personal" },
+  { table: "user_sessions", label: "Sesiones de usuario", group: "Personal" },
+  { table: "app_config", label: "Configuración de la app", group: "Reglas y registros" },
 ]
 
 const defaultSqlFor = (table: string) =>
