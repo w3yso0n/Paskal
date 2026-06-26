@@ -361,6 +361,15 @@ export default function AlertasClient() {
   }, [getAccessToken, view])
 
   // --- Derived state ---
+  /** machineId (UUID) → código legible (M-022) para no mostrar el UUID crudo en las alertas. */
+  const machineCodeById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const m of machineRows) {
+      if (m.id) map.set(m.id, (m.code ?? m.name ?? m.id).trim() || m.id)
+    }
+    return map
+  }, [machineRows])
+
   const scopedAlerts = useMemo(
     () =>
       view === "production"
@@ -991,8 +1000,8 @@ export default function AlertasClient() {
                               <span>{formatTimeAgo(alert.timestamp)}</span>
                               <span>{formatDateTime(alert.timestamp)}</span>
                               {alert.machineId && (
-                                <span className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                                  {alert.machineId.toUpperCase()}
+                                <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
+                                  {machineCodeById.get(alert.machineId) ?? alert.machineId}
                                 </span>
                               )}
                             </div>
@@ -1093,7 +1102,8 @@ export default function AlertasClient() {
                     .filter((e) => e.employeeCode)
                     .map((e) => (
                       <SelectItem key={e.id} value={e.employeeCode as string}>
-                        {e.fullName} ({e.employeeCode})
+                        {e.fullName}
+                        {e.nfcCardUid ? ` (NFC: ${e.nfcCardUid})` : ""}
                       </SelectItem>
                     ))}
                 </SelectContent>
