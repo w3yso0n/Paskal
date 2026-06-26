@@ -1,5 +1,5 @@
-/** Rol primordial en piso — alineado con secciones del acumulado de bono. */
-export type EmployeeProductionRole = "operator" | "packer" | "bending" | "roller"
+/** Rol primordial en piso — alineado con secciones del acumulado de bono (+ mantenimiento NFC). */
+export type EmployeeProductionRole = "operator" | "packer" | "bending" | "roller" | "maintenance"
 
 /** Rol secundario (desde operador: empaque, roller, bending o auxiliar). */
 export type EmployeeSecondaryRole = "packer" | "roller" | "bending" | "auxiliary"
@@ -9,6 +9,7 @@ export const EMPLOYEE_PRODUCTION_ROLE_LABELS: Record<EmployeeProductionRole, str
   packer: "Empacador",
   bending: "Operador bending",
   roller: "Operador roller",
+  maintenance: "Mantenimiento",
 }
 
 export const EMPLOYEE_SECONDARY_ROLE_LABELS: Record<EmployeeSecondaryRole, string> = {
@@ -23,6 +24,7 @@ export const PRIMARY_ROLES: EmployeeProductionRole[] = [
   "packer",
   "bending",
   "roller",
+  "maintenance",
 ]
 
 export const SECONDARY_ROLES: EmployeeSecondaryRole[] = [
@@ -37,7 +39,8 @@ export function isEmployeeProductionRole(value: string): value is EmployeeProduc
     value === "operator" ||
     value === "packer" ||
     value === "bending" ||
-    value === "roller"
+    value === "roller" ||
+    value === "maintenance"
   )
 }
 
@@ -56,6 +59,7 @@ export function inferProductionRoleFromPosition(
 ): EmployeeProductionRole | null {
   const p = String(position ?? "").toLowerCase()
   if (!p.trim()) return null
+  if (p.includes("mantenim")) return "maintenance"
   if (p.includes("empac")) return "packer"
   if (p.includes("bend") || p.includes("dobl")) return "bending"
   if (p.includes("roll") || p.includes("rodill")) return "roller"
@@ -74,8 +78,10 @@ export function resolveEmployeeProductionRole(
 
 export function nfcRoleFromProductionRole(
   role: EmployeeProductionRole | null,
-): "OPERATOR" | "PACKAGER" {
-  return role === "packer" ? "PACKAGER" : "OPERATOR"
+): "OPERATOR" | "PACKAGER" | "MAINTENANCE" {
+  if (role === "packer") return "PACKAGER"
+  if (role === "maintenance") return "MAINTENANCE"
+  return "OPERATOR"
 }
 
 /** Rol efectivo en reporte de bono para un día (primordial + secundario). */
@@ -85,6 +91,7 @@ export function resolveEffectiveBonusRole(
   primaryRole: EmployeeProductionRole | null | undefined,
   secondaryRole: EmployeeSecondaryRole | null | undefined,
 ): BonusEffectiveRole | null {
+  if (primaryRole === "maintenance") return null
   const primary = resolveEmployeeProductionRole(primaryRole, null)
   if (!primary) return null
   if (primary === "operator" && secondaryRole) {

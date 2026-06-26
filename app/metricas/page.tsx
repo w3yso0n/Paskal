@@ -59,6 +59,7 @@ import {
   UserPlus,
   CalendarDays,
   Target,
+  Palmtree,
 } from "lucide-react"
 import {
   BarChart,
@@ -101,8 +102,10 @@ import {
   type ApiMachine,
   type ApiMachineCheckin,
   type ApiProductionEvent,
+  type ApiEmployeeDayRecord,
 } from "@/lib/api"
 import { filterFloorMachines } from "@/lib/machine-floor"
+import { aggregateEmployeeVacationDays } from "@/lib/employee-vacation-days"
 import {
   buildProductionShiftReportBlob,
   productionShiftReportFilename,
@@ -328,7 +331,9 @@ function mapEventsToProductionBaseRows(
     return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
   }
 
-  return events.map((e: ApiProductionEvent) => {
+  return events
+    .filter((e) => !(e.payload as Record<string, unknown>)?.excludedMaintenance)
+    .map((e: ApiProductionEvent) => {
     const payload = e.payload ?? {}
     const eventRaw = String(payloadString(payload, "EVENT", "event") ?? e.eventType ?? "")
     const lower = eventRaw.toLowerCase()
@@ -688,6 +693,9 @@ export default function MetricsPage() {
   const [dataError, setDataError] = useState<string | null>(null)
   const [reloadNonce, setReloadNonce] = useState(0)
   const [machineCheckinsLoaded, setMachineCheckinsLoaded] = useState<ApiMachineCheckin[]>([])
+  const [employeeDayRecordsLoaded, setEmployeeDayRecordsLoaded] = useState<ApiEmployeeDayRecord[]>(
+    [],
+  )
   const attendanceStats = useMemo(() => [] as unknown[], [])
 
   useEffect(() => {
@@ -699,6 +707,7 @@ export default function MetricsPage() {
           setProductionBaseRows([])
           setEmployeeRows([])
           setMachineCheckinsLoaded([])
+          setEmployeeDayRecordsLoaded([])
           setDataLoading(false)
           setDataError(null)
         }
@@ -714,13 +723,19 @@ export default function MetricsPage() {
         const fromIso = new Date(`${filterStartDate}T00:00:00`).toISOString()
         const toIso = new Date(`${filterEndDate}T23:59:59.999`).toISOString()
 
-        const [events, employees, apiMachines, checkins, goals, metrics] = await Promise.all([
+        const [events, employees, apiMachines, checkins, goals, metrics, dayRecords] =
+          await Promise.all([
           getProductionEvents(token, { from: fromIso, to: toIso, limit: 120_000 }),
           getEmployees(token),
           getMachines(token),
           getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
           getGoals(token),
           getMetrics(token),
+          getEmployeeDayRecords(token, {
+            from: filterStartDate,
+            to: filterEndDate,
+            limit: 5000,
+          }).catch(() => [] as ApiEmployeeDayRecord[]),
         ])
         if (cancelled) return
 
@@ -728,6 +743,7 @@ export default function MetricsPage() {
         setGoalsRows(goals)
         setMetricsRows(metrics)
         setMachineCheckinsLoaded(checkins)
+        setEmployeeDayRecordsLoaded(dayRecords)
 
         const mapped = mapEventsToProductionBaseRows(events, checkins, employees, apiMachines)
 
@@ -767,6 +783,7 @@ export default function MetricsPage() {
         if (!cancelled) {
           setProductionBaseRows([])
           setMachineCheckinsLoaded([])
+          setEmployeeDayRecordsLoaded([])
           setDataError(err instanceof Error ? err.message : "No se pudieron cargar los datos")
         }
       } finally {
@@ -1154,6 +1171,25 @@ export default function MetricsPage() {
       return recordDate >= startDate && recordDate <= endDate
     })
   }, [filterStartDate, filterEndDate, attendanceFromCheckins])
+
+  const vacationDaysByEmployee = useMemo(
+    () =>
+      aggregateEmployeeVacationDays(employeeDayRecordsLoaded, {
+        from: filterStartDate,
+        to: filterEndDate,
+      }),
+    [employeeDayRecordsLoaded, filterStartDate, filterEndDate],
+  )
+
+  const vacationSummary = useMemo(() => {
+    const totalDays = vacationDaysByEmployee.reduce((acc, r) => acc + r.vacationDays, 0)
+    const onVacationToday = vacationDaysByEmployee.filter((r) => r.onVacationToday).length
+    return {
+      employeesWithVacation: vacationDaysByEmployee.length,
+      totalVacationDays: totalDays,
+      onVacationToday,
+    }
+  }, [vacationDaysByEmployee])
 
   const personnelMovements = useMemo(
     () => buildPersonnelMovementsFromCheckins(machineCheckinsLoaded, employeeRows).slice(0, 40),
@@ -2234,6 +2270,92 @@ export default function MetricsPage() {
 
           {/* ========== ASISTENCIA TAB ========== */}
           <TabsContent value="asistencia" className="space-y-6">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <KpiCard
+                title="Empleados en vacaciones"
+                value={String(vacationSummary.employeesWithVacation)}
+                subtitle={`Con al menos 1 día en el rango`}
+                icon={Palmtree}
+                iconColor="text-green-600"
+              />
+              <KpiCard
+                title="Días de vacación"
+                value={String(vacationSummary.totalVacationDays)}
+                subtitle="Total en el período seleccionado"
+                icon={CalendarDays}
+                iconColor="text-emerald-600"
+              />
+              <KpiCard
+                title="De vacaciones hoy"
+                value={String(vacationSummary.onVacationToday)}
+                subtitle="Registro activo para la fecha actual"
+                icon={UserMinus}
+                iconColor="text-amber-600"
+              />
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-6">
+              <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="font-semibold text-foreground">Días de vacaciones por empleado</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Registros de{" "}
+                    <Link href="/empleados" className="text-primary underline">
+                      Gestión de empleados
+                    </Link>{" "}
+                    (tipo vacación). Cada día calendario cuenta una vez aunque cubra ambos turnos.
+                  </p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {filterStartDate} — {filterEndDate}
+                </p>
+              </div>
+              {vacationDaysByEmployee.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">
+                  Sin vacaciones registradas en este período.
+                </p>
+              ) : (
+                <div className="max-h-[360px] overflow-y-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Empleado</TableHead>
+                        <TableHead>Código</TableHead>
+                        <TableHead className="text-right">Días</TableHead>
+                        <TableHead>Último día</TableHead>
+                        <TableHead className="text-right">Hoy</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {vacationDaysByEmployee.map((row) => (
+                        <TableRow key={row.employeeId}>
+                          <TableCell className="font-medium">{row.employeeName}</TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {row.employeeCode ?? "—"}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums font-semibold">
+                            {row.vacationDays}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {row.lastVacationDate ?? "—"}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {row.onVacationToday ? (
+                              <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+                                En vacaciones
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </div>
+
             <div className="rounded-xl border border-border bg-card p-6">
               <h3 className="font-semibold text-foreground mb-4">Registros de asistencias</h3>
               <p className="mb-4 text-sm text-muted-foreground">

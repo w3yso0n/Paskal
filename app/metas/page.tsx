@@ -26,6 +26,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useAuth } from "@/contexts/auth-context"
 import { BonusVacationAdjustmentsPanel } from "@/components/metas/bonus-vacation-adjustments"
@@ -57,6 +58,11 @@ import {
   productionUnitsFromEvent,
   resolveProductionEventSku,
 } from "@/lib/production-goal-events"
+import {
+  goalComplianceDateRange,
+  isGoalActive,
+  todayYmd,
+} from "@/lib/goal-compliance-range"
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -167,6 +173,7 @@ function GoalCard({
   actual,
   onEdit,
   onDelete,
+  onToggleActive,
   fromBonusConfig,
   machineLabel,
 }: {
@@ -175,6 +182,7 @@ function GoalCard({
   actual: number
   onEdit: (goal: ApiGoal) => void
   onDelete: (goal: ApiGoal) => void
+  onToggleActive?: (goal: ApiGoal, active: boolean) => void
   fromBonusConfig?: boolean
   machineLabel?: string | null
 }) {
@@ -184,6 +192,7 @@ function GoalCard({
   const cfg = statusConfig[status]
   const StatusIcon = cfg.icon
   const remaining = target - actual
+  const isActive = isGoalActive(goal)
 
   return (
     <Card className="relative overflow-hidden">
@@ -209,23 +218,46 @@ function GoalCard({
                 </Badge>
               ) : (
                 <Badge variant="outline" className="text-xs">
-                  Sin turno (todo el rango)
+                  Sin turno (todo el periodo)
                 </Badge>
               )}
               <Badge className={`${cfg.bgColor} ${cfg.color} gap-1`}>
                 <StatusIcon className="h-3 w-3" />
                 {cfg.label}
               </Badge>
+              <Badge
+                variant="outline"
+                className={
+                  isActive
+                    ? "border-green-300 bg-green-50 text-green-700 text-xs"
+                    : "border-muted-foreground/30 text-muted-foreground text-xs"
+                }
+              >
+                {isActive ? "Activa" : "Inactiva"}
+              </Badge>
             </div>
             <h3 className="text-lg font-semibold text-foreground">
               {metric?.name ?? "Métrica no encontrada"}
             </h3>
             <p className="text-sm text-muted-foreground">
-              {goal.startDate} — {goal.endDate}
+              Periodo: {periodLabels[goal.period]}
               {machineLabel ? ` · ${machineLabel}` : ""}
             </p>
           </div>
-          <div className="flex gap-1">
+          <div className="flex flex-col items-end gap-2">
+            {!fromBonusConfig && onToggleActive ? (
+              <div className="flex items-center gap-2">
+                <Label htmlFor={`goal-active-${goal.id}`} className="text-xs text-muted-foreground">
+                  {isActive ? "Activa" : "Inactiva"}
+                </Label>
+                <Switch
+                  id={`goal-active-${goal.id}`}
+                  checked={isActive}
+                  onCheckedChange={(checked) => onToggleActive(goal, checked)}
+                />
+              </div>
+            ) : null}
+            <div className="flex gap-1">
             {!fromBonusConfig ? (
               <>
             <Button
@@ -259,6 +291,7 @@ function GoalCard({
               </Button>
             )}
           </div>
+          </div>
         </div>
 
         <div className="mb-4 space-y-2">
@@ -280,9 +313,7 @@ function GoalCard({
         <div className="flex items-center justify-between text-sm">
           <div className="flex items-center gap-1 text-muted-foreground">
             <Clock className="h-4 w-4" />
-            <span>
-              {goal.startDate} – {goal.endDate}
-            </span>
+            <span>Periodo {periodLabels[goal.period].toLowerCase()}</span>
           </div>
           {remaining > 0 && status !== "exceeded" && status !== "completed" ? (
             <span className="text-muted-foreground">
@@ -341,8 +372,7 @@ export default function MetasPage() {
     period: "daily" as ApiGoalPeriod,
     shift: "matutino" as ApiGoalShift | "none",
     targetValue: "",
-    startDate: "",
-    endDate: "",
+    isActive: true,
     sku: "",
     machineId: "none",
   })
@@ -438,8 +468,9 @@ export default function MetasPage() {
   }, [filtered])
 
   // ── data fetching ──────────────────────────────────────────────────────────
-  const load = async () => {
-    setLoading(true)
+  const load = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false
+    if (!silent) setLoading(true)
     setError(null)
     try {
       const token = await getAccessToken()
@@ -472,17 +503,25 @@ export default function MetasPage() {
       }
 
       const metricIds = Array.from(new Set(goalsData.map((g) => g.metricId)))
-      const skuGoals = goalsData.filter((g) => normalizeSku(g.sku))
-      const nonSkuGoals = goalsData.filter((g) => !normalizeSku(g.sku))
+      const activeGoals = goalsData.filter((g) => isGoalActive(g))
+      const skuGoals = activeGoals.filter((g) => normalizeSku(g.sku))
+      const nonSkuGoals = activeGoals.filter((g) => !normalizeSku(g.sku))
 
-      const minStart = goalsData.reduce(
-        (min, g) => (g.startDate < min ? g.startDate : min),
-        goalsData[0].startDate,
-      )
-      const maxEnd = goalsData.reduce(
-        (max, g) => (g.endDate > max ? g.endDate : max),
-        goalsData[0].endDate,
-      )
+      const complianceRanges = activeGoals.map((g) => goalComplianceDateRange(g))
+      const minStart =
+        complianceRanges.length > 0
+          ? complianceRanges.reduce(
+              (min, r) => (r.startDate < min ? r.startDate : min),
+              complianceRanges[0].startDate,
+            )
+          : goalsData[0]?.startDate ?? todayYmd()
+      const maxEnd =
+        complianceRanges.length > 0
+          ? complianceRanges.reduce(
+              (max, r) => (r.endDate > max ? r.endDate : max),
+              complianceRanges[0].endDate,
+            )
+          : goalsData[0]?.endDate ?? todayYmd()
       const range = toDateTimeRange(minStart, maxEnd)
       const { skuById, upbById } = buildMachineMaps(machinesData)
 
@@ -508,7 +547,8 @@ export default function MetasPage() {
       const actual: Record<string, number> = {}
 
       for (const g of nonSkuGoals) {
-        const { from, to } = toDateTimeRange(g.startDate, g.endDate)
+        const range = goalComplianceDateRange(g)
+        const { from, to } = toDateTimeRange(range.startDate, range.endDate)
         const shift = g.shift ?? null
         const sum = points
           .filter((p) => p.metricId === g.metricId)
@@ -528,7 +568,8 @@ export default function MetasPage() {
       for (const g of skuGoals) {
         const goalSku = normalizeSku(g.sku)?.toLowerCase()
         if (!goalSku) continue
-        const { from, to } = toDateTimeRange(g.startDate, g.endDate)
+        const range = goalComplianceDateRange(g)
+        const { from, to } = toDateTimeRange(range.startDate, range.endDate)
         const shift = g.shift ?? null
         const sum = productionEvents
           .filter((e) => (g.machineId ? e.machineId === g.machineId : true))
@@ -544,6 +585,11 @@ export default function MetasPage() {
           .reduce((acc, e) => acc + productionUnitsFromEvent(e, upbById), 0)
         actual[g.id] = sum
       }
+      for (const g of goalsData) {
+        if (!isGoalActive(g)) {
+          actual[g.id] = 0
+        }
+      }
       setActualByGoalId(actual)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al cargar metas")
@@ -551,7 +597,7 @@ export default function MetasPage() {
       setMetrics([])
       setActualByGoalId({})
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
@@ -572,8 +618,7 @@ export default function MetasPage() {
       period: "daily",
       shift: "matutino",
       targetValue: "",
-      startDate: "",
-      endDate: "",
+      isActive: true,
       sku: "",
       machineId: "none",
     })
@@ -587,8 +632,7 @@ export default function MetasPage() {
       period: g.period,
       shift: g.shift ?? "none",
       targetValue: String(g.targetValue),
-      startDate: g.startDate,
-      endDate: g.endDate,
+      isActive: isGoalActive(g),
       sku: g.sku?.trim() ?? "",
       machineId: g.machineId ?? "none",
     })
@@ -601,13 +645,13 @@ export default function MetasPage() {
 
     const selectedMetric = metrics.find((m) => m.id === formData.metricId)
     const skuValue = normalizeSku(formData.sku)
+
     const payload = {
       metricId: formData.metricId,
       period: formData.period,
       shift: formData.shift === "none" ? null : formData.shift,
       targetValue: Number(formData.targetValue),
-      startDate: formData.startDate,
-      endDate: formData.endDate,
+      active: formData.isActive,
       machineId: formData.machineId === "none" ? null : formData.machineId,
       sku: isProductionMetric(selectedMetric) ? skuValue : null,
     }
@@ -618,10 +662,6 @@ export default function MetasPage() {
     }
     if (isProductionMetric(selectedMetric) && formData.sku.trim() && !skuValue) {
       setError("El SKU no puede estar vacío.")
-      return
-    }
-    if (!payload.startDate || !payload.endDate) {
-      setError("Define fecha inicio y fin.")
       return
     }
     if (!Number.isFinite(payload.targetValue)) {
@@ -637,6 +677,34 @@ export default function MetasPage() {
     }
     setIsDialogOpen(false)
     await load()
+  }
+
+  const onToggleGoalActive = async (goal: ApiGoal, active: boolean) => {
+    const token = await getAccessToken()
+    if (!token) return
+
+    const wasActive = isGoalActive(goal)
+
+    setGoals((prev) => prev.map((g) => (g.id === goal.id ? { ...g, active } : g)))
+    if (!active) {
+      setActualByGoalId((prev) => ({ ...prev, [goal.id]: 0 }))
+    }
+
+    try {
+      setError(null)
+      await updateGoal(token, goal.id, { active })
+      if (active) {
+        void load({ silent: true })
+      }
+    } catch (e) {
+      setGoals((prev) =>
+        prev.map((g) => (g.id === goal.id ? { ...g, active: wasActive } : g)),
+      )
+      if (!active) {
+        void load({ silent: true })
+      }
+      setError(e instanceof Error ? e.message : "No se pudo cambiar el estado de la meta.")
+    }
   }
 
   const onDelete = async (g: ApiGoal) => {
@@ -763,6 +831,9 @@ export default function MetasPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Diaria = objetivo por día; semanal/mensual = acumulado en ese periodo.
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label>Valor Meta</Label>
@@ -773,6 +844,22 @@ export default function MetasPage() {
                       placeholder="3500"
                     />
                   </div>
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-border px-3 py-3">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="goal-form-active">Meta activa</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Si está activa, se evalúa el cumplimiento según el periodo elegido.
+                    </p>
+                  </div>
+                  <Switch
+                    id="goal-form-active"
+                    checked={formData.isActive}
+                    onCheckedChange={(checked) =>
+                      setFormData((s) => ({ ...s, isActive: checked }))
+                    }
+                  />
                 </div>
 
                 <div className="space-y-2">
@@ -789,32 +876,13 @@ export default function MetasPage() {
                     <SelectContent>
                       <SelectItem value="matutino">{shiftLabels.matutino}</SelectItem>
                       <SelectItem value="vespertino">{shiftLabels.vespertino}</SelectItem>
-                      <SelectItem value="none">Sin turno (sumar todo el rango de fechas)</SelectItem>
+                      <SelectItem value="none">Sin turno (todo el periodo)</SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Con turno, solo cuentan puntos cuya hora local cae en esa ventana (igual que en
+                    Con turno, solo cuentan registros cuya hora local cae en esa ventana (igual que en
                     Métricas).
                   </p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Fecha Inicio</Label>
-                    <Input
-                      type="date"
-                      value={formData.startDate}
-                      onChange={(e) => setFormData((s) => ({ ...s, startDate: e.target.value }))}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Fecha Fin</Label>
-                    <Input
-                      type="date"
-                      value={formData.endDate}
-                      onChange={(e) => setFormData((s) => ({ ...s, endDate: e.target.value }))}
-                    />
-                  </div>
                 </div>
               </div>
 
@@ -1028,6 +1096,7 @@ export default function MetasPage() {
                               : openEdit
                           }
                           onDelete={onDelete}
+                          onToggleActive={onToggleGoalActive}
                           fromBonusConfig={isBonusSyncedGoal(goal)}
                         />
                       ))}

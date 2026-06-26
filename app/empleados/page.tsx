@@ -34,6 +34,9 @@ import {
   Mail,
   Phone,
   Hash,
+  Palmtree,
+  Scale,
+  AlertTriangle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
@@ -59,11 +62,19 @@ import {
   EMPLOYEE_PRODUCTION_ROLE_LABELS,
   EMPLOYEE_SECONDARY_ROLE_LABELS,
   inferProductionRoleFromPosition,
+  isEmployeeProductionRole,
   PRIMARY_ROLES,
   SECONDARY_ROLES,
   type EmployeeProductionRole,
   type EmployeeSecondaryRole,
 } from "@/lib/employee-production-role"
+import {
+  buildAllEmployeeVacationBalances,
+  buildEmployeeVacationBalance,
+  LFT_VACATION_POLICY_SUMMARY,
+  LFT_VACATION_TABLE_ROWS,
+  type EmployeeVacationBalance,
+} from "@/lib/mexico-vacation-law"
 
 const RECORD_TYPE_LABELS: Record<ApiEmployeeDayRecordType, string> = {
   vacation: "Vacaciones (V)",
@@ -77,6 +88,27 @@ const STATUS_LABELS: Record<ApiEmployeeStatus, string> = {
   active: "Activo",
   inactive: "Inactivo",
   terminated: "Baja",
+}
+
+const VACATION_STATUS_LABELS: Record<EmployeeVacationBalance["status"], string> = {
+  no_hire_date: "Sin fecha de ingreso",
+  not_yet_vested: "Aún no cumple 1 año",
+  ok: "En periodo",
+  expiring_soon: "Vence pronto",
+  exceeded: "Supera el tope legal",
+  unused_after_period: "Días sin tomar (periodo vencido)",
+}
+
+function vacationRecordsFetchFrom(employees: ApiEmployee[]): string {
+  const now = new Date()
+  let minYear = now.getFullYear() - 2
+  for (const e of employees) {
+    const hired = e.hiredAt?.slice(0, 10)
+    if (!hired) continue
+    const y = Number(hired.slice(0, 4))
+    if (Number.isFinite(y) && y < minYear) minYear = y
+  }
+  return `${minYear}-01-01`
 }
 
 type EmployeeFormState = {
@@ -123,16 +155,18 @@ function monthBoundsFromInput(monthValue: string) {
 }
 
 function employeeToForm(employee: ApiEmployee): EmployeeFormState {
+  const fromApi = employee.primaryRole
+  const primaryRole: EmployeeProductionRole =
+    fromApi && isEmployeeProductionRole(fromApi)
+      ? fromApi
+      : (inferProductionRoleFromPosition(employee.position) ?? "operator")
   return {
     fullName: employee.fullName,
     nfcCardUid: employee.nfcCardUid ?? "",
     email: employee.email ?? "",
     phone: employee.phone ?? "",
     position: employee.position ?? "",
-    primaryRole:
-      employee.primaryRole ??
-      inferProductionRoleFromPosition(employee.position) ??
-      "operator",
+    primaryRole,
     secondaryRole: employee.secondaryRole ?? "",
     hiredAt: employee.hiredAt ?? "",
     status: employee.status,
@@ -178,6 +212,12 @@ function EmployeeFormFields({
           onChange={(e) => onChange({ ...form, nfcCardUid: e.target.value })}
           placeholder="Ej: 03110694"
         />
+        {form.primaryRole === "maintenance" ? (
+          <p className="text-xs text-muted-foreground">
+            Con rol Mantenimiento, el tap en la máquina abre/cierra una sesión azul: la producción de
+            prueba no cuenta para operadores ni empacadores.
+          </p>
+        ) : null}
       </div>
       <div className="space-y-2">
         <Label htmlFor={`${idPrefix}-position`}>Puesto</Label>
@@ -196,6 +236,10 @@ function EmployeeFormFields({
           value={form.hiredAt}
           onChange={(e) => onChange({ ...form, hiredAt: e.target.value })}
         />
+        <p className="text-xs text-muted-foreground">
+          Necesaria para calcular vacaciones LFT (12 días al primer año y periodo de 12 meses para
+          tomarlas).
+        </p>
       </div>
       <div className="space-y-2">
         <Label>Rol primordial</Label>
@@ -311,6 +355,7 @@ export default function EmployeesPage() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
   })
   const [dayRecords, setDayRecords] = useState<ApiEmployeeDayRecord[]>([])
+  const [vacationBalanceRecords, setVacationBalanceRecords] = useState<ApiEmployeeDayRecord[]>([])
   const [dayRecordsLoading, setDayRecordsLoading] = useState(false)
   const [dayRecordsError, setDayRecordsError] = useState<string | null>(null)
   const [isAttendanceDialogOpen, setIsAttendanceDialogOpen] = useState(false)
@@ -394,6 +439,45 @@ export default function EmployeesPage() {
       cancelled = true
     }
   }, [getAccessToken, attendanceMonth])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadVacationBalances = async () => {
+      try {
+        const token = await getAccessToken()
+        if (!token || employees.length === 0) {
+          if (!cancelled) setVacationBalanceRecords([])
+          return
+        }
+        const to = new Date().toISOString().slice(0, 10)
+        const from = vacationRecordsFetchFrom(employees)
+        const rows = await getEmployeeDayRecords(token, {
+          from,
+          to,
+          limit: 10_000,
+        }).catch(() => [] as ApiEmployeeDayRecord[])
+        if (!cancelled) setVacationBalanceRecords(rows)
+      } catch {
+        if (!cancelled) setVacationBalanceRecords([])
+      }
+    }
+    loadVacationBalances()
+    return () => {
+      cancelled = true
+    }
+  }, [getAccessToken, employees])
+
+  const vacationBalances = useMemo(
+    () => buildAllEmployeeVacationBalances(employees, vacationBalanceRecords),
+    [employees, vacationBalanceRecords],
+  )
+
+  const selectedVacationBalance = useMemo(() => {
+    if (!newDayRecord.employeeId || newDayRecord.recordType !== "vacation") return null
+    const emp = employees.find((e) => e.id === newDayRecord.employeeId)
+    if (!emp) return null
+    return buildEmployeeVacationBalance(emp, vacationBalanceRecords)
+  }, [newDayRecord.employeeId, newDayRecord.recordType, employees, vacationBalanceRecords])
 
   useEffect(() => {
     let cancelled = false
@@ -551,6 +635,17 @@ export default function EmployeesPage() {
       )
       return [created, ...filtered]
     })
+    setVacationBalanceRecords((prev) => {
+      const filtered = prev.filter(
+        (r) =>
+          !(
+            r.employeeId === created.employeeId &&
+            r.recordDate === created.recordDate &&
+            (r.shift ?? null) === (created.shift ?? null)
+          ),
+      )
+      return [created, ...filtered]
+    })
     setNewDayRecord({
       employeeId: "",
       recordDate: "",
@@ -566,6 +661,7 @@ export default function EmployeesPage() {
     if (!token) return
     await deleteEmployeeDayRecord(token, id)
     setDayRecords((prev) => prev.filter((r) => r.id !== id))
+    setVacationBalanceRecords((prev) => prev.filter((r) => r.id !== id))
   }
 
   const handleAddRoleEvent = async () => {
@@ -813,6 +909,148 @@ export default function EmployeesPage() {
           </TabsContent>
 
           <TabsContent value="attendance" className="space-y-4">
+            <Card className="border-primary/20 bg-primary/5">
+              <CardContent className="pt-6 space-y-4">
+                <div className="flex items-start gap-3">
+                  <Scale className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                  <div className="space-y-2">
+                    <h2 className="text-lg font-semibold text-foreground">
+                      Vacaciones según la Ley Federal del Trabajo (México)
+                    </h2>
+                    <ul className="list-disc space-y-1.5 pl-5 text-sm text-muted-foreground">
+                      {LFT_VACATION_POLICY_SUMMARY.map((line) => (
+                        <li key={line}>{line}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-border bg-background">
+                  <table className="w-full min-w-[320px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+                        <th className="px-3 py-2 font-medium">Antigüedad</th>
+                        <th className="px-3 py-2 font-medium text-right">Días mínimos</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {LFT_VACATION_TABLE_ROWS.map((row) => (
+                        <tr key={row.yearsLabel} className="border-b border-border last:border-0">
+                          <td className="px-3 py-2">{row.yearsLabel}</td>
+                          <td className="px-3 py-2 text-right font-medium tabular-nums">
+                            {row.days}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  El periodo para disfrutar los días del ciclo actual es de{" "}
+                  <strong>12 meses</strong> contados desde el aniversario laboral. Registra la fecha
+                  de ingreso en cada empleado para calcular el saldo automáticamente.
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="pt-6 space-y-4">
+                <div className="flex items-center gap-2">
+                  <Palmtree className="h-5 w-5 text-green-600" />
+                  <h2 className="text-lg font-semibold">Saldo de vacaciones por empleado</h2>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Periodo vigente = 12 meses desde el último aniversario.{" "}
+                  <strong>Tomados</strong> = días registrados como vacación en ese periodo.
+                </p>
+                <div className="overflow-x-auto rounded-lg border border-border">
+                  <table className="w-full min-w-[880px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+                        <th className="px-3 py-2.5 font-medium">Empleado</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Antigüedad</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Corresponden</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Tomados</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Pendientes</th>
+                        <th className="px-3 py-2.5 font-medium">Periodo para tomarlas</th>
+                        <th className="px-3 py-2.5 font-medium">Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {vacationBalances.map((row) => (
+                        <tr key={row.employeeId} className="border-b border-border last:border-0">
+                          <td className="px-3 py-2.5 font-medium">
+                            {row.employeeName}
+                            {row.employeeCode ? (
+                              <span className="ml-1 text-xs text-muted-foreground">
+                                ({row.employeeCode})
+                              </span>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
+                            {row.status === "not_yet_vested"
+                              ? row.nextVestingDate
+                                ? `Cumple 1 año el ${row.nextVestingDate}`
+                                : "—"
+                              : row.completedYears > 0
+                                ? `${row.completedYears} año${row.completedYears === 1 ? "" : "s"}`
+                                : "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums font-medium">
+                            {row.entitledDays > 0 ? row.entitledDays : "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">
+                            {row.entitledDays > 0 ? row.usedDays : "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
+                            {row.entitledDays > 0 ? row.remainingDays : "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-muted-foreground text-xs">
+                            {row.periodStart && row.periodEnd ? (
+                              <>
+                                {row.periodStart} — {row.periodEnd}
+                                {row.daysUntilPeriodEnd != null && row.remainingDays > 0 ? (
+                                  <span className="block text-foreground">
+                                    Quedan {row.daysUntilPeriodEnd} día
+                                    {row.daysUntilPeriodEnd === 1 ? "" : "s"} del periodo
+                                  </span>
+                                ) : null}
+                              </>
+                            ) : row.nextVestingDate ? (
+                              <>Derecho a partir del {row.nextVestingDate}</>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "font-normal whitespace-nowrap",
+                                row.status === "ok" && "border-green-200 text-green-700",
+                                row.status === "expiring_soon" &&
+                                  "border-amber-200 text-amber-800",
+                                (row.status === "exceeded" ||
+                                  row.status === "unused_after_period") &&
+                                  "border-red-200 text-red-700",
+                                row.status === "no_hire_date" && "border-amber-200 text-amber-800",
+                                row.status === "not_yet_vested" &&
+                                  "border-slate-200 text-slate-600",
+                              )}
+                            >
+                              {row.status === "expiring_soon" && (
+                                <AlertTriangle className="mr-1 inline h-3 w-3" />
+                              )}
+                              {VACATION_STATUS_LABELS[row.status]}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+
             <Card>
               <CardContent className="pt-6 space-y-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1115,6 +1353,44 @@ export default function EmployeesPage() {
                   ))}
                 </SelectContent>
               </Select>
+              {selectedVacationBalance && newDayRecord.recordType === "vacation" ? (
+                <div
+                  className={cn(
+                    "rounded-lg border px-3 py-2 text-xs space-y-1",
+                    selectedVacationBalance.status === "exceeded" ||
+                      selectedVacationBalance.status === "unused_after_period"
+                      ? "border-red-200 bg-red-50 text-red-800"
+                      : selectedVacationBalance.status === "expiring_soon"
+                        ? "border-amber-200 bg-amber-50 text-amber-900"
+                        : "border-green-200 bg-green-50 text-green-800",
+                  )}
+                >
+                  <p className="font-medium">Saldo LFT (periodo actual)</p>
+                  {selectedVacationBalance.status === "no_hire_date" ? (
+                    <p>
+                      Agrega la fecha de ingreso del empleado para calcular sus días legales y el
+                      periodo de 12 meses.
+                    </p>
+                  ) : selectedVacationBalance.status === "not_yet_vested" ? (
+                    <p>
+                      Aún no cumple 1 año. Tendrá derecho a 12 días mínimos a partir del{" "}
+                      {selectedVacationBalance.nextVestingDate ?? "—"}.
+                    </p>
+                  ) : (
+                    <>
+                      <p>
+                        Le corresponden <strong>{selectedVacationBalance.entitledDays}</strong>{" "}
+                        días · Tomados: <strong>{selectedVacationBalance.usedDays}</strong> ·
+                        Pendientes: <strong>{selectedVacationBalance.remainingDays}</strong>
+                      </p>
+                      <p>
+                        Debe tomarlas entre {selectedVacationBalance.periodStart} y{" "}
+                        {selectedVacationBalance.periodEnd} (12 meses desde el aniversario).
+                      </p>
+                    </>
+                  )}
+                </div>
+              ) : null}
             </div>
             <div className="space-y-2">
               <Label>Fecha</Label>

@@ -605,6 +605,8 @@ export interface ApiGoal {
   period: ApiGoalPeriod
   /** null / ausente: cumplimiento con todos los registros del rango (sin filtrar por hora). */
   shift?: ApiGoalShift | null
+  /** false = meta desactivada. */
+  active?: boolean
   startDate: string
   endDate: string
   createdAt: string
@@ -625,8 +627,9 @@ export interface CreateGoalPayload {
   targetValue: number
   period: ApiGoalPeriod
   shift?: ApiGoalShift | null
-  startDate: string | Date
-  endDate: string | Date
+  active?: boolean
+  startDate?: string | Date
+  endDate?: string | Date
 }
 
 export interface UpdateGoalPayload extends Partial<CreateGoalPayload> {}

@@ -18,7 +18,10 @@ export interface Operator {
   machine: string
   sku: string
   units: number
+  /** Avance hacia la meta (0–100). */
   percentage: number
+  /** Unidades/cajas que faltan para la meta diaria; null si no hay meta asignada. */
+  goalRemaining?: number | null
   isLeader?: boolean
 }
 

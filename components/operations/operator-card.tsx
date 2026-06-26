@@ -136,11 +136,17 @@ export function OperatorCard({
         </span>
         <span className="text-xs text-muted-foreground">{unitsLabel}</span>
 
-        {/* Bonus progress */}
+        {/* Meta diaria */}
         <div className={cn(compact ? " w-full" : "mt-4 w-full")}>
           <div className="mb-1 flex items-center justify-between text-xs">
             <span className="text-muted-foreground">{progressTitle}</span>
-            <span className="font-semibold text-foreground">{Math.min(operator.percentage, 100)}%</span>
+            <span className="font-semibold text-foreground">
+              {operator.goalRemaining == null
+                ? "Sin meta"
+                : operator.goalRemaining > 0
+                  ? `Faltan ${operator.goalRemaining.toLocaleString("es-MX")}`
+                  : "Meta alcanzada"}
+            </span>
           </div>
 
           {/* Progress bar */}
@@ -220,8 +226,15 @@ export function OperatorRow({
             style={{ width: `${Math.min(operator.percentage, 100)}%` }}
           />
         </div>
-        <span className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")} title={progressTitle}>
-          {operator.percentage}%
+        <span
+          className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")}
+          title={progressTitle}
+        >
+          {operator.goalRemaining == null
+            ? "—"
+            : operator.goalRemaining > 0
+              ? `-${operator.goalRemaining.toLocaleString("es-MX")}`
+              : "✓"}
         </span>
       </div>
     </div>

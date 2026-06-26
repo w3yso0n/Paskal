@@ -219,6 +219,51 @@ const machineColors = [
   "#c026d3", // fuchsia
 ]
 
+type OperatorProductionStats = {
+  month: number
+  today: number
+  shift: number
+}
+
+function resolveOperatorKey(
+  payload: Record<string, unknown>,
+  employeeNameByCode: Map<string, string>,
+): string {
+  const rawOperators = payload["operators"]
+  const fromOperatorsArray =
+    Array.isArray(rawOperators) && rawOperators.length > 0 && typeof rawOperators[0] === "string"
+      ? (rawOperators[0] as string).trim()
+      : undefined
+  const rawOperator =
+    (payload["OPERATOR_1"] as string | undefined) ??
+    (payload["operator_1"] as string | undefined) ??
+    (payload["OPERATOR"] as string | undefined) ??
+    (payload["operator"] as string | undefined) ??
+    fromOperatorsArray ??
+    "—"
+  const opCode = String(rawOperator ?? "—").trim() || "—"
+  return employeeNameByCode.get(opCode) ?? employeeNameByCode.get(opCode.toLowerCase()) ?? opCode
+}
+
+function isProductionEvent(e: ApiProductionEvent): boolean {
+  const payload = e.payload ?? {}
+  const rawEvent =
+    (payload["EVENT"] as string | undefined) ??
+    (payload["event"] as string | undefined) ??
+    e.eventType
+  const event = String(rawEvent ?? "").toLowerCase()
+  return event.includes("produ") || event === "prod" || event.includes("prod")
+}
+
+function eventProductionCount(payload: Record<string, unknown>): number {
+  const rawCount =
+    (payload["COUNT"] as unknown) ??
+    (payload["count"] as unknown) ??
+    (payload["units"] as unknown)
+  const count = typeof rawCount === "number" ? rawCount : Number(rawCount)
+  return Number.isFinite(count) && count > 0 ? count : 0
+}
+
 export default function HomePage() {
   const { getAccessToken } = useAuth()
   const [loading, setLoading] = useState(true)
@@ -230,12 +275,13 @@ export default function HomePage() {
   const [monthlyGoal, setMonthlyGoal] = useState<{ actual: number; target: number; pct: number } | null>(
     null,
   )
+  const [operatorStats, setOperatorStats] = useState<Record<string, OperatorProductionStats>>({})
   const [selectedShift, setSelectedShift] = useState<ShiftId>("shift1")
 
   useEffect(() => {
     let cancelled = false
-    const load = async () => {
-      setLoading(true)
+    const load = async (silent = false) => {
+      if (!silent) setLoading(true)
       try {
         const token = await getAccessToken()
         if (!token) {
@@ -245,6 +291,7 @@ export default function HomePage() {
             setEmployees([])
             setTotalProduced(0)
             setProducedToday(0)
+            setOperatorStats({})
           }
           return
         }
@@ -269,6 +316,7 @@ export default function HomePage() {
         }
 
         const byBucket = new Map<string, Record<string, string | number>>()
+        const statsByOperator = new Map<string, OperatorProductionStats>()
         let total = 0
         let today = 0
         const now = new Date()
@@ -315,52 +363,40 @@ export default function HomePage() {
 
         for (const e of events) {
           const payload = e.payload ?? {}
-          const rawEvent =
-            (payload["EVENT"] as string | undefined) ??
-            (payload["event"] as string | undefined) ??
-            e.eventType
-          const event = String(rawEvent ?? "").toLowerCase()
-          const isProduction = event.includes("produ") || event === "prod" || event.includes("prod")
-          if (!isProduction) continue
+          if (!isProductionEvent(e)) continue
 
-          const rawCount =
-            (payload["COUNT"] as unknown) ??
-            (payload["count"] as unknown) ??
-            (payload["units"] as unknown)
-          const count = typeof rawCount === "number" ? rawCount : Number(rawCount)
-          if (!Number.isFinite(count) || count <= 0) continue
+          const count = eventProductionCount(payload)
+          if (count <= 0) continue
 
           const ts = new Date(e.occurredAt)
           if (Number.isNaN(ts.getTime())) continue
 
-          const isThisMonth = ts >= startOfMonthTz && ts < endOfMonthTz
-          if (isThisMonth) total += count
-          const isToday = ts >= startOfTodayTz && ts < endOfTodayTz
-          if (isToday) today += count
+          const operatorKey = resolveOperatorKey(payload, employeeNameByCode)
+          const opStats = statsByOperator.get(operatorKey) ?? { month: 0, today: 0, shift: 0 }
 
-          // La gráfica por turno debe mostrar SOLO el rango del turno seleccionado.
-          if (ts < shiftStart || ts >= shiftEnd) continue
+          const isThisMonth = ts >= startOfMonthTz && ts < endOfMonthTz
+          if (isThisMonth) {
+            total += count
+            opStats.month += count
+          }
+          const isToday = ts >= startOfTodayTz && ts < endOfTodayTz
+          if (isToday) {
+            today += count
+            opStats.today += count
+          }
+          const inShift = ts >= shiftStart && ts < shiftEnd
+          if (inShift) {
+            opStats.shift += count
+          }
+          statsByOperator.set(operatorKey, opStats)
+
+          if (!inShift) continue
 
           const bucket = new Date(ts)
           bucket.setMinutes(0, 0, 0)
-          const label = formatHmInTimeZone(bucket, DASHBOARD_TIMEZONE) // HH:MM
+          const label = formatHmInTimeZone(bucket, DASHBOARD_TIMEZONE)
           if (!byBucket.has(label)) continue
 
-          const rawOperators = payload["operators"]
-          const fromOperatorsArray =
-            Array.isArray(rawOperators) && rawOperators.length > 0 && typeof rawOperators[0] === "string"
-              ? (rawOperators[0] as string).trim()
-              : undefined
-          const rawOperator =
-            (payload["OPERATOR_1"] as string | undefined) ??
-            (payload["operator_1"] as string | undefined) ??
-            (payload["OPERATOR"] as string | undefined) ??
-            (payload["operator"] as string | undefined) ??
-            fromOperatorsArray ??
-            "—"
-          const opCode = String(rawOperator ?? "—").trim() || "—"
-          const operatorKey =
-            employeeNameByCode.get(opCode) ?? employeeNameByCode.get(opCode.toLowerCase()) ?? opCode
           const row = byBucket.get(label) ?? { time: label }
           row[operatorKey] = (Number(row[operatorKey]) || 0) + count
           byBucket.set(label, row)
@@ -381,6 +417,7 @@ export default function HomePage() {
           return next
         })
         setOperatorProductionData(rows)
+        setOperatorStats(Object.fromEntries(statsByOperator))
         setTotalProduced(total)
         setProducedToday(today)
         if (monthlyTarget > 0) {
@@ -393,11 +430,11 @@ export default function HomePage() {
           setMonthlyGoal(null)
         }
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled && !silent) setLoading(false)
       }
     }
-    load()
-    const intervalId = window.setInterval(load, 30_000)
+    load(false)
+    const intervalId = window.setInterval(() => load(true), 30_000)
     return () => {
       cancelled = true
       window.clearInterval(intervalId)
@@ -419,7 +456,18 @@ export default function HomePage() {
   const [visibleMachines, setVisibleMachines] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
-    setVisibleMachines(Object.fromEntries(operatorKeys.map((key) => [key, true])))
+    setVisibleMachines((prev) => {
+      const prevKeys = Object.keys(prev).sort().join("\0")
+      const nextKeys = operatorKeys.join("\0")
+      if (prevKeys === nextKeys && operatorKeys.every((k) => k in prev)) {
+        return prev
+      }
+      const next: Record<string, boolean> = {}
+      for (const key of operatorKeys) {
+        next[key] = key in prev ? prev[key]! : true
+      }
+      return next
+    })
   }, [operatorKeys])
 
   const toggleMachine = (name: string) => {
@@ -436,8 +484,63 @@ export default function HomePage() {
   }
 
   const allVisible = operatorKeys.length === 0 || operatorKeys.every((key) => visibleMachines[key])
-  const someVisible = operatorKeys.length === 0 || operatorKeys.some((key) => visibleMachines[key])
+
+  const selectedOperators = useMemo(
+    () => operatorKeys.filter((key) => visibleMachines[key]),
+    [operatorKeys, visibleMachines],
+  )
+
+  const operatorFilterActive = useMemo(
+    () => operatorKeys.length > 0 && selectedOperators.length < operatorKeys.length,
+    [operatorKeys.length, selectedOperators.length],
+  )
+
+  const displayKpis = useMemo(() => {
+    if (!operatorFilterActive || selectedOperators.length === 0) {
+      return {
+        month: totalProduced,
+        today: producedToday,
+        shift: null as number | null,
+        operatorLabel: null as string | null,
+      }
+    }
+
+    let month = 0
+    let today = 0
+    let shift = 0
+    for (const op of selectedOperators) {
+      const stats = operatorStats[op]
+      if (!stats) continue
+      month += stats.month
+      today += stats.today
+      shift += stats.shift
+    }
+
+    const operatorLabel =
+      selectedOperators.length === 1
+        ? selectedOperators[0]
+        : `${selectedOperators.length} operadores seleccionados`
+
+    return { month, today, shift, operatorLabel }
+  }, [
+    operatorFilterActive,
+    selectedOperators,
+    operatorStats,
+    totalProduced,
+    producedToday,
+  ])
+
+  const filteredMonthlyGoal = useMemo(() => {
+    if (!monthlyGoal || !operatorFilterActive) return monthlyGoal
+    return {
+      actual: displayKpis.month,
+      target: monthlyGoal.target,
+      pct: monthlyGoal.target > 0 ? Math.round((displayKpis.month / monthlyGoal.target) * 100) : 0,
+    }
+  }, [monthlyGoal, operatorFilterActive, displayKpis.month])
+
   const machinesActive = machines.filter((m) => m.status === "green").length
+  const shiftLabel = selectedShift === "shift1" ? "Turno 1" : "Turno 2"
   return (
     <DashboardLayout breadcrumbs={[{ label: "Inicio" }]}>
       <div className="space-y-6">
@@ -452,36 +555,55 @@ export default function HomePage() {
         {/* KPI Cards */}
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <KpiCard
-            title="Producción del Mes"
-            value={loading ? "—" : totalProduced.toLocaleString()}
+            title={operatorFilterActive ? "Producción del mes (operador)" : "Producción del Mes"}
+            value={loading ? "—" : displayKpis.month.toLocaleString()}
+            subtitle={displayKpis.operatorLabel ?? undefined}
             icon={Package}
             iconColor="text-primary"
           />
           <KpiCard
-            title="Producido Hoy"
-            value={loading ? "—" : producedToday.toLocaleString()}
+            title={operatorFilterActive ? "Producido hoy (operador)" : "Producido Hoy"}
+            value={loading ? "—" : displayKpis.today.toLocaleString()}
+            subtitle={displayKpis.operatorLabel ?? undefined}
             icon={Clock}
             iconColor="text-cyan-600"
           />
           <KpiCard
-            title="Máquinas Activas"
-            value={loading ? "—" : String(machinesActive)}
-            icon={Server}
+            title={
+              operatorFilterActive
+                ? `Producción en ${shiftLabel}`
+                : "Máquinas Activas"
+            }
+            value={
+              loading
+                ? "—"
+                : operatorFilterActive
+                  ? (displayKpis.shift ?? 0).toLocaleString()
+                  : String(machinesActive)
+            }
+            subtitle={
+              operatorFilterActive
+                ? displayKpis.operatorLabel ?? undefined
+                : undefined
+            }
+            icon={operatorFilterActive ? Clock : Server}
             iconColor="text-primary"
           />
           <KpiCard
             title="Meta Mensual"
             value={
-              loading || monthlyGoal == null
+              loading || filteredMonthlyGoal == null
                 ? "—"
-                : `${monthlyGoal.actual.toLocaleString()} / ${monthlyGoal.target.toLocaleString()}`
+                : `${filteredMonthlyGoal.actual.toLocaleString()} / ${filteredMonthlyGoal.target.toLocaleString()}`
             }
             subtitle={
               loading
                 ? "Cargando…"
-                : monthlyGoal == null
+                : filteredMonthlyGoal == null
                   ? "Sin meta mensual configurada"
-                  : `${monthlyGoal.pct}% del objetivo`
+                  : operatorFilterActive
+                    ? `${filteredMonthlyGoal.pct}% del objetivo · ${displayKpis.operatorLabel ?? "operador"}`
+                    : `${filteredMonthlyGoal.pct}% del objetivo`
             }
             icon={Target}
             iconColor="text-teal-600"

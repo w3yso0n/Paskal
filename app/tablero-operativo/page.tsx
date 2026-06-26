@@ -3,29 +3,32 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { OperatorCard, OperatorRow } from "@/components/operations/operator-card"
-import { Trophy, Maximize2, Minimize2, BarChart3, Gauge } from "lucide-react"
+import { Trophy, Maximize2, Minimize2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-} from "@/components/ui/chart"
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts"
 import { useAuth } from "@/contexts/auth-context"
 import {
   getActiveMachineCheckins,
+  getBonusProductionConfigForMonth,
   getEmployees,
+  getGoals,
   getMachines,
   getProductionEvents,
   type ApiEmployee,
+  type ApiGoal,
   type ApiMachine,
   type ApiMachineCheckin,
   type ApiProductionEvent,
 } from "@/lib/api"
 import { filterFloorMachines } from "@/lib/machine-floor"
+import { bonusConfigToGoalDefinitions } from "@/lib/bonus-goals-bridge"
+import { DEFAULT_BONUS_PRODUCTION_CONFIG } from "@/lib/bonus-production-config"
+import {
+  productionShiftFromMeasuredAt,
+  resolveOperatorDailyGoalProgress,
+  todayDateKeyInTimeZone,
+} from "@/lib/tablero-operator-goal"
 
-type BoardView = "daily-totals" | "ranking-per-minute"
 type RankingRange = "day" | "month" | "semester"
 
 const TABLERO_TIMEZONE = "America/Mexico_City"
@@ -38,6 +41,12 @@ type UiOperator = {
   sku: string
   units: number
   percentage: number
+  goalRemaining: number | null
+  opCode: string
+  machineId: string | null
+  machineCode: string
+  machineName: string
+  unitsPerBox: number | null
 }
 
 function initialsFromName(name: string): string {
@@ -398,12 +407,6 @@ function getSemesterBoundsInTimeZone(now: Date, timeZone: string): { start: Date
   return { start, end }
 }
 
-function getDailyTotalsBounds(now: Date): { start: Date; end: Date } {
-  const end = now
-  const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
-  return { start, end }
-}
-
 function getRankingRangeBounds(
   now: Date,
   range: RankingRange,
@@ -412,15 +415,6 @@ function getRankingRangeBounds(
   if (range === "day") return getDayBoundsInTimeZone(now, timeZone)
   if (range === "month") return getMonthBoundsInTimeZone(now, timeZone)
   return getSemesterBoundsInTimeZone(now, timeZone)
-}
-
-function formatDayKeyInTz(date: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date)
 }
 
 function formatMinuteKeyInTz(date: Date, timeZone: string): string {
@@ -433,25 +427,18 @@ function formatMinuteKeyInTz(date: Date, timeZone: string): string {
   return `${y}-${m}-${d}T${h}:${min}`
 }
 
-function formatDayLabel(dayKey: string): string {
-  const d = new Date(`${dayKey}T12:00:00`)
-  return d.toLocaleDateString("es-MX", { day: "2-digit", month: "short" })
-}
-
-function aggregateDailyProduction(events: ApiProductionEvent[]) {
-  const byDay = new Map<string, number>()
-  for (const e of events) {
-    if (!isProductionIncrementEvent(e)) continue
-    const count = getEventCount(e)
-    if (count <= 0) continue
-    const ts = new Date(e.occurredAt)
-    if (Number.isNaN(ts.getTime())) continue
-    const dayKey = formatDayKeyInTz(ts, TABLERO_TIMEZONE)
-    byDay.set(dayKey, (byDay.get(dayKey) ?? 0) + count)
+function buildMachineMaps(machines: ApiMachine[]) {
+  const skuById = new Map<string, string>()
+  const upbById = new Map<string, number>()
+  const byId = new Map<string, ApiMachine>()
+  for (const m of machines) {
+    byId.set(m.id, m)
+    const sku = m.currentSku?.trim()
+    if (sku) skuById.set(m.id, sku)
+    const upb = m.unitsPerBox
+    if (upb != null && Number.isFinite(upb) && upb > 0) upbById.set(m.id, upb)
   }
-  return [...byDay.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([day, units]) => ({ day, label: formatDayLabel(day), units }))
+  return { skuById, upbById, byId }
 }
 
 function buildOperatorRankingPerMinute(
@@ -459,14 +446,28 @@ function buildOperatorRankingPerMinute(
   employees: ApiEmployee[],
   machines: ApiMachine[],
   checkins: ApiMachineCheckin[],
+  goals: ApiGoal[],
+  todayEvents: ApiProductionEvent[],
+  goalDefinitions: ReturnType<typeof bonusConfigToGoalDefinitions>,
 ): UiOperator[] {
   const codeToName = buildEmployeeCodeToNameMap(employees)
   const floorMachines = filterFloorMachines(machines)
   const machineIdx = buildMachineOperatorCodeIndex(floorMachines, checkins)
   const machinesById = buildMachinesByIdMap(floorMachines)
+  const { skuById, upbById, byId: machineById } = buildMachineMaps(floorMachines)
+  const today = todayDateKeyInTimeZone(TABLERO_TIMEZONE)
   const byOperatorCode = new Map<
     string,
-    { units: number; minuteSlots: Set<string>; machine: string; sku: string }
+    {
+      units: number
+      minuteSlots: Set<string>
+      machine: string
+      sku: string
+      machineId: string | null
+      machineCode: string
+      machineName: string
+      unitsPerBox: number | null
+    }
   >()
 
   for (const e of events) {
@@ -502,6 +503,18 @@ function buildOperatorRankingPerMinute(
       checkins,
     )
     const sku = skuFromPayload !== "—" ? skuFromPayload : skuFromMachine ?? "—"
+    const catalogMachineId = tableroCatalogMachineIdForEvent(
+      machineRaw,
+      eventMid,
+      machinesById,
+      machineIdx.machineByCodeLower,
+      employees,
+      checkins,
+    )
+    const machineEntity = catalogMachineId ? machineById.get(catalogMachineId) : undefined
+    const machineCode = machineEntity?.code?.trim() || machine
+    const machineName = machineEntity?.name?.trim() || ""
+    const unitsPerBox = machineEntity?.unitsPerBox ?? null
 
     const ts = new Date(e.occurredAt)
     const minuteKey = Number.isNaN(ts.getTime())
@@ -513,35 +526,70 @@ function buildOperatorRankingPerMinute(
       minuteSlots: new Set<string>(),
       machine,
       sku,
+      machineId: catalogMachineId,
+      machineCode,
+      machineName,
+      unitsPerBox,
     }
     if (minuteKey) current.minuteSlots.add(minuteKey)
+    const nextMachineId = catalogMachineId ?? current.machineId
+    const nextMachine = machineById.get(nextMachineId ?? "")
     byOperatorCode.set(opCode, {
       units: current.units + count,
       minuteSlots: current.minuteSlots,
       machine: pickMoreReadableMachineLabel(current.machine, machine),
       sku: current.sku !== "—" ? current.sku : sku,
+      machineId: nextMachineId,
+      machineCode: nextMachine?.code?.trim() || current.machineCode || machineCode,
+      machineName: nextMachine?.name?.trim() || current.machineName || machineName,
+      unitsPerBox: nextMachine?.unitsPerBox ?? current.unitsPerBox ?? unitsPerBox,
     })
   }
 
-  const rates = [...byOperatorCode.entries()].map(([opCode, v]) => {
-    const slots = v.minuteSlots.size
-    const rate = slots > 0 ? v.units / slots : 0
-    return { opCode, v, rate: Math.round(rate * 100) / 100 }
-  })
-  const topRate = rates.reduce((max, r) => Math.max(max, r.rate), 0)
+  const resolveOperatorCode = (e: ApiProductionEvent) =>
+    getOperatorCodeForProductionEvent(e, machineIdx).code
 
-  return rates
-    .map(({ opCode, v, rate }, idx) => {
+  return [...byOperatorCode.entries()]
+    .map(([opCode, v]) => {
+      const slots = v.minuteSlots.size
+      const rate = slots > 0 ? v.units / slots : 0
       const displayName = resolveOperatorDisplayName(opCode, codeToName)
-      const rawPct = topRate > 0 ? (rate / topRate) * 100 : 0
+      const shift =
+        productionShiftFromMeasuredAt(new Date().toISOString()) ??
+        (todayEvents.length > 0
+          ? productionShiftFromMeasuredAt(todayEvents[todayEvents.length - 1].occurredAt)
+          : null)
+      const goalProgress = resolveOperatorDailyGoalProgress(
+        goals,
+        goalDefinitions,
+        todayEvents,
+        {
+          operatorCode: opCode,
+          machineId: v.machineId,
+          machineCode: v.machineCode,
+          machineName: v.machineName,
+          sku: v.sku,
+          unitsPerBox: v.unitsPerBox,
+          shift,
+          today,
+        },
+        skuById,
+        upbById,
+        resolveOperatorCode,
+      )
       return {
-        id: idx + 1,
+        opCode,
         initials: initialsFromName(displayName),
         name: displayName,
         machine: v.machine,
         sku: v.sku,
-        units: rate,
-        percentage: Math.max(0, Math.min(100, Math.round(rawPct))),
+        units: Math.round(rate * 100) / 100,
+        percentage: goalProgress.percentage,
+        goalRemaining: goalProgress.goalRemaining,
+        machineId: v.machineId,
+        machineCode: v.machineCode,
+        machineName: v.machineName,
+        unitsPerBox: v.unitsPerBox,
       }
     })
     .sort((a, b) => b.units - a.units)
@@ -551,11 +599,7 @@ function buildOperatorRankingPerMinute(
 export default function OperationsBoardPage() {
   const { getAccessToken } = useAuth()
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [boardView, setBoardView] = useState<BoardView>("ranking-per-minute")
   const [rankingRange, setRankingRange] = useState<RankingRange>("day")
-  const [dailyTotals, setDailyTotals] = useState<{ day: string; label: string; units: number }[]>(
-    [],
-  )
   const containerRef = useRef<HTMLDivElement>(null)
   const sinOperadorHintLogged = useRef(false)
   const [operators, setOperators] = useState<UiOperator[]>([])
@@ -581,46 +625,56 @@ export default function OperationsBoardPage() {
       try {
         const token = await getAccessToken()
         if (!token) {
-          if (!cancelled) {
-            setOperators([])
-            setDailyTotals([])
-          }
+          if (!cancelled) setOperators([])
           return
         }
 
         const now = new Date()
-        const bounds =
-          boardView === "daily-totals"
-            ? getDailyTotalsBounds(now)
-            : getRankingRangeBounds(now, rankingRange, TABLERO_TIMEZONE)
+        const bounds = getRankingRangeBounds(now, rankingRange, TABLERO_TIMEZONE)
+        const dayBounds = getDayBoundsInTimeZone(now, TABLERO_TIMEZONE)
         const limit =
-          boardView === "daily-totals"
-            ? 50_000
-            : rankingRange === "semester"
-              ? 120_000
-              : rankingRange === "month"
-                ? 50_000
-                : 15_000
+          rankingRange === "semester"
+            ? 120_000
+            : rankingRange === "month"
+              ? 50_000
+              : 15_000
+        const bonusMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
 
-        const [events, employees, machines, checkins] = await Promise.all([
+        const [events, todayEvents, employees, machines, checkins, goals] = await Promise.all([
           getProductionEvents(token, {
             from: bounds.start.toISOString(),
             to: bounds.end.toISOString(),
             limit,
           }),
+          getProductionEvents(token, {
+            from: dayBounds.start.toISOString(),
+            to: dayBounds.end.toISOString(),
+            limit: 15_000,
+          }),
           getEmployees(token),
           getMachines(token),
           getActiveMachineCheckins(token),
+          getGoals(token),
         ])
         if (cancelled) return
 
-        if (boardView === "daily-totals") {
-          setDailyTotals(aggregateDailyProduction(events))
-          setOperators([])
-          return
+        let goalDefinitions = bonusConfigToGoalDefinitions(DEFAULT_BONUS_PRODUCTION_CONFIG)
+        try {
+          const cfg = await getBonusProductionConfigForMonth(token, bonusMonth)
+          goalDefinitions = bonusConfigToGoalDefinitions(cfg.config)
+        } catch {
+          // Usa valores por defecto si no hay config de bono del mes.
         }
 
-        const rows = buildOperatorRankingPerMinute(events, employees, machines, checkins)
+        const rows = buildOperatorRankingPerMinute(
+          events,
+          employees,
+          machines,
+          checkins,
+          goals,
+          todayEvents,
+          goalDefinitions,
+        )
         const debug = isTableroDebugEnabled()
 
         if (
@@ -642,21 +696,19 @@ export default function OperationsBoardPage() {
           })
         }
 
-        setDailyTotals([])
         setOperators(rows)
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
     load()
-    const intervalMs =
-      boardView === "ranking-per-minute" && rankingRange === "day" ? 20_000 : 60_000
+    const intervalMs = rankingRange === "day" ? 20_000 : 60_000
     const intervalId = window.setInterval(load, intervalMs)
     return () => {
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [getAccessToken, boardView, rankingRange])
+  }, [getAccessToken, rankingRange])
 
   const sortedOperators = useMemo(
     () => [...operators].sort((a, b) => b.units - a.units),
@@ -667,7 +719,6 @@ export default function OperationsBoardPage() {
   const leftColumn = useMemo(() => restOperators.filter((_, i) => i % 2 === 0), [restOperators])
   const rightColumn = useMemo(() => restOperators.filter((_, i) => i % 2 === 1), [restOperators])
   const hasOperators = operators.length > 0
-  const hasDailyTotals = dailyTotals.length > 0
   const rankingRangeLabel =
     rankingRange === "day" ? "Hoy" : rankingRange === "month" ? "Mes actual" : "Semestre"
 
@@ -699,74 +750,21 @@ export default function OperationsBoardPage() {
           </Button>
         </div>
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
           <ToggleGroup
             type="single"
-            value={boardView}
+            value={rankingRange}
             onValueChange={(v) => {
-              if (v === "daily-totals" || v === "ranking-per-minute") setBoardView(v)
+              if (v === "day" || v === "month" || v === "semester") setRankingRange(v)
             }}
             className="justify-start"
           >
-            <ToggleGroupItem value="daily-totals" aria-label="Producción día a día" className="gap-1.5">
-              <BarChart3 className="h-4 w-4" />
-              Producción día a día
-            </ToggleGroupItem>
-            <ToggleGroupItem
-              value="ranking-per-minute"
-              aria-label="Ranking por minuto"
-              className="gap-1.5"
-            >
-              <Gauge className="h-4 w-4" />
-              Ranking por minuto
-            </ToggleGroupItem>
+            <ToggleGroupItem value="day">Día</ToggleGroupItem>
+            <ToggleGroupItem value="month">Mes</ToggleGroupItem>
+            <ToggleGroupItem value="semester">Semestre</ToggleGroupItem>
           </ToggleGroup>
-
-          {boardView === "ranking-per-minute" && (
-            <ToggleGroup
-              type="single"
-              value={rankingRange}
-              onValueChange={(v) => {
-                if (v === "day" || v === "month" || v === "semester") setRankingRange(v)
-              }}
-              className="justify-start"
-            >
-              <ToggleGroupItem value="day">Día</ToggleGroupItem>
-              <ToggleGroupItem value="month">Mes</ToggleGroupItem>
-              <ToggleGroupItem value="semester">Semestre</ToggleGroupItem>
-            </ToggleGroup>
-          )}
         </div>
 
-        {boardView === "daily-totals" ? (
-          loading ? (
-            <div className="flex min-h-[320px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-muted-foreground">
-              Cargando producción diaria…
-            </div>
-          ) : hasDailyTotals ? (
-            <div className="rounded-xl border border-border bg-card p-4 sm:p-6">
-              <h2 className="text-lg font-semibold text-foreground mb-1">Producción total por día</h2>
-              <p className="text-xs text-muted-foreground mb-4">Últimos 30 días</p>
-              <ChartContainer
-                className="h-[360px] w-full aspect-auto"
-                config={{ units: { label: "Unidades", color: "#22c55e" } }}
-              >
-                <BarChart data={dailyTotals} margin={{ left: 8, right: 8 }}>
-                  <CartesianGrid vertical={false} />
-                  <XAxis dataKey="label" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-                  <YAxis tick={{ fontSize: 12 }} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <Bar dataKey="units" fill="var(--color-units)" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ChartContainer>
-            </div>
-          ) : (
-            <div className="flex min-h-[320px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-muted-foreground">
-              Sin datos de producción en los últimos 30 días.
-            </div>
-          )
-        ) : (
-          <>
         {/* Top 3 Podium */}
         {loading ? (
           <div className="flex min-h-[200px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-muted-foreground">
@@ -783,7 +781,7 @@ export default function OperationsBoardPage() {
                       rank={2}
                       density="compact"
                       unitsLabel="uds/min"
-                      progressTitle="Relativo"
+                      progressTitle="Meta diaria"
                     />
                   </div>
                 )}
@@ -794,7 +792,7 @@ export default function OperationsBoardPage() {
                       rank={1}
                       density="compact"
                       unitsLabel="uds/min"
-                      progressTitle="Relativo"
+                      progressTitle="Meta diaria"
                     />
                   </div>
                 )}
@@ -805,7 +803,7 @@ export default function OperationsBoardPage() {
                       rank={3}
                       density="compact"
                       unitsLabel="uds/min"
-                      progressTitle="Relativo"
+                      progressTitle="Meta diaria"
                     />
                   </div>
                 )}
@@ -845,14 +843,10 @@ export default function OperationsBoardPage() {
             Sin datos de operadores.
           </div>
         )}
-          </>
-        )}
 
         {/* Footer info */}
         <div className="text-center text-xs text-muted-foreground">
-          {boardView === "daily-totals"
-            ? "Actualización automática cada 60 s • Últimos 30 días"
-            : `Actualización automática • Ranking por minuto (${rankingRangeLabel})`}
+          {`Actualización automática • Ranking por minuto (${rankingRangeLabel})`}
         </div>
       </div>
     </DashboardLayout>
