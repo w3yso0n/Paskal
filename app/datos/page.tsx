@@ -63,7 +63,21 @@ const TABLE_GROUPS = [
 ] as const
 
 const TABLES: TableDef[] = [
-  { table: "machines", label: "Máquinas", group: "Producción y planta" },
+  {
+    table: "machines",
+    label: "Máquinas",
+    group: "Producción y planta",
+    // Muestra el roster activo (operadores/empacadores) junto a la máquina vía join al check-in activo.
+    defaultSql:
+      "select m.code, m.status, m.current_sku, m.units_per_box, m.orphan_units,\n" +
+      "  c.operator_code, c.operator_2_code,\n" +
+      "  c.packager_1_code, c.packager_2_code, c.packager_3_code, c.packager_4_code,\n" +
+      "  m.last_seen_at, m.last_abs_count, m.last_production_at, m.count_at_checkout,\n" +
+      "  m.floor_row, m.floor_col, m.id\n" +
+      "from machines m\n" +
+      "left join machine_checkins c on c.machine_id = m.id and c.is_active = true\n" +
+      "order by m.code",
+  },
   {
     table: "production_events",
     label: "Eventos de producción",
