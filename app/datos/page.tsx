@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useCallback, useEffect, useMemo, useState } from "react"
-import { Database, Eye, Loader2, Play, RotateCcw, Search } from "lucide-react"
+import { Braces, Copy, Database, Eye, Loader2, Play, RotateCcw, Search } from "lucide-react"
 import { toast } from "sonner"
 
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
@@ -50,6 +50,8 @@ interface TableDef {
   table: string
   label: string
   group: string
+  /** Consulta inicial a medida (si no, `select * from <table>`). */
+  defaultSql?: string
 }
 
 const TABLE_GROUPS = [
@@ -62,7 +64,17 @@ const TABLE_GROUPS = [
 
 const TABLES: TableDef[] = [
   { table: "machines", label: "Máquinas", group: "Producción y planta" },
-  { table: "production_events", label: "Eventos de producción", group: "Producción y planta" },
+  {
+    table: "production_events",
+    label: "Eventos de producción",
+    group: "Producción y planta",
+    // Muestra el código de máquina (no el uuid) y omite run_id (siempre vacío).
+    defaultSql:
+      "select e.occurred_at, m.code as machine_code, e.event_type, e.message, e.payload, e.id\n" +
+      "from production_events e\n" +
+      "left join machines m on m.id = e.machine_id\n" +
+      "order by e.occurred_at desc",
+  },
   { table: "production_runs", label: "Corridas de producción", group: "Producción y planta" },
   { table: "work_orders", label: "Órdenes de trabajo", group: "Producción y planta" },
   { table: "machine_checkins", label: "Check-ins", group: "Producción y planta" },
@@ -86,7 +98,8 @@ const TABLES: TableDef[] = [
   { table: "notification_targets", label: "Destinos de notificación", group: "Reglas y registros" },
 ]
 
-const defaultSqlFor = (table: string) => `select * from ${table}`
+const defaultSqlFor = (table: string) =>
+  TABLES.find((t) => t.table === table)?.defaultSql ?? `select * from ${table}`
 
 const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/
 
@@ -219,6 +232,14 @@ export default function DatosPage() {
       e.preventDefault()
       void run(sql)
     }
+  }
+
+  const copyDetail = () => {
+    if (!detail) return
+    navigator.clipboard
+      .writeText(JSON.stringify(detail, null, 2))
+      .then(() => toast.success("Copiado al portapapeles"))
+      .catch(() => toast.error("No se pudo copiar"))
   }
 
   return (
@@ -390,11 +411,28 @@ export default function DatosPage() {
                               <Eye className="h-4 w-4" />
                             </Button>
                           </TableCell>
-                          {columns.map((col) => (
-                            <TableCell key={col} className="max-w-xs align-top text-sm">
-                              {renderCell(row[col])}
-                            </TableCell>
-                          ))}
+                          {columns.map((col) => {
+                            const value = row[col]
+                            const isObject = value !== null && typeof value === "object"
+                            return (
+                              <TableCell key={col} className="max-w-xs align-top text-sm">
+                                {isObject ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-6 gap-1 px-1.5 font-mono text-xs text-muted-foreground"
+                                    onClick={() => setDetail(row)}
+                                    aria-label={`Ver ${col}`}
+                                  >
+                                    <Braces className="h-3 w-3" />
+                                    {Array.isArray(value) ? `[${value.length}]` : "{…}"}
+                                  </Button>
+                                ) : (
+                                  renderCell(value)
+                                )}
+                              </TableCell>
+                            )
+                          })}
                         </TableRow>
                       ))}
                     </TableBody>
@@ -434,8 +472,14 @@ export default function DatosPage() {
         <Dialog open={detail !== null} onOpenChange={(open) => !open && setDetail(null)}>
           <DialogContent className="max-h-[80vh] max-w-2xl overflow-hidden">
             <DialogHeader>
-              <DialogTitle>Fila</DialogTitle>
-              <DialogDescription>Vista completa (solo lectura).</DialogDescription>
+              <div className="flex items-center justify-between gap-3 pr-6">
+                <DialogTitle>Registro</DialogTitle>
+                <Button variant="outline" size="sm" onClick={copyDetail}>
+                  <Copy className="mr-1.5 h-3.5 w-3.5" />
+                  Copiar
+                </Button>
+              </div>
+              <DialogDescription>Vista completa, incluido el payload (solo lectura).</DialogDescription>
             </DialogHeader>
             <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-4 text-xs leading-relaxed">
               {detail ? JSON.stringify(detail, null, 2) : ""}
