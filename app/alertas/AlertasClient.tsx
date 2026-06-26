@@ -51,17 +51,23 @@ import { useSearchParams } from "next/navigation"
 import { useAuth } from "@/contexts/auth-context"
 import { hasPermission } from "@/lib/permissions"
 import {
+  attributeOrphanProduction,
   deleteAlert,
   getAlerts,
   getBusinessAlertThresholds,
+  getEmployees,
   getMachines,
   getProductionEvents,
+  getProductSkus,
   updateAlert,
   type AlertRuleSeverity,
   type ApiAlert,
+  type ApiEmployee,
   type ApiMachine,
   type ApiProductionEvent,
+  type ApiProductSku,
 } from "@/lib/api"
+import { toast } from "sonner"
 import { useAlertRules } from "./hooks/use-alert-rules"
 import { EspIdleAlertConfigCard } from "./EspIdleAlertConfigCard"
 
@@ -245,6 +251,12 @@ export default function AlertasClient() {
   const [lastIncreaseAtByMachine, setLastIncreaseAtByMachine] = useState<Record<string, number>>(
     {},
   )
+  const [employees, setEmployees] = useState<ApiEmployee[]>([])
+  const [skus, setSkus] = useState<ApiProductSku[]>([])
+  const [assignAlert, setAssignAlert] = useState<Alert | null>(null)
+  const [assignOperator, setAssignOperator] = useState<string>("")
+  const [assignSku, setAssignSku] = useState<string>("")
+  const [assigning, setAssigning] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -256,12 +268,16 @@ export default function AlertasClient() {
           if (!cancelled) setAlerts([])
           return
         }
-        const [apiAlerts, apiMachines] = await Promise.all([
+        const [apiAlerts, apiMachines, apiEmployees, apiSkus] = await Promise.all([
           getAlerts(token),
           getMachines(token),
+          getEmployees(token),
+          getProductSkus(token),
         ])
         if (cancelled) return
         setMachineRows(apiMachines)
+        setEmployees(apiEmployees)
+        setSkus(apiSkus)
         setAlerts(apiAlerts.map(mapApiAlertToUi))
       } finally {
         if (!cancelled) setAlertsLoading(false)
@@ -394,6 +410,42 @@ export default function AlertasClient() {
     const token = await getAccessToken()
     if (!token) return
     await updateAlert(token, id, { status: "closed", closedAt: new Date().toISOString() })
+  }
+
+  // --- Atribución de producción huérfana (alertas "sin check-in") ---
+  const isOrphanAlert = (a: Alert) => a.title.startsWith("Producción sin check-in")
+  const orphanUnitsForMachine = (machineId?: string) =>
+    machineId ? machineRows.find((m) => m.id === machineId)?.orphanUnits ?? 0 : 0
+
+  const openAssign = (alert: Alert) => {
+    setAssignOperator("")
+    setAssignSku("")
+    setAssignAlert(alert)
+  }
+
+  const submitAssign = async () => {
+    if (!assignAlert?.machineId || !assignOperator) return
+    setAssigning(true)
+    try {
+      const token = await getAccessToken()
+      if (!token) {
+        toast.error("Sesión no válida o expirada.")
+        return
+      }
+      const res = await attributeOrphanProduction(token, assignAlert.machineId, {
+        operatorCode: assignOperator,
+        sku: assignSku || null,
+      })
+      toast.success(`Se atribuyeron ${res.attributed} piezas a ${assignOperator}.`)
+      setAlerts((prev) => prev.filter((a) => a.id !== assignAlert.id))
+      setMachineRows((prev) => prev.map((m) => (m.id === res.machine.id ? res.machine : m)))
+      setAssignAlert(null)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "No se pudo atribuir la producción."
+      toast.error(msg)
+    } finally {
+      setAssigning(false)
+    }
   }
 
   return (
@@ -866,10 +918,20 @@ export default function AlertasClient() {
                           </div>
 
                           <div className="flex shrink-0 items-center gap-2">
-                            {alert.actionRequired && !alert.isRead && (
+                            {isOrphanAlert(alert) && !alert.isRead && (
                               <Button
                                 size="sm"
                                 variant="default"
+                                onClick={() => openAssign(alert)}
+                              >
+                                <Users className="mr-1 h-3 w-3" />
+                                Asignar producción
+                              </Button>
+                            )}
+                            {alert.actionRequired && !alert.isRead && (
+                              <Button
+                                size="sm"
+                                variant="outline"
                                 onClick={() => handleResolve(alert.id)}
                               >
                                 <Check className="mr-1 h-3 w-3" />
@@ -915,6 +977,64 @@ export default function AlertasClient() {
           Actualizaciones en tiempo real activas
         </div>
       </div>
+
+      <Dialog open={assignAlert !== null} onOpenChange={(o) => !o && setAssignAlert(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Asignar producción huérfana</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Hay{" "}
+              <span className="font-medium text-foreground">
+                {orphanUnitsForMachine(assignAlert?.machineId)} piezas
+              </span>{" "}
+              producidas sin estar en verde. Elige el operador y SKU a quien se le acreditarán.
+            </p>
+            <div className="space-y-1.5">
+              <Label>Operador</Label>
+              <Select value={assignOperator} onValueChange={setAssignOperator}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecciona operador" />
+                </SelectTrigger>
+                <SelectContent>
+                  {employees
+                    .filter((e) => e.employeeCode)
+                    .map((e) => (
+                      <SelectItem key={e.id} value={e.employeeCode as string}>
+                        {e.fullName} ({e.employeeCode})
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>SKU (opcional — si no, el actual de la máquina)</Label>
+              <Select value={assignSku} onValueChange={setAssignSku}>
+                <SelectTrigger>
+                  <SelectValue placeholder="SKU" />
+                </SelectTrigger>
+                <SelectContent>
+                  {skus.map((s) => (
+                    <SelectItem key={s.id} value={s.code}>
+                      {s.code}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setAssignAlert(null)} disabled={assigning}>
+                Cancelar
+              </Button>
+              <Button onClick={submitAssign} disabled={assigning || !assignOperator}>
+                {assigning && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                Atribuir
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   )
 }

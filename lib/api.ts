@@ -434,6 +434,8 @@ export interface ApiMachine {
   currentSku?: string | null;
   /** Derivado del SKU asignado; `null` si la máquina no tiene SKU. */
   unitsPerBox?: number | null;
+  /** Piezas producidas fuera de modo verde, pendientes de atribuir a un operador+SKU. */
+  orphanUnits?: number;
   floorRow?: number | null;
   floorCol?: number | null;
   operatorCode?: string | null;
@@ -449,6 +451,25 @@ export interface ApiMachine {
 export async function getMachines(accessToken: string): Promise<ApiMachine[]> {
   const res = await fetchWithAuth("/machine", { accessToken });
   return parseResponse<ApiMachine[]>(res);
+}
+
+export interface AttributeOrphanResult {
+  attributed: number;
+  machine: ApiMachine;
+}
+
+/** Atribuye la producción huérfana de una máquina a un operador + SKU (acción de alerta). */
+export async function attributeOrphanProduction(
+  accessToken: string,
+  machineId: string,
+  body: { operatorCode?: string | null; operator2Code?: string | null; sku?: string | null },
+): Promise<AttributeOrphanResult> {
+  const res = await fetchWithAuth(`/machine/${machineId}/attribute-orphan`, {
+    accessToken,
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return parseResponse<AttributeOrphanResult>(res);
 }
 
 export interface UpdateMachinePayload {
