@@ -795,7 +795,6 @@ export async function deleteAlert(accessToken: string, id: string): Promise<ApiA
 export interface ApiProductionEvent {
   id: string;
   machineId: string | null;
-  runId: string | null;
   eventType: string;
   message: string | null;
   occurredAt: string;
@@ -900,10 +899,9 @@ export async function getMachineCheckins(
 
 export async function getProductionEvents(
   accessToken: string,
-  params: { runId?: string; machineId?: string; limit?: number; from?: string; to?: string } = {},
+  params: { machineId?: string; limit?: number; from?: string; to?: string } = {},
 ): Promise<ApiProductionEvent[]> {
   const q = new URLSearchParams();
-  if (params.runId) q.set("runId", params.runId);
   if (params.machineId) q.set("machineId", params.machineId);
   if (params.limit != null) q.set("limit", String(params.limit));
   if (params.from) q.set("from", params.from);
