@@ -420,9 +420,11 @@ export async function deleteUser(
 
 export interface ApiMachine {
   id: string;
-  name: string;
+  /** Alias de `code` (la columna `name` se eliminó; `code` es la identidad/nombre). */
+  name?: string | null;
   code: string | null;
-  status: "running" | "idle" | "stopped" | "maintenance" | "offline";
+  /** Semáforo: verde (produciendo), amarillo (en espera), azul (mantenimiento), rojo (apagada). */
+  status: "green" | "yellow" | "blue" | "red";
   /** `false` si el dispositivo no reporta hace más de 2 min (máquina apagada). */
   online?: boolean;
   /** `true` si hay una sesión de mantenimiento activa (estado/LED azul). */
@@ -430,7 +432,8 @@ export interface ApiMachine {
   /** Último heartbeat del dispositivo (ISO). `null` = nunca ha reportado. */
   lastSeenAt?: string | null;
   currentSku?: string | null;
-  unitsPerBox?: number;
+  /** Derivado del SKU asignado; `null` si la máquina no tiene SKU. */
+  unitsPerBox?: number | null;
   floorRow?: number | null;
   floorCol?: number | null;
   operatorCode?: string | null;
@@ -439,9 +442,6 @@ export interface ApiMachine {
   packager2Code?: string | null;
   packager3Code?: string | null;
   packager4Code?: string | null;
-  configuredAt?: string | null;
-  model?: string | null;
-  serialNumber?: string | null;
   createdAt?: string;
   updatedAt?: string;
 }

@@ -52,8 +52,8 @@ import { loadQuantityRules } from "@/lib/hook-sku-quantity-table"
 import type { HookSkuQuantityRule } from "@/lib/hook-sku-generator"
 
 function mapApiMachineToFrontend(m: ApiMachine): Machine & { onFloor: boolean } {
-  const statusMap = { running: "active" as const, idle: "waiting" as const, stopped: "inactive" as const, maintenance: "maintenance" as const, offline: "inactive" as const }
-  const label = m.code ?? m.name
+  const statusMap = { green: "active" as const, yellow: "waiting" as const, blue: "maintenance" as const, red: "inactive" as const }
+  const label = m.code ?? m.name ?? ""
   const onFloor = m.floorRow != null && m.floorCol != null
   const position = {
     row: m.floorRow ?? 0,
@@ -549,20 +549,8 @@ export default function ProductionFloorPage() {
         const packer2Code = m.packers?.[1] ? employeeCodeByName.get(m.packers[1]) ?? null : null
         const packer3Code = m.packers?.[2] ? employeeCodeByName.get(m.packers[2]) ?? null : null
         const packer4Code = m.packers?.[3] ? employeeCodeByName.get(m.packers[3]) ?? null : null
-        const configured = Boolean(
-          m.sku ||
-            operatorCode ||
-            operator2Code ||
-            packer1Code ||
-            packer2Code ||
-            packer3Code ||
-            packer4Code,
-        )
-        // running (verde) con SKU + operador; el empacador es opcional.
-        const ok = Boolean(m.sku) && Boolean(operatorCode)
-        const nextStatus = ok ? "running" : "idle"
+        // El backend deriva el status (verde/amarillo) desde SKU + operador.
         const payload = {
-          status: configured ? nextStatus : "idle",
           currentSku: m.sku ? normalizeSkuCode(m.sku) : null,
           unitsPerBox: m.unitsPerBox,
           operatorCode,

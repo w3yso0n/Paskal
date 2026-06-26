@@ -642,7 +642,7 @@ export default function AlertasClient() {
             <CardContent>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {machineRows
-                  .filter((m) => m.status === "running")
+                  .filter((m) => m.status === "green")
                   .map((m) => {
                     const lastIncreaseAt = lastIncreaseAtByMachine[m.id] ?? Date.now()
                     const minutes = Math.max(

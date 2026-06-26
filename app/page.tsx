@@ -437,7 +437,7 @@ export default function HomePage() {
 
   const allVisible = operatorKeys.length === 0 || operatorKeys.every((key) => visibleMachines[key])
   const someVisible = operatorKeys.length === 0 || operatorKeys.some((key) => visibleMachines[key])
-  const machinesActive = machines.filter((m) => m.status === "running").length
+  const machinesActive = machines.filter((m) => m.status === "green").length
   return (
     <DashboardLayout breadcrumbs={[{ label: "Inicio" }]}>
       <div className="space-y-6">
