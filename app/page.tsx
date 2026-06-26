@@ -367,8 +367,14 @@ export default function HomePage() {
           opStats.shift += count
           statsByOperator.set(operatorKey, opStats)
 
+          // Corte por hora "hacia adelante": lo producido dentro de una hora se acumula en el
+          // corte de la hora SIGUIENTE (p. ej. producción a las 10:23 → etiqueta 11:00). La
+          // producción exactamente en la hora en punto (10:00:00) se queda en ese mismo corte.
           const bucket = new Date(ts)
           bucket.setMinutes(0, 0, 0)
+          if (bucket.getTime() < ts.getTime()) {
+            bucket.setHours(bucket.getHours() + 1)
+          }
           shiftHourMs.push(bucket.getTime())
           const label = formatHmInTimeZone(bucket, DASHBOARD_TIMEZONE)
           const row = byBucket.get(label) ?? { time: label }

@@ -160,7 +160,6 @@ type EmployeeFormState = {
   /** Turno asignado: "" = sin asignar, "1" = matutino, "2" = vespertino. */
   shift: "" | "1" | "2"
   hiredAt: string
-  status: ApiEmployeeStatus
 }
 
 const EMPTY_EMPLOYEE_FORM: EmployeeFormState = {
@@ -173,7 +172,6 @@ const EMPTY_EMPLOYEE_FORM: EmployeeFormState = {
   secondaryRole: "",
   shift: "",
   hiredAt: "",
-  status: "active",
 }
 
 function monthBoundsFromInput(monthValue: string) {
@@ -211,7 +209,6 @@ function employeeToForm(employee: ApiEmployee): EmployeeFormState {
     secondaryRole: employee.secondaryRole ?? "",
     shift: employee.shift === 1 ? "1" : employee.shift === 2 ? "2" : "",
     hiredAt: employee.hiredAt ?? "",
-    status: employee.status,
   }
 }
 
@@ -320,12 +317,12 @@ function EmployeeFormFields({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="none">Sin turno asignado</SelectItem>
-            <SelectItem value="1">Turno 1 — Matutino (07:00–16:00)</SelectItem>
-            <SelectItem value="2">Turno 2 — Vespertino (16:00–23:30)</SelectItem>
+            <SelectItem value="1">Turno 1 (Matutino)</SelectItem>
+            <SelectItem value="2">Turno 2 (Vespertino)</SelectItem>
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">
-          Define en qué gráfica de turno (inicio) aparece la producción de esta persona.
+          Turno en cuya gráfica del inicio cuenta su producción.
         </p>
       </div>
       {form.primaryRole === "operator" ? (
@@ -361,22 +358,6 @@ function EmployeeFormFields({
         <div className="hidden sm:block" />
       )}
       <div className="space-y-2">
-        <Label>Estado</Label>
-        <Select
-          value={form.status}
-          onValueChange={(v) => onChange({ ...form, status: v as ApiEmployeeStatus })}
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="active">Activo</SelectItem>
-            <SelectItem value="inactive">Inactivo</SelectItem>
-            <SelectItem value="terminated">Baja</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="space-y-2">
         <Label htmlFor={`${idPrefix}-rfc`}>RFC</Label>
         <Input
           id={`${idPrefix}-rfc`}
@@ -407,7 +388,6 @@ export default function EmployeesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<ApiEmployeeStatus | "all">("all")
 
   const [isEmployeeDialogOpen, setIsEmployeeDialogOpen] = useState(false)
   const [editingEmployee, setEditingEmployee] = useState<ApiEmployee | null>(null)
@@ -592,10 +572,8 @@ export default function EmployeesPage() {
   }, [getAccessToken, attendanceMonth])
 
   const stats = useMemo(() => {
-    const active = employees.filter((e) => e.status === "active").length
-    const inactive = employees.filter((e) => e.status === "inactive").length
-    const terminated = employees.filter((e) => e.status === "terminated").length
-    return { active, inactive, terminated, total: employees.length }
+    const withShift = employees.filter((e) => e.shift === 1 || e.shift === 2).length
+    return { total: employees.length, withShift }
   }, [employees])
 
   const operatorEmployees = useMemo(
@@ -612,11 +590,10 @@ export default function EmployeesPage() {
   const filteredEmployees = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
     return employees.filter((e) => {
-      if (statusFilter !== "all" && e.status !== statusFilter) return false
       if (!q) return true
       const haystack = [
         e.fullName,
-        e.employeeCode,
+        e.nfcCardUid,
         e.position,
         e.rfc,
         e.imss,
@@ -627,7 +604,7 @@ export default function EmployeesPage() {
         .toLowerCase()
       return haystack.includes(q)
     })
-  }, [employees, searchQuery, statusFilter])
+  }, [employees, searchQuery])
 
   const openCreateEmployee = () => {
     setEditingEmployee(null)
@@ -663,7 +640,6 @@ export default function EmployeesPage() {
             : null,
         shift: employeeForm.shift ? Number(employeeForm.shift) : null,
         hiredAt: employeeForm.hiredAt.trim() || null,
-        status: employeeForm.status,
       }
 
       if (editingEmployee) {
@@ -925,7 +901,7 @@ export default function EmployeesPage() {
           </Button>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-3">
           <Card>
             <CardContent className="pt-4 pb-4">
               <p className="text-xs font-medium uppercase text-muted-foreground">Total</p>
@@ -934,20 +910,14 @@ export default function EmployeesPage() {
           </Card>
           <Card>
             <CardContent className="pt-4 pb-4">
-              <p className="text-xs font-medium uppercase text-muted-foreground">Activos</p>
-              <p className="text-2xl font-bold text-green-700">{stats.active}</p>
+              <p className="text-xs font-medium uppercase text-muted-foreground">Operadores</p>
+              <p className="text-2xl font-bold text-foreground">{operatorEmployees.length}</p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="pt-4 pb-4">
-              <p className="text-xs font-medium uppercase text-muted-foreground">Inactivos</p>
-              <p className="text-2xl font-bold text-yellow-700">{stats.inactive}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4 pb-4">
-              <p className="text-xs font-medium uppercase text-muted-foreground">Bajas</p>
-              <p className="text-2xl font-bold text-red-700">{stats.terminated}</p>
+              <p className="text-xs font-medium uppercase text-muted-foreground">Con turno asignado</p>
+              <p className="text-2xl font-bold text-foreground">{stats.withShift}</p>
             </CardContent>
           </Card>
         </div>
@@ -988,25 +958,11 @@ export default function EmployeesPage() {
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   className="pl-9"
-                  placeholder="Buscar por nombre, código, puesto…"
+                  placeholder="Buscar por nombre, NFC, puesto…"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
               </div>
-              <Select
-                value={statusFilter}
-                onValueChange={(v) => setStatusFilter(v as ApiEmployeeStatus | "all")}
-              >
-                <SelectTrigger className="w-full sm:w-[180px]">
-                  <SelectValue placeholder="Estado" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos los estados</SelectItem>
-                  <SelectItem value="active">Activos</SelectItem>
-                  <SelectItem value="inactive">Inactivos</SelectItem>
-                  <SelectItem value="terminated">Bajas</SelectItem>
-                </SelectContent>
-              </Select>
             </div>
 
             {loading ? (
@@ -1042,9 +998,11 @@ export default function EmployeesPage() {
                               </p>
                             ) : null}
                           </div>
-                          <Badge className={statusBadgeClass(employee.status)}>
-                            {STATUS_LABELS[employee.status]}
-                          </Badge>
+                          {employee.shift === 1 || employee.shift === 2 ? (
+                            <Badge variant="outline" className="font-normal shrink-0">
+                              {employee.shift === 1 ? "Turno 1" : "Turno 2"}
+                            </Badge>
+                          ) : null}
                         </div>
                         <div className="space-y-2 px-4 py-3 text-sm">
                           <div className="flex items-center gap-2 text-muted-foreground">
