@@ -1,27 +1,31 @@
 import type { ApiGoalShift } from "@/lib/api"
-import { productionShiftFromMeasuredAt } from "@/lib/tablero-operator-goal"
+import { PLANT_TIMEZONE, productionShiftFromMeasuredAt } from "@/lib/tablero-operator-goal"
+import { getPartsInTimeZone } from "@/lib/shift-timezone"
 
-/** Minutos desde medianoche (hora local del navegador / planta). */
+/** Minutos desde medianoche en la zona horaria de la planta (TZ MX, no del navegador). */
 export function minutesSinceMidnight(d: Date): number {
-  return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60
+  const { hour, minute, second } = getPartsInTimeZone(d, PLANT_TIMEZONE)
+  return hour * 60 + minute + second / 60
 }
 
 export function timeLabel(hour: number, minute = 0): string {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`
 }
 
+// Turnos reales (TZ MX): T1 07:00–16:00, T2 16:00–23:30. La producción operativa del
+// vespertino va hasta las 23:00 y los últimos 30 min (23:00–23:30) son limpieza.
 export const SHIFT_SCHEDULE = {
   matutino: {
     label: "Matutino",
-    windowLabel: "06:00–14:00",
-    productionStart: { hour: 6, minute: 0 },
-    productionEnd: { hour: 14, minute: 0 },
+    windowLabel: "07:00–16:00",
+    productionStart: { hour: 7, minute: 0 },
+    productionEnd: { hour: 16, minute: 0 },
   },
   vespertino: {
     label: "Vespertino (noche)",
-    windowLabel: "14:00–23:00",
-    productionStart: { hour: 14, minute: 0 },
-    /** Fin de producción operativa (11:00 p.m.). */
+    windowLabel: "16:00–23:30",
+    productionStart: { hour: 16, minute: 0 },
+    /** Fin de producción operativa (11:00 p.m.); 23:00–23:30 = limpieza. */
     productionEnd: { hour: 23, minute: 0 },
     cleaningStart: { hour: 23, minute: 0 },
     cleaningEnd: { hour: 23, minute: 30 },
@@ -79,10 +83,10 @@ export function classifyProductionTimestamp(iso: string): {
     return { shift, zone: "in_shift" }
   }
 
-  // Fuera de ventana KPI clásica (22:00): turno noche extendido hasta 23:00
+  // Fallback (productionShiftFromMeasuredAt devolvió null): clasifica por minutos en TZ planta.
   if (m >= 23 * 60 + 30) return { shift: "vespertino", zone: "post_cleaning" }
   if (m >= 23 * 60) return { shift: "vespertino", zone: "cleaning" }
-  if (m >= 14 * 60 && m < 23 * 60) return { shift: "vespertino", zone: "in_shift" }
+  if (m >= 16 * 60 && m < 23 * 60) return { shift: "vespertino", zone: "in_shift" }
   if (m >= shiftEndMinutes("matutino")) return { shift: "matutino", zone: "overtime" }
 
   return { shift: null, zone: "in_shift" }

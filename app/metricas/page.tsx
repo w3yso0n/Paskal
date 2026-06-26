@@ -186,8 +186,8 @@ type ShiftFilter = "all" | ShiftType
 
 const SHIFT_FILTER_LABELS: Record<ShiftFilter, string> = {
   all: "Todos los turnos",
-  matutino: "Matutino (06:00–14:00)",
-  vespertino: "Vespertino (14:00–22:00)",
+  matutino: "Matutino (07:00–16:00)",
+  vespertino: "Vespertino (16:00–23:30)",
 }
 
 function matchesShiftFilter(ts: string | Date, filter: ShiftFilter): boolean {

@@ -85,9 +85,11 @@ function isRollerMachine(machine: string): boolean {
 }
 
 function getShift(date: Date): ShiftKind | null {
+  // Turnos reales (TZ MX): T1 07:00–16:00, T2 16:00–23:30.
   const p = getPartsInTimeZone(date, TZ)
-  if (p.hour >= 6 && p.hour < 14) return "matutino"
-  if (p.hour >= 14 && p.hour < 22) return "vespertino"
+  const mins = p.hour * 60 + p.minute
+  if (mins >= 7 * 60 && mins < 16 * 60) return "matutino"
+  if (mins >= 16 * 60 && mins < 23 * 60 + 30) return "vespertino"
   return null
 }
 

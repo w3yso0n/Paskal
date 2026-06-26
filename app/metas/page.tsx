@@ -72,8 +72,8 @@ const periodLabels: Record<ApiGoalPeriod, string> = {
 }
 
 const shiftLabels: Record<ApiGoalShift, string> = {
-  matutino: "Matutino (06:00–13:59)",
-  vespertino: "Vespertino (14:00–21:59)",
+  matutino: "Matutino (07:00–15:59)",
+  vespertino: "Vespertino (16:00–23:29)",
 }
 
 type GoalStatus = "on-track" | "at-risk" | "behind" | "completed" | "exceeded"

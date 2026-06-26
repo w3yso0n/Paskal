@@ -259,7 +259,7 @@ export function buildShiftIncidentsAnalytics(input: {
   }
 
   const scheduleNotes = [
-    `${SHIFT_SCHEDULE.matutino.label}: producción ${SHIFT_SCHEDULE.matutino.windowLabel}. Después de las 14:00 = incidencia.`,
+    `${SHIFT_SCHEDULE.matutino.label}: producción ${SHIFT_SCHEDULE.matutino.windowLabel}. Después de las 16:00 = incidencia.`,
     `${SHIFT_SCHEDULE.vespertino.label}: producción hasta las 23:00. Limpieza 23:00–23:30 (sin producción esperada). Después de las 23:30 se resalta en alerta.`,
     EARLY_CHECKOUT_QUOTA_EXEMPTION_NOTE,
   ]

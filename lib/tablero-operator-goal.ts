@@ -1,10 +1,14 @@
 import type { ApiGoal, ApiGoalShift, ApiProductionEvent } from "@/lib/api"
 import type { BonusGoalDefinition } from "@/lib/bonus-goals-bridge"
 import { goalComplianceDateRange, isGoalActive } from "@/lib/goal-compliance-range"
+import { getPartsInTimeZone } from "@/lib/shift-timezone"
 import {
   normalizeSku,
   productionUnitsFromEvent,
 } from "@/lib/production-goal-events"
+
+/** Zona horaria de la planta (única fuente de verdad para clasificar turnos). */
+export const PLANT_TIMEZONE = "America/Mexico_City"
 
 export type OperatorGoalSection =
   | "winding"
@@ -13,11 +17,18 @@ export type OperatorGoalSection =
   | "bending"
   | "unknown"
 
-/** Misma ventana que metas/métricas: 06:00–13:59 matutino, 14:00–21:59 vespertino. */
+/**
+ * Turno por timestamp, en la zona horaria de la planta (TZ MX, sin depender del navegador):
+ * T1/matutino 07:00–15:59, T2/vespertino 16:00–23:29. Misma ventana que los reportes Excel
+ * (`getShiftBoundsForCalendarDate`). Fuera de esas ventanas (madrugada) → null.
+ */
 export function productionShiftFromMeasuredAt(iso: string): ApiGoalShift | null {
-  const hour = new Date(iso).getHours()
-  if (hour >= 6 && hour < 14) return "matutino"
-  if (hour >= 14 && hour < 22) return "vespertino"
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  const { hour, minute } = getPartsInTimeZone(d, PLANT_TIMEZONE)
+  const mins = hour * 60 + minute
+  if (mins >= 7 * 60 && mins < 16 * 60) return "matutino"
+  if (mins >= 16 * 60 && mins < 23 * 60 + 30) return "vespertino"
   return null
 }
 
