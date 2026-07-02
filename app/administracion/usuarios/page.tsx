@@ -19,7 +19,6 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
 import { useAuth } from "@/contexts/auth-context"
 import { RequirePermission } from "@/components/auth/require-permission"
@@ -48,6 +47,22 @@ const STATUS_OPTIONS = [
   { value: "suspended", label: "Suspendido" },
 ] as const
 
+type UserForm = {
+  email: string
+  password: string
+  fullName: string
+  role: UserRole
+  status: string
+}
+
+const EMPTY_FORM: UserForm = {
+  email: "",
+  password: "",
+  fullName: "",
+  role: "supervisor",
+  status: "active",
+}
+
 export default function GestionUsuariosPage() {
   const { user, getAccessToken } = useAuth()
   const canManageUsers = hasPermission(user, "users.list")
@@ -58,22 +73,9 @@ export default function GestionUsuariosPage() {
   const [users, setUsers] = useState<ApiUser[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [editingUser, setEditingUser] = useState<ApiUser | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [form, setForm] = useState({
-    email: "",
-    password: "",
-    fullName: "",
-    role: "supervisor" as UserRole,
-  })
-  const [editForm, setEditForm] = useState({
-    email: "",
-    password: "",
-    fullName: "",
-    role: "supervisor" as UserRole,
-    status: "active" as ApiUser["status"],
-  })
+  const [form, setForm] = useState<UserForm>(EMPTY_FORM)
 
   const loadUsers = async () => {
     if (!canManageUsers) return
@@ -100,15 +102,45 @@ export default function GestionUsuariosPage() {
     }
   }, [canManageUsers])
 
-  const handleCreate = async () => {
+  const openCreateDialog = () => {
+    setEditingUser(null)
+    setForm(EMPTY_FORM)
+    setDialogOpen(true)
+  }
+
+  const openEditDialog = (u: ApiUser) => {
+    setEditingUser(u)
+    setForm({
+      email: u.email,
+      password: "",
+      fullName: u.fullName,
+      role: u.role,
+      status: u.status,
+    })
+    setDialogOpen(true)
+  }
+
+  const handleDialogChange = (open: boolean) => {
+    setDialogOpen(open)
+    if (!open) {
+      setEditingUser(null)
+      setForm(EMPTY_FORM)
+    }
+  }
+
+  const handleSubmit = async () => {
     const email = form.email.trim().toLowerCase()
     const password = form.password.trim()
     const fullName = form.fullName.trim()
-    if (!email || !password || !fullName) {
-      toast.error("Email, contraseña y nombre son obligatorios.")
+    if (!email || !fullName) {
+      toast.error("Email y nombre son obligatorios.")
       return
     }
-    if (password.length < 8) {
+    if (!editingUser && !password) {
+      toast.error("La contraseña es obligatoria al crear un usuario.")
+      return
+    }
+    if (password && password.length < 8) {
       toast.error("La contraseña debe tener al menos 8 caracteres.")
       return
     }
@@ -120,27 +152,40 @@ export default function GestionUsuariosPage() {
         setSubmitting(false)
         return
       }
-      const payload: Parameters<typeof createUser>[1] = {
-        email,
-        password,
-        fullName,
-        role: form.role,
+      if (editingUser) {
+        const payload: Parameters<typeof updateUser>[2] = {
+          email,
+          fullName,
+          role: form.role,
+          status: form.status,
+        }
+        if (password) payload.password = password
+        await updateUser(token, editingUser.id, payload)
+        toast.success("Usuario actualizado.")
+      } else {
+        await createUser(token, {
+          email,
+          password,
+          fullName,
+          role: form.role,
+          status: form.status,
+        })
+        toast.success("Usuario creado.")
       }
-      await createUser(token, payload)
-      toast.success("Usuario creado.")
-      setDialogOpen(false)
-      setForm({ email: "", password: "", fullName: "", role: "supervisor" })
+      handleDialogChange(false)
       loadUsers()
     } catch (e) {
       const msg = getApiErrorMessage(e)
-      console.error("[Usuarios] Create failed", {
+      console.error("[Usuarios] Save failed", {
+        editing: !!editingUser,
         message: msg || "(sin mensaje)",
-        statusCode: e && typeof e === "object" && "statusCode" in e ? (e as { statusCode?: number }).statusCode : undefined,
         raw: e,
       })
       toast.error(
         msg ||
-          "No se pudo crear el usuario. Revisa que el email no exista o que Firebase Admin esté configurado en el servidor.",
+          (editingUser
+            ? "No se pudo actualizar el usuario."
+            : "No se pudo crear el usuario. Revisa que el email no exista o que Firebase Admin esté configurado en el servidor."),
       )
     } finally {
       setSubmitting(false)
@@ -176,21 +221,28 @@ export default function GestionUsuariosPage() {
           <div>
             <h1 className="text-2xl font-bold text-foreground">Gestión de usuarios</h1>
             <p className="text-sm text-muted-foreground">
-              Añade usuarios a la plataforma.
+              Crea y edita usuarios de la plataforma.
             </p>
           </div>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild>
-              <Button className="gap-2">
-                <UserPlus className="h-4 w-4" />
-                Nuevo usuario
-              </Button>
-            </DialogTrigger>
+          {canCreateUsers && (
+            <Button className="gap-2" onClick={openCreateDialog}>
+              <UserPlus className="h-4 w-4" />
+              Nuevo usuario
+            </Button>
+          )}
+        </div>
+
+        {(canCreateUsers || canUpdateUsers) && (
+          <Dialog open={dialogOpen} onOpenChange={handleDialogChange}>
             <DialogContent className="sm:max-w-md">
               <DialogHeader>
-                <DialogTitle>Nuevo usuario</DialogTitle>
+                <DialogTitle>
+                  {editingUser ? "Editar usuario" : "Nuevo usuario"}
+                </DialogTitle>
                 <DialogDescription>
-                  Crea un nuevo usuario para la plataforma.
+                  {editingUser
+                    ? "Actualiza los datos del usuario. Deja la contraseña vacía para no cambiarla."
+                    : "Crea un nuevo usuario para la plataforma."}
                 </DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">
@@ -205,11 +257,13 @@ export default function GestionUsuariosPage() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="user-password">Contraseña</Label>
+                  <Label htmlFor="user-password">
+                    Contraseña{editingUser ? " (opcional)" : ""}
+                  </Label>
                   <Input
                     id="user-password"
                     type="password"
-                    placeholder="Mínimo 8 caracteres"
+                    placeholder={editingUser ? "Sin cambios" : "Mínimo 8 caracteres"}
                     value={form.password}
                     onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
                   />
@@ -241,17 +295,37 @@ export default function GestionUsuariosPage() {
                     </SelectContent>
                   </Select>
                 </div>
+                <div className="grid gap-2">
+                  <Label>Estado</Label>
+                  <Select
+                    value={form.status}
+                    onValueChange={(v) => setForm((f) => ({ ...f, status: v }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {STATUS_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
               <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => setDialogOpen(false)}>
+                <Button variant="outline" onClick={() => handleDialogChange(false)}>
                   Cancelar
                 </Button>
-                <Button onClick={handleCreate} disabled={submitting}>
+                <Button onClick={handleSubmit} disabled={submitting}>
                   {submitting ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Creando…
+                      Guardando…
                     </>
+                  ) : editingUser ? (
+                    "Guardar cambios"
                   ) : (
                     "Crear usuario"
                   )}
@@ -259,7 +333,7 @@ export default function GestionUsuariosPage() {
               </div>
             </DialogContent>
           </Dialog>
-        </div>
+        )}
 
         <Card>
           <CardHeader>
@@ -295,17 +369,33 @@ export default function GestionUsuariosPage() {
                         <td className="py-3 font-medium">{u.email}</td>
                         <td className="py-3 text-muted-foreground">{u.fullName}</td>
                         <td className="py-3">{ROLE_OPTIONS.find((r) => r.value === u.role)?.label ?? u.role}</td>
-                        <td className="py-3 capitalize">{u.status}</td>
+                        <td className="py-3 capitalize">
+                          {STATUS_OPTIONS.find((s) => s.value === u.status)?.label ?? u.status}
+                        </td>
                         <td className="py-3 text-right">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-destructive hover:text-destructive"
-                            onClick={() => handleDelete(u.id, u.email)}
-                            title="Eliminar usuario"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex justify-end gap-1">
+                            {canUpdateUsers && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => openEditDialog(u)}
+                                title="Editar usuario"
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            )}
+                            {canDeleteUsers && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-destructive hover:text-destructive"
+                                onClick={() => handleDelete(u.id, u.email)}
+                                title="Eliminar usuario"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
