@@ -18,10 +18,8 @@ export type { PlatformModule } from "./platform-permissions"
 export type Permission =
   | "users.list"
   | "users.create"
+  | "users.update"
   | "users.delete"
-  | "alert-rules.list"
-  | "alert-rules.create"
-  | "alert-rules.delete"
   | "alerts.dismiss"
   | "alerts.clear"
   | "production.edit-threshold"
@@ -35,11 +33,9 @@ export type Permission =
   | "data.browse"
 
 const MODULE_TO_PERMISSIONS: Partial<Record<PlatformModule, readonly Permission[]>> = {
-  gestion_usuarios: ["users.list", "users.create", "users.delete"],
-  alertas: ["alerts.dismiss", "alerts.clear", "alert-rules.list"],
+  gestion_usuarios: ["users.list", "users.create", "users.update", "users.delete"],
+  alertas: ["alerts.dismiss", "alerts.clear"],
   reglas_umbrales: [
-    "alert-rules.create",
-    "alert-rules.delete",
     "production.edit-threshold",
     "production.esp-idle-config",
   ],

@@ -28,32 +28,51 @@ import { ROLE_LABELS, USER_ROLES } from "@/lib/platform-permissions"
 import {
   getUsers,
   createUser,
+  updateUser,
   deleteUser,
   getApiErrorMessage,
   type ApiUser,
   type UserRole,
 } from "@/lib/api"
 import { toast } from "sonner"
-import { UserPlus, Loader2, Trash2 } from "lucide-react"
+import { UserPlus, Loader2, Trash2, Pencil } from "lucide-react"
 
 const ROLE_OPTIONS: { value: UserRole; label: string }[] = USER_ROLES.map((role) => ({
   value: role,
   label: ROLE_LABELS[role],
 }))
 
+const STATUS_OPTIONS = [
+  { value: "active", label: "Activo" },
+  { value: "inactive", label: "Inactivo" },
+  { value: "suspended", label: "Suspendido" },
+] as const
+
 export default function GestionUsuariosPage() {
   const { user, getAccessToken } = useAuth()
   const canManageUsers = hasPermission(user, "users.list")
+  const canCreateUsers = hasPermission(user, "users.create")
+  const canUpdateUsers = hasPermission(user, "users.update")
+  const canDeleteUsers = hasPermission(user, "users.delete")
 
   const [users, setUsers] = useState<ApiUser[]>([])
   const [loading, setLoading] = useState(true)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [editDialogOpen, setEditDialogOpen] = useState(false)
+  const [editingUser, setEditingUser] = useState<ApiUser | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [form, setForm] = useState({
     email: "",
     password: "",
     fullName: "",
     role: "supervisor" as UserRole,
+  })
+  const [editForm, setEditForm] = useState({
+    email: "",
+    password: "",
+    fullName: "",
+    role: "supervisor" as UserRole,
+    status: "active" as ApiUser["status"],
   })
 
   const loadUsers = async () => {

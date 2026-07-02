@@ -59,15 +59,12 @@ El frontend **no** envía datos al PLC; consume los eventos ya almacenados en el
 | GET | `/auth/me` | Usuario actual (perfil/rol) |
 | GET | `/config/email` | Obtener configuración SMTP |
 | PUT | `/config/email` | Guardar configuración SMTP |
-| GET | `/alert-rules` | Listar reglas de alerta |
-| POST | `/alert-rules` | Crear regla de alerta |
-| PATCH | `/alert-rules/:id` | Actualizar regla |
-| DELETE | `/alert-rules/:id` | Eliminar regla |
+| GET | `/business-rules/alert-thresholds` | Umbrales de alerta (config) |
+| PUT | `/business-rules/alert-thresholds` | Guardar umbrales de alerta |
 | GET | `/users` | Listar usuarios |
 | POST | `/users` | Crear usuario |
 | PATCH | `/users/:id` | Actualizar usuario |
 | DELETE | `/users/:id` | Eliminar usuario |
-| GET | `/orgs` | Listar organizaciones (solo platform admin) |
 | GET | `/machine` | Listar máquinas (piso de producción, alertas) |
 | GET | `/employee` | Listar empleados (piso, gestión) |
 | POST | `/employee` | Crear empleado |
@@ -125,4 +122,4 @@ El frontend **no** envía datos al PLC; consume los eventos ya almacenados en el
 - **Tipos UI:** `lib/types.ts`
 - **Datos mock (legacy):** `lib/mock-data.ts` — arreglos vacíos; la mayoría de pantallas ya consumen API/PLC.
 - **Exportación Excel:** `lib/export-to-excel.ts`; uso en `components/attendance/attendance-table.tsx` y en `app/metricas/page.tsx` (reporte producción).
-- **DTO ingesta PLC:** `paskal-backend/src/production-run/dto/ingest-plc-event.dto.ts`
+- **DTO ingesta PLC:** `paskal-backend/src/plc-production/dto/ingest-plc-event.dto.ts`

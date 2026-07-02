@@ -279,81 +279,7 @@ export async function setEmailConfig(
   return parseResponse<EmailConfigResponse>(res);
 }
 
-// --- Alert rules (requiere token; crear/editar/eliminar solo admin org) ---
-
-export type AlertRuleSeverity = "low" | "medium" | "high" | "critical";
-
-export interface AlertRule {
-  id: string;
-  name: string;
-  metricId: string | null;
-  plantId: string | null;
-  lineId: string | null;
-  machineId: string | null;
-  condition: string;
-  threshold: number | null;
-  severity: AlertRuleSeverity;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateAlertRulePayload {
-  name: string;
-  condition: string;
-  threshold?: number | null;
-  severity?: AlertRuleSeverity;
-  isActive?: boolean;
-  metricId?: string | null;
-  plantId?: string | null;
-  lineId?: string | null;
-  machineId?: string | null;
-}
-
-export interface UpdateAlertRulePayload extends Partial<CreateAlertRulePayload> {}
-
-export async function getAlertRules(accessToken: string): Promise<AlertRule[]> {
-  const res = await fetchWithAuth("/alert-rules", { accessToken });
-  return parseResponse<AlertRule[]>(res);
-}
-
-export async function createAlertRule(
-  accessToken: string,
-  payload: CreateAlertRulePayload
-): Promise<AlertRule> {
-  const res = await fetchWithAuth("/alert-rules", {
-    method: "POST",
-    body: JSON.stringify(payload),
-    accessToken,
-  });
-  return parseResponse<AlertRule>(res);
-}
-
-export async function updateAlertRule(
-  accessToken: string,
-  id: string,
-  payload: UpdateAlertRulePayload
-): Promise<AlertRule> {
-  const res = await fetchWithAuth(`/alert-rules/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-    accessToken,
-  });
-  return parseResponse<AlertRule>(res);
-}
-
-export async function deleteAlertRule(
-  accessToken: string,
-  id: string
-): Promise<void> {
-  const res = await fetchWithAuth(`/alert-rules/${id}`, {
-    method: "DELETE",
-    accessToken,
-  });
-  await parseResponse<void>(res);
-}
-
-// --- Users (requiere token; org = automática para org admin, elegible solo platform admin) ---
+// --- Users (requiere token) ---
 
 export interface ApiUser {
   id: string;
@@ -603,7 +529,6 @@ export type ApiGoalShift = "matutino" | "vespertino"
 export interface ApiGoal {
   id: string
   metricId: string
-  plantId: string | null
   lineId: string | null
   machineId: string | null
   sku?: string | null
@@ -626,7 +551,6 @@ export async function getGoals(accessToken: string): Promise<ApiGoal[]> {
 
 export interface CreateGoalPayload {
   metricId: string
-  plantId?: string | null
   lineId?: string | null
   machineId?: string | null
   sku?: string | null
@@ -776,8 +700,6 @@ export type ApiAlertStatus = "open" | "acknowledged" | "closed";
 
 export interface ApiAlert {
   id: string;
-  ruleId: string | null;
-  plantId: string | null;
   lineId: string | null;
   machineId: string | null;
   title: string;
@@ -795,8 +717,6 @@ export interface UpdateAlertPayload {
   title?: string;
   message?: string | null;
   closedAt?: string | Date | null;
-  ruleId?: string | null;
-  plantId?: string | null;
   lineId?: string | null;
   machineId?: string | null;
 }
@@ -961,7 +881,6 @@ export async function getProductionEvents(
 export interface ApiMetricPoint {
   id: string;
   metricId: string;
-  plantId: string | null;
   lineId: string | null;
   machineId: string | null;
   value: number;
@@ -972,7 +891,6 @@ export async function getMetricPoints(
   accessToken: string,
   params: {
     metricId?: string;
-    plantId?: string;
     lineId?: string;
     machineId?: string;
     from?: string;
@@ -982,7 +900,6 @@ export async function getMetricPoints(
 ): Promise<ApiMetricPoint[]> {
   const q = new URLSearchParams();
   if (params.metricId) q.set("metricId", params.metricId);
-  if (params.plantId) q.set("plantId", params.plantId);
   if (params.lineId) q.set("lineId", params.lineId);
   if (params.machineId) q.set("machineId", params.machineId);
   if (params.from) q.set("from", params.from);

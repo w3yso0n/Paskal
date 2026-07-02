@@ -130,7 +130,6 @@ export function computeActualByGoalId(input: {
     const shift = g.shift ?? null
     let sum = metricPoints
       .filter((p) => p.metricId === g.metricId)
-      .filter((p) => (g.plantId ? p.plantId === g.plantId : true))
       .filter((p) => (g.lineId ? p.lineId === g.lineId : true))
       .filter((p) => (g.machineId ? p.machineId === g.machineId : true))
       .filter((p) => p.measuredAt >= from && p.measuredAt <= to)

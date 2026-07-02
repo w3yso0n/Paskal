@@ -16,7 +16,6 @@ import {
   Trash2,
   RefreshCw,
   Search,
-  Plus,
   Loader2,
   Save,
   StickyNote,
@@ -28,7 +27,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -43,7 +41,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
@@ -67,7 +64,6 @@ import {
   getProductSkus,
   updateAlert,
   upsertDowntimeNote,
-  type AlertRuleSeverity,
   type ApiAlert,
   type ApiEmployee,
   type ApiMachine,
@@ -79,7 +75,6 @@ import {
   buildDowntimeNoteContextFromAlert,
   isDowntimeParoAlert,
 } from "@/lib/employee-downtime-analytics"
-import { useAlertRules } from "./hooks/use-alert-rules"
 import { EspIdleAlertConfigCard } from "./EspIdleAlertConfigCard"
 
 // --- Constants ---
@@ -112,19 +107,6 @@ const categoryLabels: Record<AlertCategory, string> = {
   system: "Sistema",
 }
 
-const CONDITION_OPTIONS = [
-  { value: "idle_minutes", label: "Minutos sin avance (producción)" },
-  { value: "value_above", label: "Valor por encima de umbral" },
-  { value: "value_below", label: "Valor por debajo de umbral" },
-]
-
-const SEVERITY_OPTIONS: { value: AlertRuleSeverity; label: string }[] = [
-  { value: "low", label: "Baja" },
-  { value: "medium", label: "Media" },
-  { value: "high", label: "Alta" },
-  { value: "critical", label: "Crítica" },
-]
-
 const severityRank: Record<AlertType, number> = {
   error: 4,
   warning: 3,
@@ -142,8 +124,7 @@ function mapApiAlertToUi(a: ApiAlert): Alert {
           ? "info"
           : "warning"
 
-  const category: AlertCategory =
-    a.machineId != null ? "machine" : a.ruleId != null ? "production" : "system"
+  const category: AlertCategory = a.machineId != null ? "machine" : "system"
 
   const timestamp = new Date(a.createdAt)
   const isRead = a.status !== "open"
@@ -210,7 +191,6 @@ export default function AlertasClient() {
   const searchParams = useSearchParams()
   const { user, getAccessToken } = useAuth()
 
-  const canManageRules = hasPermission(user, "alert-rules.create")
   const canDismissAlerts = hasPermission(user, "alerts.dismiss")
   const canEditThreshold = hasPermission(user, "production.edit-threshold")
 
@@ -247,12 +227,6 @@ export default function AlertasClient() {
       cancelled = true
     }
   }, [getAccessToken, searchParams])
-
-  // --- Hooks ---
-  const alertRules = useAlertRules({
-    enabled: canManageRules,
-    getAccessToken,
-  })
 
   // --- Alerts state ---
   const [alerts, setAlerts] = useState<Alert[]>([])
@@ -575,173 +549,6 @@ export default function AlertasClient() {
           machines={machineRows}
           canConfigure={hasPermission(user, "production.esp-idle-config")}
         />
-
-        {/* Alert Rules (admin only) */}
-        {canManageRules && (
-          <Card>
-            <CardHeader className="pb-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <CardTitle>Reglas de alerta</CardTitle>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Crea reglas con umbrales para que el sistema dispare alertas automáticamente.
-                  </p>
-                </div>
-                <Dialog open={alertRules.dialogOpen} onOpenChange={alertRules.setDialogOpen}>
-                  <DialogTrigger asChild>
-                    <Button className="gap-2">
-                      <Plus className="h-4 w-4" />
-                      Nueva regla
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent className="sm:max-w-md">
-                    <DialogHeader>
-                      <DialogTitle>Nueva regla de alerta</DialogTitle>
-                    </DialogHeader>
-                    <div className="grid gap-4 py-4">
-                      <div className="grid gap-2">
-                        <Label htmlFor="rule-name">Nombre</Label>
-                        <Input
-                          id="rule-name"
-                          placeholder="Ej: Producción sin avance 15 min"
-                          value={alertRules.form.name}
-                          onChange={(e) =>
-                            alertRules.setForm((f) => ({ ...f, name: e.target.value }))
-                          }
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label>Condición</Label>
-                        <Select
-                          value={alertRules.form.condition}
-                          onValueChange={(v) =>
-                            alertRules.setForm((f) => ({ ...f, condition: v }))
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {CONDITION_OPTIONS.map((opt) => (
-                              <SelectItem key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="grid gap-2">
-                        <Label htmlFor="rule-threshold">Umbral</Label>
-                        <Input
-                          id="rule-threshold"
-                          type="number"
-                          min={1}
-                          value={alertRules.form.threshold}
-                          onChange={(e) =>
-                            alertRules.setForm((f) => ({
-                              ...f,
-                              threshold: Math.max(1, Number(e.target.value) || 1),
-                            }))
-                          }
-                        />
-                        <p className="text-xs text-muted-foreground">
-                          Para &quot;minutos sin avance&quot;: minutos que disparan la alerta. Para
-                          valor: límite numérico.
-                        </p>
-                      </div>
-                      <div className="grid gap-2">
-                        <Label>Severidad</Label>
-                        <Select
-                          value={alertRules.form.severity}
-                          onValueChange={(v) =>
-                            alertRules.setForm((f) => ({
-                              ...f,
-                              severity: v as AlertRuleSeverity,
-                            }))
-                          }
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {SEVERITY_OPTIONS.map((opt) => (
-                              <SelectItem key={opt.value} value={opt.value}>
-                                {opt.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Switch
-                          checked={alertRules.form.isActive}
-                          onCheckedChange={(checked) =>
-                            alertRules.setForm((f) => ({ ...f, isActive: checked }))
-                          }
-                        />
-                        <Label>Regla activa</Label>
-                      </div>
-                    </div>
-                    <div className="flex justify-end gap-2">
-                      <Button variant="outline" onClick={() => alertRules.setDialogOpen(false)}>
-                        Cancelar
-                      </Button>
-                      <Button onClick={alertRules.handleCreate} disabled={alertRules.submitting}>
-                        {alertRules.submitting ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            Creando…
-                          </>
-                        ) : (
-                          "Crear regla"
-                        )}
-                      </Button>
-                    </div>
-                  </DialogContent>
-                </Dialog>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {alertRules.loading ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                </div>
-              ) : alertRules.rules.length === 0 ? (
-                <p className="py-4 text-sm text-muted-foreground">
-                  No hay reglas de alerta. Crea una con el botón &quot;Nueva regla&quot;.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {alertRules.rules.map((rule) => (
-                    <div
-                      key={rule.id}
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 p-3"
-                    >
-                      <div className="min-w-0">
-                        <p className="font-medium text-foreground">{rule.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          Condición:{" "}
-                          {CONDITION_OPTIONS.find((o) => o.value === rule.condition)?.label ??
-                            rule.condition}{" "}
-                          · Umbral: {rule.threshold ?? "—"} · Severidad: {rule.severity}
-                          {!rule.isActive && " · Inactiva"}
-                        </p>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => alertRules.handleDelete(rule.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
 
         {/* Production Monitor */}
         {view === "production" && (

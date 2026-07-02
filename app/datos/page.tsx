@@ -90,20 +90,17 @@ const TABLES: TableDef[] = [
     table: "production_events",
     label: "Eventos de producción",
     group: "Producción y planta",
-    // Muestra el código de máquina (no el uuid) y omite run_id (siempre vacío).
+    // Muestra el código de máquina (no el uuid).
     defaultSql:
       "select e.occurred_at, m.code as machine_code, e.event_type, e.message, e.payload, e.id\n" +
       "from production_events e\n" +
       "left join machines m on m.id = e.machine_id\n" +
       "order by e.occurred_at desc",
   },
-  { table: "production_runs", label: "Corridas de producción", group: "Producción y planta" },
-  { table: "work_orders", label: "Órdenes de trabajo", group: "Producción y planta" },
   { table: "machine_checkins", label: "Check-ins", group: "Producción y planta" },
   { table: "maintenance_sessions", label: "Sesiones de mantenimiento", group: "Producción y planta" },
   { table: "alerts", label: "Alertas", group: "Producción y planta" },
   { table: "employees", label: "Empleados", group: "Personal" },
-  { table: "attendance", label: "Asistencia", group: "Personal" },
   { table: "employee_day_records", label: "Registros de día", group: "Personal" },
   { table: "employee_role_events", label: "Eventos de rol", group: "Personal" },
   { table: "users", label: "Usuarios", group: "Personal" },
@@ -116,10 +113,7 @@ const TABLES: TableDef[] = [
   { table: "manual_data_captures", label: "Capturas manuales", group: "Reglas y registros" },
   { table: "production_incidents", label: "Incidencias de producción", group: "Reglas y registros" },
   { table: "business_holidays", label: "Días festivos", group: "Reglas y registros" },
-  { table: "alert_rules", label: "Reglas de alerta (legado)", group: "Reglas y registros" },
-  { table: "notification_targets", label: "Destinos de notificación", group: "Reglas y registros" },
-  { table: "shifts", label: "Turnos", group: "Personal" },
-  { table: "shift_assignments", label: "Asignaciones de turno", group: "Personal" },
+  { table: "downtime_notes", label: "Notas de paro", group: "Reglas y registros" },
   { table: "user_sessions", label: "Sesiones de usuario", group: "Personal" },
   { table: "app_config", label: "Configuración de la app", group: "Reglas y registros" },
 ]
