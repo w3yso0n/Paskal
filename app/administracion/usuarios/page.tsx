@@ -24,6 +24,7 @@ import {
 import { useAuth } from "@/contexts/auth-context"
 import { RequirePermission } from "@/components/auth/require-permission"
 import { hasPermission } from "@/lib/permissions"
+import { ROLE_LABELS, USER_ROLES } from "@/lib/platform-permissions"
 import {
   getUsers,
   createUser,
@@ -35,12 +36,10 @@ import {
 import { toast } from "sonner"
 import { UserPlus, Loader2, Trash2 } from "lucide-react"
 
-const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
-  { value: "admin", label: "Administrador" },
-  { value: "manager", label: "Gestor" },
-  { value: "operator", label: "Operador" },
-  { value: "viewer", label: "Visualizador" },
-]
+const ROLE_OPTIONS: { value: UserRole; label: string }[] = USER_ROLES.map((role) => ({
+  value: role,
+  label: ROLE_LABELS[role],
+}))
 
 export default function GestionUsuariosPage() {
   const { user, getAccessToken } = useAuth()
@@ -54,7 +53,7 @@ export default function GestionUsuariosPage() {
     email: "",
     password: "",
     fullName: "",
-    role: "viewer" as UserRole,
+    role: "supervisor" as UserRole,
   })
 
   const loadUsers = async () => {
@@ -111,7 +110,7 @@ export default function GestionUsuariosPage() {
       await createUser(token, payload)
       toast.success("Usuario creado.")
       setDialogOpen(false)
-      setForm({ email: "", password: "", fullName: "", role: "viewer" })
+      setForm({ email: "", password: "", fullName: "", role: "supervisor" })
       loadUsers()
     } catch (e) {
       const msg = getApiErrorMessage(e)

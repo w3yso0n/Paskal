@@ -16,7 +16,8 @@ import {
 import { toast } from "sonner"
 
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
-import { RequirePermission } from "@/components/auth/require-permission"
+import { RequireModule } from "@/components/auth/require-module"
+import { visibleReglasTabs } from "@/lib/permissions"
 import { BonusConfigPanel } from "@/components/metas/bonus-config-panel"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -66,18 +67,21 @@ function formatDateEs(iso: string): string {
 const RULES_TABS = ["holidays", "electrical", "thresholds", "bono"] as const
 type RulesTab = (typeof RULES_TABS)[number]
 
-function parseRulesTab(value: string | null): RulesTab {
-  if (value && RULES_TABS.includes(value as RulesTab)) return value as RulesTab
-  return "holidays"
+function parseRulesTab(value: string | null, allowed: string[]): RulesTab {
+  if (value && allowed.includes(value) && RULES_TABS.includes(value as RulesTab)) {
+    return value as RulesTab
+  }
+  return (allowed[0] as RulesTab | undefined) ?? "holidays"
 }
 
 export default function ReglasNegocioPage() {
   const searchParams = useSearchParams()
   const router = useRouter()
-  const { getAccessToken } = useAuth()
+  const { user, getAccessToken } = useAuth()
+  const allowedTabs = useMemo(() => visibleReglasTabs(user), [user])
   const currentYear = new Date().getFullYear()
   const [activeTab, setActiveTab] = useState<RulesTab>(() =>
-    parseRulesTab(searchParams.get("tab")),
+    parseRulesTab(searchParams.get("tab"), allowedTabs),
   )
   const [year, setYear] = useState(currentYear)
   const [loading, setLoading] = useState(true)
@@ -89,11 +93,11 @@ export default function ReglasNegocioPage() {
   const [savingThresholds, setSavingThresholds] = useState(false)
 
   useEffect(() => {
-    setActiveTab(parseRulesTab(searchParams.get("tab")))
-  }, [searchParams])
+    setActiveTab(parseRulesTab(searchParams.get("tab"), allowedTabs))
+  }, [searchParams, allowedTabs])
 
   const setRulesTab = (tab: string) => {
-    const next = parseRulesTab(tab)
+    const next = parseRulesTab(tab, allowedTabs)
     setActiveTab(next)
     router.replace(next === "holidays" ? "/reglas-negocio" : `/reglas-negocio?tab=${next}`, {
       scroll: false,
@@ -269,7 +273,14 @@ export default function ReglasNegocioPage() {
   }
 
   return (
-    <RequirePermission permission="business-rules.manage">
+    <RequireModule
+      modules={[
+        "reglas_dias_festivos",
+        "reglas_fallos_electricos",
+        "reglas_umbrales",
+        "metricas_asistencia_rotacion_bono",
+      ]}
+    >
       <DashboardLayout>
         <div className="space-y-6 p-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -306,22 +317,30 @@ export default function ReglasNegocioPage() {
           ) : (
             <Tabs value={activeTab} onValueChange={setRulesTab} className="space-y-4">
               <TabsList className="grid w-full max-w-3xl grid-cols-4">
+                {allowedTabs.includes("holidays") && (
                 <TabsTrigger value="holidays" className="gap-1.5">
                   <CalendarDays className="h-4 w-4" />
                   Festivos
                 </TabsTrigger>
+                )}
+                {allowedTabs.includes("electrical") && (
                 <TabsTrigger value="electrical" className="gap-1.5">
                   <Zap className="h-4 w-4" />
                   Fallos eléctricos
                 </TabsTrigger>
+                )}
+                {allowedTabs.includes("thresholds") && (
                 <TabsTrigger value="thresholds" className="gap-1.5">
                   <Bell className="h-4 w-4" />
                   Umbrales
                 </TabsTrigger>
+                )}
+                {allowedTabs.includes("bono") && (
                 <TabsTrigger value="bono" className="gap-1.5">
                   <Target className="h-4 w-4" />
                   Config. bono
                 </TabsTrigger>
+                )}
               </TabsList>
 
               <TabsContent value="holidays" className="space-y-4">
@@ -708,6 +727,6 @@ export default function ReglasNegocioPage() {
           )}
         </div>
       </DashboardLayout>
-    </RequirePermission>
+    </RequireModule>
   )
 }

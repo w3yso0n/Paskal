@@ -3,6 +3,7 @@
 import { useEffect } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { useAuth } from "@/contexts/auth-context"
+import { canAccessRoute } from "@/lib/permissions"
 import { Loader2 } from "lucide-react"
 
 const LOGIN_PATH = "/login"
@@ -18,8 +19,12 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     if (isLoginPage) return
     if (!user) {
       router.replace(LOGIN_PATH)
+      return
     }
-  }, [loading, user, isLoginPage, router])
+    if (!canAccessRoute(user, pathname)) {
+      router.replace("/")
+    }
+  }, [loading, user, isLoginPage, pathname, router])
 
   if (loading && !user && !isLoginPage) {
     return (
@@ -30,6 +35,10 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   if (!isLoginPage && !user) {
+    return null
+  }
+
+  if (!isLoginPage && user && !canAccessRoute(user, pathname)) {
     return null
   }
 

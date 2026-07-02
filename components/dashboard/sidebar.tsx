@@ -25,41 +25,88 @@ import {
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
 import {
-  hasPermission,
+  hasModuleAccess,
   showAdminSection,
   showPlatformSection,
   showDataSection,
-  type Permission,
+  type PlatformModule,
 } from "@/lib/permissions"
 
 interface MenuItem {
   icon: React.ComponentType<{ className?: string }>
   label: string
   href: string
-  permission?: Permission
+  modules: PlatformModule[]
 }
 
 const productionItems: MenuItem[] = [
-  { icon: Home, label: "Inicio", href: "/" },
-  { icon: Factory, label: "Piso de producción", href: "/piso-produccion" },
-  { icon: Monitor, label: "Tablero Operativo", href: "/tablero-operativo" },
-  { icon: BarChart3, label: "Métricas", href: "/metricas" },
-  { icon: Target, label: "Metas", href: "/metas" },
-  { icon: Bell, label: "Alertas", href: "/alertas" },
+  { icon: Home, label: "Inicio", href: "/", modules: ["inicio"] },
+  { icon: Factory, label: "Piso de producción", href: "/piso-produccion", modules: ["piso_produccion"] },
+  { icon: Monitor, label: "Tablero Operativo", href: "/tablero-operativo", modules: ["tablero_operativo"] },
+  {
+    icon: BarChart3,
+    label: "Métricas",
+    href: "/metricas",
+    modules: [
+      "metricas_produccion",
+      "metricas_incidencias",
+      "metricas_mantenimiento",
+      "metricas_asistencia_rotacion_bono",
+    ],
+  },
+  { icon: Target, label: "Metas", href: "/metas", modules: ["metas"] },
+  { icon: Bell, label: "Alertas", href: "/alertas", modules: ["alertas"] },
 ]
 
 const adminItems: MenuItem[] = [
-  { icon: UserPlus, label: "Gestión de usuarios", href: "/administracion/usuarios", permission: "users.list" },
-  { icon: Users, label: "Gestión de empleados", href: "/empleados", permission: "employees.manage" },
-  { icon: Tags, label: "Gestión de SKUs", href: "/administracion/gestion-skus", permission: "business-rules.manage" },
-  { icon: ClipboardList, label: "Captura de datos", href: "/captura-datos", permission: "data-capture.manage" },
-  { icon: Scale, label: "Reglas de negocio", href: "/reglas-negocio", permission: "business-rules.manage" },
-  { icon: Palette, label: "Configuración de la organización", href: "/administracion/configuracion-organizacion", permission: "platform-config.view" },
+  { icon: UserPlus, label: "Gestión de usuarios", href: "/administracion/usuarios", modules: ["gestion_usuarios"] },
+  {
+    icon: Users,
+    label: "Gestión de empleados",
+    href: "/empleados",
+    modules: [
+      "empleados_asignar_tarjetas",
+      "empleados_transporte",
+      "empleados_paros_vacaciones_rol_secundario",
+      "metricas_asistencia_rotacion_bono",
+    ],
+  },
+  { icon: Tags, label: "Gestión de SKUs", href: "/administracion/gestion-skus", modules: ["skus"] },
+  {
+    icon: ClipboardList,
+    label: "Captura de datos",
+    href: "/captura-datos",
+    modules: ["captura_produccion", "captura_historico"],
+  },
+  {
+    icon: Scale,
+    label: "Reglas de negocio",
+    href: "/reglas-negocio",
+    modules: [
+      "reglas_dias_festivos",
+      "reglas_fallos_electricos",
+      "reglas_umbrales",
+      "metricas_asistencia_rotacion_bono",
+    ],
+  },
+  {
+    icon: Palette,
+    label: "Configuración de la organización",
+    href: "/administracion/configuracion-organizacion",
+    modules: ["config_organizacion"],
+  },
 ]
 
 const dataItems: MenuItem[] = [
-  { icon: Database, label: "Datos", href: "/datos", permission: "data.browse" },
+  { icon: Database, label: "Datos", href: "/datos", modules: ["datos"] },
 ]
+
+function isMenuItemVisible(
+  user: ReturnType<typeof useAuth>["user"],
+  item: MenuItem,
+): boolean {
+  return item.modules.some((module) => hasModuleAccess(user, module))
+}
 
 function NavLink({
   item,
@@ -107,9 +154,10 @@ interface SidebarProps {
 export function Sidebar({ collapsed = false, onCollapsedChange, className }: SidebarProps) {
   const pathname = usePathname()
   const { user } = useAuth()
-  const visibleAdminItems = adminItems.filter(
-    (item) => !item.permission || hasPermission(user, item.permission),
+  const visibleProductionItems = productionItems.filter((item) =>
+    isMenuItemVisible(user, item),
   )
+  const visibleAdminItems = adminItems.filter((item) => isMenuItemVisible(user, item))
   const hasAdmin = showAdminSection(user)
   const hasPlatform = showPlatformSection(user)
   const hasData = showDataSection(user)
@@ -122,7 +170,6 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
         className
       )}
     >
-      {/* Logo */}
       <div
         className={cn(
           "flex items-center justify-center border-b border-sidebar-border bg-sidebar-accent/20",
@@ -156,9 +203,8 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
         </Link>
       </div>
 
-      {/* Navigation */}
       <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-4">
-        {productionItems.map((item) => (
+        {visibleProductionItems.map((item) => (
           <NavLink
             key={item.href}
             item={item}
@@ -207,7 +253,6 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
         )}
       </nav>
 
-      {/* User Info */}
       <div className="border-t border-sidebar-border p-4">
         <div className="flex items-center gap-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sidebar-foreground/10">
@@ -221,7 +266,6 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
         </div>
       </div>
 
-      {/* Collapse Button */}
       {onCollapsedChange && (
         <button
           onClick={() => onCollapsedChange(!collapsed)}
@@ -242,4 +286,9 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
 export const productionMenuItems = productionItems
 export const adminMenuItems = adminItems
 export const dataMenuItems = dataItems
-export const platformConfigItem: MenuItem = { icon: Shield, label: "Configuración", href: "/configuracion" }
+export const platformConfigItem: MenuItem = {
+  icon: Shield,
+  label: "Configuración",
+  href: "/configuracion",
+  modules: ["configuracion"],
+}

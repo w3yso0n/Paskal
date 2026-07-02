@@ -18,7 +18,7 @@ import {
 } from "./sidebar"
 import { Header } from "./header"
 import {
-  hasPermission,
+  hasModuleAccess,
   showAdminSection,
   showPlatformSection,
   showDataSection,
@@ -73,8 +73,11 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
   const hasAdmin = showAdminSection(user)
   const hasPlatform = showPlatformSection(user)
   const hasData = showDataSection(user)
-  const visibleAdminItems = adminMenuItems.filter(
-    (item) => !item.permission || hasPermission(user, item.permission),
+  const visibleProductionItems = productionMenuItems.filter((item) =>
+    item.modules.some((module) => hasModuleAccess(user, module)),
+  )
+  const visibleAdminItems = adminMenuItems.filter((item) =>
+    item.modules.some((module) => hasModuleAccess(user, module)),
   )
 
   return (
@@ -108,7 +111,7 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
           </div>
 
           <nav className="space-y-1 px-2 py-4">
-            {productionMenuItems.map((item) => (
+            {visibleProductionItems.map((item) => (
               <MobileNavLink
                 key={item.href}
                 href={item.href}

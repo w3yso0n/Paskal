@@ -51,6 +51,8 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
+import { RequireModule } from "@/components/auth/require-module"
+import { visibleEmpleadosTabs } from "@/lib/permissions"
 import {
   createEmployee,
   createEmployeeDayRecord,
@@ -384,6 +386,14 @@ function EmployeeFormFields({
 
 export default function EmployeesPage() {
   const { user, getAccessToken } = useAuth()
+  const allowedTabs = useMemo(() => visibleEmpleadosTabs(user), [user])
+  const [employeeTab, setEmployeeTab] = useState("employees")
+
+  useEffect(() => {
+    if (allowedTabs.length > 0 && !allowedTabs.includes(employeeTab)) {
+      setEmployeeTab(allowedTabs[0]!)
+    }
+  }, [allowedTabs, employeeTab])
   const [employees, setEmployees] = useState<ApiEmployee[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -876,6 +886,14 @@ export default function EmployeesPage() {
   }
 
   return (
+    <RequireModule
+      modules={[
+        "empleados_asignar_tarjetas",
+        "empleados_transporte",
+        "empleados_paros_vacaciones_rol_secundario",
+        "metricas_asistencia_rotacion_bono",
+      ]}
+    >
     <DashboardLayout
       breadcrumbs={[
         { label: "Dashboard", href: "/" },
@@ -928,28 +946,38 @@ export default function EmployeesPage() {
           </div>
         )}
 
-        <Tabs defaultValue="employees" className="space-y-4">
+        <Tabs value={employeeTab} onValueChange={setEmployeeTab} className="space-y-4">
           <TabsList className="grid w-full max-w-4xl grid-cols-2 sm:grid-cols-5">
+            {allowedTabs.includes("employees") && (
             <TabsTrigger value="employees" className="gap-1.5">
               <Users className="h-4 w-4" />
               Empleados
             </TabsTrigger>
+            )}
+            {allowedTabs.includes("transport") && (
             <TabsTrigger value="transport" className="gap-1.5">
               <Bus className="h-4 w-4" />
               Transporte
             </TabsTrigger>
+            )}
+            {allowedTabs.includes("downtime") && (
             <TabsTrigger value="downtime" className="gap-1.5">
               <Timer className="h-4 w-4" />
               Paros
             </TabsTrigger>
+            )}
+            {allowedTabs.includes("attendance") && (
             <TabsTrigger value="attendance" className="gap-1.5">
               <CalendarDays className="h-4 w-4" />
               Vacaciones y asistencia
             </TabsTrigger>
+            )}
+            {allowedTabs.includes("roles") && (
             <TabsTrigger value="roles" className="gap-1.5">
               <Briefcase className="h-4 w-4" />
               Cambio rol secundario
             </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="employees" className="space-y-4">
@@ -1958,5 +1986,6 @@ export default function EmployeesPage() {
         </DialogContent>
       </Dialog>
     </DashboardLayout>
+    </RequireModule>
   )
 }

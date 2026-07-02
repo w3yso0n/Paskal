@@ -1,10 +1,19 @@
 import type { UserRole, RequestUser } from "./api"
+import {
+  EMPLOYEE_MODULES,
+  EMPLEADOS_TAB_MODULES,
+  METRICAS_TAB_MODULES,
+  MODULE_ACCESS,
+  REGLAS_MODULES,
+  REGLAS_TAB_MODULES,
+  ROLE_LABELS,
+} from "./platform-permissions"
+import type { PlatformModule } from "./platform-permissions"
+export type { PlatformModule } from "./platform-permissions"
 
 /**
- * Granular permissions for the platform.
- * Each permission maps to a specific action the UI can gate.
- * The backend enforces its own guards (OrgAdminGuard, PlatformAdminGuard),
- * so this layer provides UX-level gating + prepares for finer backend guards.
+ * Permisos granulares derivados de los módulos de plataforma.
+ * El backend aplica ModuleAccessGuard; esta capa controla la UX.
  */
 export type Permission =
   | "users.list"
@@ -16,7 +25,6 @@ export type Permission =
   | "alerts.dismiss"
   | "alerts.clear"
   | "production.edit-threshold"
-  /** Configuración de temporizadores de paro hacia la ESP32 (solo rol admin en org). */
   | "production.esp-idle-config"
   | "employees.manage"
   | "data-capture.manage"
@@ -24,44 +32,68 @@ export type Permission =
   | "business-rules.manage"
   | "platform-config.view"
   | "platform-config.edit"
-  /** Consulta de solo lectura de las tablas del sistema (sección "Datos", herramienta de validación). */
   | "data.browse"
 
-const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
-  admin: [
-    "users.list",
-    "users.create",
-    "users.delete",
-    "alert-rules.list",
+const MODULE_TO_PERMISSIONS: Partial<Record<PlatformModule, readonly Permission[]>> = {
+  gestion_usuarios: ["users.list", "users.create", "users.delete"],
+  alertas: ["alerts.dismiss", "alerts.clear", "alert-rules.list"],
+  reglas_umbrales: [
     "alert-rules.create",
     "alert-rules.delete",
-    "alerts.dismiss",
-    "alerts.clear",
     "production.edit-threshold",
     "production.esp-idle-config",
-    "platform-config.view",
-    "platform-config.edit",
-    "employees.manage",
-    "data-capture.manage",
-    "bonus-config.manage",
-    "business-rules.manage",
-    "data.browse",
   ],
-  manager: [
-    "alert-rules.list",
-    "alert-rules.create",
-    "alert-rules.delete",
-    "alerts.dismiss",
-    "alerts.clear",
-    "production.edit-threshold",
-    "employees.manage",
-    "bonus-config.manage",
-    "business-rules.manage",
-  ],
-  operator: [
-    "alerts.dismiss",
-  ],
-  viewer: [],
+  empleados_asignar_tarjetas: ["employees.manage"],
+  empleados_transporte: ["employees.manage"],
+  empleados_paros_vacaciones_rol_secundario: ["employees.manage"],
+  skus: ["business-rules.manage"],
+  reglas_dias_festivos: ["business-rules.manage"],
+  reglas_fallos_electricos: ["business-rules.manage"],
+  captura_historico: ["data-capture.manage"],
+  captura_produccion: ["data-capture.manage"],
+  config_organizacion: ["platform-config.view", "platform-config.edit"],
+  configuracion: ["platform-config.view", "platform-config.edit"],
+  datos: ["data.browse"],
+  metricas_asistencia_rotacion_bono: ["bonus-config.manage"],
+}
+
+function permissionsForRole(role: UserRole): Permission[] {
+  const perms = new Set<Permission>()
+  for (const [module, roles] of Object.entries(MODULE_ACCESS) as [
+    PlatformModule,
+    readonly UserRole[],
+  ][]) {
+    if (!roles.includes(role)) continue
+    for (const p of MODULE_TO_PERMISSIONS[module] ?? []) {
+      perms.add(p)
+    }
+  }
+  return [...perms]
+}
+
+const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
+  supervisor: permissionsForRole("supervisor"),
+  jefe_produccion: permissionsForRole("jefe_produccion"),
+  gerente_operaciones: permissionsForRole("gerente_operaciones"),
+  director: permissionsForRole("director"),
+  rh: permissionsForRole("rh"),
+  droven: permissionsForRole("droven"),
+}
+
+export function hasModuleAccess(
+  user: RequestUser | null | undefined,
+  module: PlatformModule,
+): boolean {
+  if (!user) return false
+  if (user.isPlatformAdmin || user.role === "droven") return true
+  return MODULE_ACCESS[module]?.includes(user.role) ?? false
+}
+
+export function hasAnyModuleAccess(
+  user: RequestUser | null | undefined,
+  modules: readonly PlatformModule[],
+): boolean {
+  return modules.some((module) => hasModuleAccess(user, module))
 }
 
 export function hasPermission(
@@ -69,7 +101,7 @@ export function hasPermission(
   permission: Permission,
 ): boolean {
   if (!user) return false
-  if (user.isPlatformAdmin) return true
+  if (user.isPlatformAdmin || user.role === "droven") return true
   return ROLE_PERMISSIONS[user.role]?.includes(permission) ?? false
 }
 
@@ -89,16 +121,37 @@ export function hasAllPermissions(
   return permissions.every((p) => hasPermission(user, p))
 }
 
-/**
- * Route-level permission requirements.
- * Maps path prefixes to the permissions needed to access them.
- */
+export const ROUTE_MODULES: Record<string, PlatformModule[]> = {
+  "/": ["inicio"],
+  "/piso-produccion": ["piso_produccion"],
+  "/tablero-operativo": ["tablero_operativo"],
+  "/metricas": [
+    "metricas_produccion",
+    "metricas_incidencias",
+    "metricas_mantenimiento",
+    "metricas_asistencia_rotacion_bono",
+  ],
+  "/metas": ["metas"],
+  "/alertas": ["alertas"],
+  "/administracion/usuarios": ["gestion_usuarios"],
+  "/empleados": [...EMPLOYEE_MODULES, "metricas_asistencia_rotacion_bono"],
+  "/administracion/gestion-skus": ["skus"],
+  "/gestion-skus": ["skus"],
+  "/captura-datos": ["captura_produccion", "captura_historico"],
+  "/reglas-negocio": [...REGLAS_MODULES, "metricas_asistencia_rotacion_bono"],
+  "/configuracion-bono": ["metricas_asistencia_rotacion_bono"],
+  "/administracion/configuracion-organizacion": ["config_organizacion"],
+  "/configuracion": ["configuracion"],
+  "/datos": ["datos"],
+}
+
+/** Compatibilidad con RequirePermission existente. */
 export const ROUTE_PERMISSIONS: Record<string, Permission[]> = {
   "/administracion/usuarios": ["users.list"],
   "/administracion/configuracion-organizacion": ["platform-config.view"],
   "/administracion/gestion-skus": ["business-rules.manage"],
   "/captura-datos": ["data-capture.manage"],
-  "/configuracion-bono": ["business-rules.manage"],
+  "/configuracion-bono": ["bonus-config.manage"],
   "/reglas-negocio": ["business-rules.manage"],
   "/configuracion": ["platform-config.view"],
   "/datos": ["data.browse"],
@@ -109,47 +162,52 @@ export function canAccessRoute(
   pathname: string,
 ): boolean {
   if (!user) return false
-  const entry = Object.entries(ROUTE_PERMISSIONS).find(([prefix]) =>
-    pathname.startsWith(prefix),
+  const entry = Object.entries(ROUTE_MODULES).find(([prefix]) =>
+    pathname === prefix || pathname.startsWith(prefix + "/"),
   )
   if (!entry) return true
-  return hasAnyPermission(user, entry[1])
+  return hasAnyModuleAccess(user, entry[1])
 }
 
-/**
- * Readable labels for roles.
- */
-export const ROLE_LABELS: Record<UserRole, string> = {
-  admin: "Administrador",
-  manager: "Gestor",
-  operator: "Operador",
-  viewer: "Visualizador",
-}
+export { ROLE_LABELS }
 
-/**
- * Whether the sidebar should show the "administration" section.
- */
 export function showAdminSection(user: RequestUser | null | undefined): boolean {
-  return hasAnyPermission(user, [
-    "users.list",
-    "platform-config.view",
-    "employees.manage",
-    "data-capture.manage",
-    "bonus-config.manage",
-    "alert-rules.list",
+  return hasAnyModuleAccess(user, [
+    "gestion_usuarios",
+    "empleados_asignar_tarjetas",
+    "empleados_transporte",
+    "empleados_paros_vacaciones_rol_secundario",
+    "skus",
+    "captura_historico",
+    "captura_produccion",
+    ...REGLAS_MODULES,
+    "metricas_asistencia_rotacion_bono",
+    "config_organizacion",
   ])
 }
 
-/**
- * Whether the sidebar should show the "platform config" section.
- */
 export function showPlatformSection(user: RequestUser | null | undefined): boolean {
-  return hasPermission(user, "platform-config.view")
+  return hasModuleAccess(user, "configuracion")
 }
 
-/**
- * Whether the sidebar should show the "Datos" (read-only table browser) section.
- */
 export function showDataSection(user: RequestUser | null | undefined): boolean {
-  return hasPermission(user, "data.browse")
+  return hasModuleAccess(user, "datos")
+}
+
+export function visibleMetricasTabs(user: RequestUser | null | undefined): string[] {
+  return Object.entries(METRICAS_TAB_MODULES)
+    .filter(([, module]) => hasModuleAccess(user, module))
+    .map(([tab]) => tab)
+}
+
+export function visibleEmpleadosTabs(user: RequestUser | null | undefined): string[] {
+  return Object.entries(EMPLEADOS_TAB_MODULES)
+    .filter(([, module]) => hasModuleAccess(user, module))
+    .map(([tab]) => tab)
+}
+
+export function visibleReglasTabs(user: RequestUser | null | undefined): string[] {
+  return Object.entries(REGLAS_TAB_MODULES)
+    .filter(([, module]) => hasModuleAccess(user, module))
+    .map(([tab]) => tab)
 }

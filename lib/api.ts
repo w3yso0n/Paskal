@@ -17,7 +17,13 @@ export const apiBaseUrl = getBaseUrl();
 
 // --- Tipos del backend (auth) ---
 
-export type UserRole = "admin" | "manager" | "operator" | "viewer";
+export type UserRole =
+  | "supervisor"
+  | "jefe_produccion"
+  | "gerente_operaciones"
+  | "director"
+  | "rh"
+  | "droven";
 
 export interface RequestUser {
   id: string;

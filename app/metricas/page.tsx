@@ -89,6 +89,8 @@ import { MonthPicker } from "@/components/ui/month-picker"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import type { AttendanceRecord } from "@/lib/types"
 import { useAuth } from "@/contexts/auth-context"
+import { RequireModule } from "@/components/auth/require-module"
+import { visibleMetricasTabs } from "@/lib/permissions"
 import {
   getEmployees,
   getMachines,
@@ -716,7 +718,8 @@ function buildPersonnelMovementsFromCheckins(
 }
 
 export default function MetricsPage() {
-  const { getAccessToken } = useAuth()
+  const { user, getAccessToken } = useAuth()
+  const allowedTabs = useMemo(() => visibleMetricasTabs(user), [user])
   const [activeTab, setActiveTab] = useState("produccion")
   // Initialise to the current calendar month
   const [filterStartDate, setFilterStartDate] = useState(() => {
@@ -820,6 +823,12 @@ export default function MetricsPage() {
   const [dataError, setDataError] = useState<string | null>(null)
   const [reloadNonce, setReloadNonce] = useState(0)
   const [machineCheckinsLoaded, setMachineCheckinsLoaded] = useState<ApiMachineCheckin[]>([])
+
+  useEffect(() => {
+    if (allowedTabs.length > 0 && !allowedTabs.includes(activeTab)) {
+      setActiveTab(allowedTabs[0]!)
+    }
+  }, [allowedTabs, activeTab])
   const [employeeDayRecordsLoaded, setEmployeeDayRecordsLoaded] = useState<ApiEmployeeDayRecord[]>(
     [],
   )
@@ -1878,6 +1887,14 @@ export default function MetricsPage() {
         : "Producción"
 
   return (
+    <RequireModule
+      modules={[
+        "metricas_produccion",
+        "metricas_incidencias",
+        "metricas_mantenimiento",
+        "metricas_asistencia_rotacion_bono",
+      ]}
+    >
     <DashboardLayout
       breadcrumbs={[
         { label: "Inicio", href: "/" },
@@ -2143,12 +2160,24 @@ export default function MetricsPage() {
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
-            <TabsTrigger value="produccion">Producción</TabsTrigger>
-            <TabsTrigger value="incidencias">Incidencias</TabsTrigger>
-            <TabsTrigger value="mantenimiento">Mantenimiento</TabsTrigger>
-            <TabsTrigger value="operadores">Operadores & Empacadores</TabsTrigger>
-            <TabsTrigger value="asistencia">Asistencia</TabsTrigger>
-            <TabsTrigger value="rotacion">Rotación</TabsTrigger>
+            {allowedTabs.includes("produccion") && (
+              <TabsTrigger value="produccion">Producción</TabsTrigger>
+            )}
+            {allowedTabs.includes("incidencias") && (
+              <TabsTrigger value="incidencias">Incidencias</TabsTrigger>
+            )}
+            {allowedTabs.includes("mantenimiento") && (
+              <TabsTrigger value="mantenimiento">Mantenimiento</TabsTrigger>
+            )}
+            {allowedTabs.includes("operadores") && (
+              <TabsTrigger value="operadores">Operadores & Empacadores</TabsTrigger>
+            )}
+            {allowedTabs.includes("asistencia") && (
+              <TabsTrigger value="asistencia">Asistencia</TabsTrigger>
+            )}
+            {allowedTabs.includes("rotacion") && (
+              <TabsTrigger value="rotacion">Rotación</TabsTrigger>
+            )}
           </TabsList>
 
           {/* ========== PRODUCCIÓN TAB ========== */}
@@ -3687,5 +3716,6 @@ export default function MetricsPage() {
         </Tabs>
       </div>
     </DashboardLayout>
+    </RequireModule>
   )
 }

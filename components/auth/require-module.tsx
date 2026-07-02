@@ -1,0 +1,70 @@
+"use client"
+
+import { useRouter } from "next/navigation"
+import { useAuth } from "@/contexts/auth-context"
+import {
+  hasAnyModuleAccess,
+  type PlatformModule,
+} from "@/lib/permissions"
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { ShieldX, Loader2 } from "lucide-react"
+
+interface RequireModuleProps {
+  modules: PlatformModule[]
+  children: React.ReactNode
+  showFallback?: boolean
+}
+
+export function RequireModule({
+  modules,
+  children,
+  showFallback = true,
+}: RequireModuleProps) {
+  const { user, loading } = useAuth()
+  const router = useRouter()
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (!user) {
+    router.replace("/login")
+    return null
+  }
+
+  if (!hasAnyModuleAccess(user, modules)) {
+    if (!showFallback) {
+      router.replace("/")
+      return null
+    }
+
+    return (
+      <Card className="mx-auto mt-12 max-w-md">
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-destructive/10">
+            <ShieldX className="h-6 w-6 text-destructive" />
+          </div>
+          <CardTitle>Acceso restringido</CardTitle>
+          <CardDescription>
+            No tienes permisos para acceder a esta sección.
+            Contacta al administrador si necesitas acceso.
+          </CardDescription>
+          <Button
+            variant="outline"
+            className="mt-4"
+            onClick={() => router.push("/")}
+          >
+            Volver al inicio
+          </Button>
+        </CardHeader>
+      </Card>
+    )
+  }
+
+  return <>{children}</>
+}
