@@ -10,6 +10,7 @@ import {
   Trash2,
   Zap,
   Bell,
+  Recycle,
   Scale,
   Target,
 } from "lucide-react"
@@ -19,6 +20,7 @@ import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { RequireModule } from "@/components/auth/require-module"
 import { visibleReglasTabs } from "@/lib/permissions"
 import { BonusConfigPanel } from "@/components/metas/bonus-config-panel"
+import { ScrapMaterialsPanel } from "@/components/reglas/scrap-materials-panel"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -64,7 +66,7 @@ function formatDateEs(iso: string): string {
   }).format(new Date(y, m - 1, d))
 }
 
-const RULES_TABS = ["holidays", "electrical", "thresholds", "bono"] as const
+const RULES_TABS = ["holidays", "electrical", "thresholds", "scrap", "bono"] as const
 type RulesTab = (typeof RULES_TABS)[number]
 
 function parseRulesTab(value: string | null, allowed: string[]): RulesTab {
@@ -316,7 +318,7 @@ export default function ReglasNegocioPage() {
             </div>
           ) : (
             <Tabs value={activeTab} onValueChange={setRulesTab} className="space-y-4">
-              <TabsList className="grid w-full max-w-3xl grid-cols-4">
+              <TabsList className="grid w-full max-w-4xl grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
                 {allowedTabs.includes("holidays") && (
                 <TabsTrigger value="holidays" className="gap-1.5">
                   <CalendarDays className="h-4 w-4" />
@@ -333,6 +335,12 @@ export default function ReglasNegocioPage() {
                 <TabsTrigger value="thresholds" className="gap-1.5">
                   <Bell className="h-4 w-4" />
                   Umbrales
+                </TabsTrigger>
+                )}
+                {allowedTabs.includes("scrap") && (
+                <TabsTrigger value="scrap" className="gap-1.5">
+                  <Recycle className="h-4 w-4" />
+                  Scrap
                 </TabsTrigger>
                 )}
                 {allowedTabs.includes("bono") && (
@@ -600,9 +608,7 @@ export default function ReglasNegocioPage() {
                   <CardHeader>
                     <CardTitle className="text-lg">Alertas de inactividad</CardTitle>
                     <CardDescription>
-                      Minutos sin producción antes de generar alerta en el centro de alertas. El
-                      motor del backend evalúa <code className="text-xs">last_production_at</code>{" "}
-                      de cada máquina.
+                      Minutos sin producción antes de generar alerta en el centro de alertas.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
@@ -654,6 +660,10 @@ export default function ReglasNegocioPage() {
                     </Button>
                   </CardContent>
                 </Card>
+              </TabsContent>
+
+              <TabsContent value="scrap" className="space-y-4">
+                <ScrapMaterialsPanel />
               </TabsContent>
 
               <TabsContent value="bono" className="space-y-4">

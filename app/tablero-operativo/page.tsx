@@ -5,6 +5,8 @@ import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { OperatorCard, OperatorRow } from "@/components/operations/operator-card"
 import { Trophy, Maximize2, Minimize2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { useAuth } from "@/contexts/auth-context"
 import {
@@ -28,7 +30,6 @@ import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from 
 import {
   productionShiftFromMeasuredAt,
   resolveTableroWindingDailyGoalProgress,
-  todayDateKeyInTimeZone,
 } from "@/lib/tablero-operator-goal"
 
 type RankingRange = "day" | "month" | "semester"
@@ -381,6 +382,41 @@ function getDayBoundsInTimeZone(now: Date, timeZone: string): { start: Date; end
   return { start, end }
 }
 
+function todayDateInputValue(timeZone: string): string {
+  const p = getPartsInTimeZone(new Date(), timeZone)
+  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`
+}
+
+function getDayBoundsFromDateInput(
+  dateStr: string,
+  timeZone: string,
+): { start: Date; end: Date } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim())
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null
+  const start = makeZonedDate(year, month, day, 0, 0, timeZone)
+  const noon = makeZonedDate(year, month, day, 12, 0, timeZone)
+  const tomorrowNoon = new Date(noon.getTime() + 24 * 60 * 60 * 1000)
+  const tp = getPartsInTimeZone(tomorrowNoon, timeZone)
+  const end = makeZonedDate(tp.year, tp.month, tp.day, 0, 0, timeZone)
+  return { start, end }
+}
+
+function formatSelectedDayLabel(dateStr: string, timeZone: string): string {
+  const bounds = getDayBoundsFromDateInput(dateStr, timeZone)
+  if (!bounds) return dateStr
+  return new Intl.DateTimeFormat("es-MX", {
+    timeZone,
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(bounds.start)
+}
+
 function getMonthBoundsInTimeZone(now: Date, timeZone: string): { start: Date; end: Date } {
   const p = getPartsInTimeZone(now, timeZone)
   const start = makeZonedDate(p.year, p.month, 1, 0, 0, timeZone)
@@ -405,11 +441,17 @@ function getSemesterBoundsInTimeZone(now: Date, timeZone: string): { start: Date
 }
 
 function getRankingRangeBounds(
-  now: Date,
   range: RankingRange,
   timeZone: string,
-): { start: Date; end: Date } {
-  if (range === "day") return getDayBoundsInTimeZone(now, timeZone)
+  selectedDate?: string,
+): { start: Date; end: Date } | null {
+  if (range === "day") {
+    if (selectedDate) {
+      return getDayBoundsFromDateInput(selectedDate, timeZone)
+    }
+    return getDayBoundsInTimeZone(new Date(), timeZone)
+  }
+  const now = new Date()
   if (range === "month") return getMonthBoundsInTimeZone(now, timeZone)
   return getSemesterBoundsInTimeZone(now, timeZone)
 }
@@ -437,18 +479,21 @@ function buildOperatorRanking(
   todayEvents: ApiProductionEvent[],
   goalDefinitions: ReturnType<typeof bonusConfigToGoalDefinitions>,
   rankingRange: RankingRange,
+  goalDayKey: string,
+  isViewingToday: boolean,
 ): UiOperator[] {
   const codeToName = buildEmployeeCodeToNameMap(employees)
   const floorMachines = filterFloorMachines(machines)
   const machineIdx = buildMachineOperatorCodeIndex(floorMachines, checkins)
   const machinesById = buildMachinesByIdMap(floorMachines)
   const { skuById, upbById } = buildMachineMaps(floorMachines)
-  const today = todayDateKeyInTimeZone(TABLERO_TIMEZONE)
   const shift =
-    productionShiftFromMeasuredAt(new Date().toISOString()) ??
-    (todayEvents.length > 0
-      ? productionShiftFromMeasuredAt(todayEvents[todayEvents.length - 1].occurredAt)
-      : null)
+    rankingRange === "day"
+      ? (isViewingToday ? productionShiftFromMeasuredAt(new Date().toISOString()) : null) ??
+        (todayEvents.length > 0
+          ? productionShiftFromMeasuredAt(todayEvents[todayEvents.length - 1].occurredAt)
+          : null)
+      : null
 
   const productionByCode = new Map<
     string,
@@ -551,7 +596,7 @@ function buildOperatorRanking(
             todayEvents,
             opCode,
             shift,
-            today,
+            goalDayKey,
             skuById,
             upbById,
             resolveOperatorCode,
@@ -593,6 +638,13 @@ export default function OperationsBoardPage() {
   const [loading, setLoading] = useState(true)
   const [dailyGoalTarget, setDailyGoalTarget] = useState<number | null>(null)
   const [currentShiftLabel, setCurrentShiftLabel] = useState<string | null>(null)
+  const [selectedDate, setSelectedDate] = useState(() => todayDateInputValue(TABLERO_TIMEZONE))
+
+  const isViewingToday = selectedDate === todayDateInputValue(TABLERO_TIMEZONE)
+  const selectedDayLabel = useMemo(
+    () => formatSelectedDayLabel(selectedDate, TABLERO_TIMEZONE),
+    [selectedDate],
+  )
 
   const handleFullscreen = async () => {
     try {
@@ -619,26 +671,27 @@ export default function OperationsBoardPage() {
         }
 
         const now = new Date()
-        const bounds = getRankingRangeBounds(now, rankingRange, TABLERO_TIMEZONE)
-        const dayBounds = getDayBoundsInTimeZone(now, TABLERO_TIMEZONE)
+        const bounds = getRankingRangeBounds(rankingRange, TABLERO_TIMEZONE, selectedDate)
+        if (!bounds) {
+          if (!cancelled) setOperators([])
+          return
+        }
         const limit =
           rankingRange === "semester"
             ? 120_000
             : rankingRange === "month"
               ? 50_000
               : 15_000
-        const bonusMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+        const bonusMonth =
+          rankingRange === "day"
+            ? selectedDate.slice(0, 7)
+            : `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
 
-        const [events, todayEvents, employees, machines, checkins, goals] = await Promise.all([
+        const [events, employees, machines, checkins, goals] = await Promise.all([
           getProductionEvents(token, {
             from: bounds.start.toISOString(),
             to: bounds.end.toISOString(),
             limit,
-          }),
-          getProductionEvents(token, {
-            from: dayBounds.start.toISOString(),
-            to: dayBounds.end.toISOString(),
-            limit: 15_000,
           }),
           getEmployees(token),
           getMachines(token),
@@ -661,15 +714,23 @@ export default function OperationsBoardPage() {
           machines,
           checkins,
           goals,
-          todayEvents,
+          rankingRange === "day" ? events : [],
           goalDefinitions,
           rankingRange,
+          selectedDate,
+          isViewingToday,
         )
-        const shiftNow = productionShiftFromMeasuredAt(new Date().toISOString())
+        const shiftForGoal =
+          rankingRange === "day"
+            ? (isViewingToday ? productionShiftFromMeasuredAt(new Date().toISOString()) : null) ??
+              (events.length > 0
+                ? productionShiftFromMeasuredAt(events[events.length - 1].occurredAt)
+                : null)
+            : productionShiftFromMeasuredAt(new Date().toISOString())
         const windingKey =
-          shiftNow === "matutino"
+          shiftForGoal === "matutino"
             ? "winding-t1-daily"
-            : shiftNow === "vespertino"
+            : shiftForGoal === "vespertino"
               ? "winding-t2-daily"
               : null
         const windingDef = windingKey
@@ -699,31 +760,58 @@ export default function OperationsBoardPage() {
         setOperators(rows)
         setDailyGoalTarget(windingDef?.targetValue ?? rows.find((r) => r.goalTarget)?.goalTarget ?? null)
         setCurrentShiftLabel(
-          shiftNow === "matutino" ? "Turno 1" : shiftNow === "vespertino" ? "Turno 2" : null,
+          shiftForGoal === "matutino"
+            ? "Turno 1"
+            : shiftForGoal === "vespertino"
+              ? "Turno 2"
+              : null,
         )
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
     load()
-    const intervalMs = rankingRange === "day" ? 20_000 : 60_000
-    const intervalId = window.setInterval(load, intervalMs)
+    const intervalMs =
+      rankingRange === "day"
+        ? isViewingToday
+          ? 20_000
+          : 0
+        : 60_000
+    const intervalId = intervalMs > 0 ? window.setInterval(load, intervalMs) : undefined
     return () => {
       cancelled = true
-      window.clearInterval(intervalId)
+      if (intervalId != null) window.clearInterval(intervalId)
     }
-  }, [getAccessToken, rankingRange])
+  }, [getAccessToken, rankingRange, selectedDate, isViewingToday])
 
   const sortedOperators = useMemo(
     () => [...operators].sort((a, b) => b.units - a.units || a.name.localeCompare(b.name, "es")),
     [operators],
   )
   const topThree = useMemo(() => sortedOperators.slice(0, 3), [sortedOperators])
-  const restOperators = useMemo(() => sortedOperators.slice(3), [sortedOperators])
+  const restOperators = useMemo(
+    () => sortedOperators.slice(3).map((operator, index) => ({ operator, rank: 4 + index })),
+    [sortedOperators],
+  )
+  const restColumns = useMemo(() => {
+    const half = Math.ceil(restOperators.length / 2)
+    return [restOperators.slice(0, half), restOperators.slice(half)]
+  }, [restOperators])
   const hasOperators = operators.length > 0
   const rankingRangeLabel =
-    rankingRange === "day" ? "Hoy" : rankingRange === "month" ? "Mes actual" : "Semestre"
-  const unitsLabel = rankingRange === "day" ? "piezas hoy" : "unidades totales"
+    rankingRange === "day"
+      ? isViewingToday
+        ? "Hoy"
+        : selectedDayLabel
+      : rankingRange === "month"
+        ? "Mes actual"
+        : "Semestre"
+  const unitsLabel =
+    rankingRange === "day"
+      ? isViewingToday
+        ? "piezas hoy"
+        : "piezas del día"
+      : "unidades totales"
   const progressTitle = rankingRange === "day" ? "Meta diaria" : "Avance relativo"
 
   return (
@@ -751,7 +839,22 @@ export default function OperationsBoardPage() {
               )}
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-end gap-3">
+            {rankingRange === "day" && (
+              <div className="grid gap-1.5">
+                <Label htmlFor="tablero-date" className="text-xs text-muted-foreground">
+                  Día
+                </Label>
+                <Input
+                  id="tablero-date"
+                  type="date"
+                  value={selectedDate}
+                  max={todayDateInputValue(TABLERO_TIMEZONE)}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="w-46"
+                />
+              </div>
+            )}
             <ToggleGroup
               type="single"
               value={rankingRange}
@@ -830,30 +933,36 @@ export default function OperationsBoardPage() {
               </div>
             )}
 
-            {/* Resto de operadores */}
+            {/* Resto de operadores — dos columnas para aprovechar el ancho */}
             {restOperators.length > 0 && (
-              <div className="rounded-xl border border-border bg-card">
-                <div className="hidden border-b border-border px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:grid sm:grid-cols-[2rem_2.25rem_minmax(0,1fr)_5rem_minmax(7rem,10rem)] sm:items-center sm:gap-3">
-                  <span>#</span>
-                  <span />
-                  <span>Operador / máquina</span>
-                  <span className="text-right">Producción</span>
-                  <span>Meta diaria</span>
-                </div>
-                <div className="divide-y divide-border/60 p-1 sm:p-2">
-                  {restOperators.map((operator, index) => (
-                    <OperatorRow
-                      key={operator.opCode}
-                      operator={operator}
-                      rank={4 + index}
-                      density="compact"
-                      unitsLabel={unitsLabel}
-                      progressTitle={progressTitle}
-                      showSku={false}
-                      showGoalTarget={rankingRange === "day"}
-                    />
-                  ))}
-                </div>
+              <div className="grid gap-3 lg:grid-cols-2">
+                {restColumns.map((column, colIdx) =>
+                  column.length === 0 ? null : (
+                    <div key={colIdx} className="rounded-xl border border-border bg-card">
+                      <div className="hidden border-b border-border px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:grid sm:grid-cols-[1.75rem_2rem_minmax(0,1fr)_4.5rem_minmax(6.5rem,9rem)] sm:items-center sm:gap-2">
+                        <span>#</span>
+                        <span />
+                        <span>Operador / máquina</span>
+                        <span className="text-right">Producción</span>
+                        <span>Meta diaria</span>
+                      </div>
+                      <div className="divide-y divide-border/60 p-1 sm:p-2">
+                        {column.map(({ operator, rank }) => (
+                          <OperatorRow
+                            key={operator.opCode}
+                            operator={operator}
+                            rank={rank}
+                            density="compact"
+                            unitsLabel={unitsLabel}
+                            progressTitle={progressTitle}
+                            showSku={false}
+                            showGoalTarget={rankingRange === "day"}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ),
+                )}
               </div>
             )}
 
@@ -871,8 +980,13 @@ export default function OperationsBoardPage() {
 
         {/* Footer info */}
         <div className="text-center text-xs text-muted-foreground">
-          {`Actualización automática • Ranking por producción (${rankingRangeLabel})`}
-          {rankingRange === "day" ? " • Meta única Winding desde reglas de negocio" : ""}
+          {rankingRange === "day" && !isViewingToday
+            ? "Vista histórica — sin actualización automática"
+            : rankingRange === "day"
+              ? "Actualización automática cada 20 s"
+              : "Actualización automática cada 60 s"}
+          {` · Ranking por producción (${rankingRangeLabel})`}
+          {rankingRange === "day" ? " · Meta única Winding desde reglas de negocio" : ""}
         </div>
       </div>
     </DashboardLayout>

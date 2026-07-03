@@ -38,6 +38,29 @@ export function monthDateBounds(effectiveMonth: string): { startDate: string; en
 
 const DAYS_PER_WEEK = 5
 
+/** Metas de reglas de negocio visibles en la pantalla Metas (solo Winding diaria/mensual). */
+export const METAS_BUSINESS_GOAL_SOURCE_KEYS = [
+  "winding-t1-daily",
+  "winding-t2-daily",
+  "winding-t1-monthly",
+  "winding-t2-monthly",
+] as const
+
+export type MetasBusinessGoalSourceKey = (typeof METAS_BUSINESS_GOAL_SOURCE_KEYS)[number]
+
+export function isMetasBusinessGoalSourceKey(sourceKey: string): sourceKey is MetasBusinessGoalSourceKey {
+  return (METAS_BUSINESS_GOAL_SOURCE_KEYS as readonly string[]).includes(sourceKey)
+}
+
+/** Subconjunto de definiciones de bono que se muestran como "Meta del negocio" en Metas. */
+export function bonusConfigToMetasBusinessGoalDefinitions(
+  config: BonusProductionConfigData,
+): BonusGoalDefinition[] {
+  return bonusConfigToGoalDefinitions(config).filter((def) =>
+    isMetasBusinessGoalSourceKey(def.sourceKey),
+  )
+}
+
 /** Metas operativas derivadas de la configuración de bono (fuente única). */
 export function bonusConfigToGoalDefinitions(
   config: BonusProductionConfigData,
@@ -246,15 +269,18 @@ export function isBusinessManagedGoal(
   return definitions.some((def) => goalMatchesBonusDefinition(goal, def, monthBounds))
 }
 
-/** Lista unificada para cumplimiento: metas del negocio (reglas) + metas personalizadas. */
+/** Lista unificada para cumplimiento en Metas: Winding del negocio + metas personalizadas. */
 export function buildGoalsForProgressTracking(
   dbGoals: ApiGoal[],
   config: BonusProductionConfigData,
   effectiveMonth: string,
 ): ApiGoal[] {
-  const definitions = bonusConfigToGoalDefinitions(config)
+  const allDefinitions = bonusConfigToGoalDefinitions(config)
+  const metasBusinessDefinitions = bonusConfigToMetasBusinessGoalDefinitions(config)
   const bounds = monthDateBounds(effectiveMonth)
-  const business = definitions.map((def) => resolveBusinessGoalForDisplay(dbGoals, def, bounds))
-  const custom = dbGoals.filter((g) => !isBusinessManagedGoal(g, definitions, bounds))
+  const business = metasBusinessDefinitions.map((def) =>
+    resolveBusinessGoalForDisplay(dbGoals, def, bounds),
+  )
+  const custom = dbGoals.filter((g) => !isBusinessManagedGoal(g, allDefinitions, bounds))
   return [...business, ...custom]
 }

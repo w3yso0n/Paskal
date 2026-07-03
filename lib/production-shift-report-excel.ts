@@ -653,7 +653,6 @@ function buildDayWorksheet(
   const empacadoras = countDistinctPeople(
     machineRows.flatMap((r) => [r.packer1, r.packer2]),
   )
-  const metalHooksGrandTotal = metalRows.reduce((acc, r) => acc + r.total, 0)
 
   const bannerRow = mainTotalsRow + gapBeforePersonalBlock
   const labelRow = bannerRow + 1
@@ -668,7 +667,7 @@ function buildDayWorksheet(
     bannerRow,
     9,
     14,
-    metalHooksGrandTotal,
+    0,
     "bannerGreen",
   )
 
@@ -715,7 +714,7 @@ function buildDayWorksheet(
       [MH_COL.TOTAL, row.total],
       [MH_COL.MAQUINA_NUM, row.maquinaNum],
       [MH_COL.OPERADORA, row.operadora],
-      [MH_COL.CODIGO_OP, row.operadoraCodigo],
+      [MH_COL.CODIGO_OP, row.codigo],
       [MH_COL.EMP_CAJAS, row.empCajas],
       [MH_COL.EMP_PIEZAS, row.empPiezas],
       [MH_COL.EMP_TOTAL, row.empTotal],

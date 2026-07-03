@@ -45,6 +45,7 @@ import {
 } from "@/lib/api"
 import {
   bonusConfigToGoalDefinitions,
+  bonusConfigToMetasBusinessGoalDefinitions,
   buildGoalsForProgressTracking,
   isBusinessManagedGoal,
   isVirtualBusinessGoalId,
@@ -380,13 +381,18 @@ export default function MetasPage() {
     [bonusConfig],
   )
 
+  const metasBusinessDefinitions = useMemo(
+    () => bonusConfigToMetasBusinessGoalDefinitions(bonusConfig),
+    [bonusConfig],
+  )
+
   const businessGoals = useMemo(
     () =>
-      bonusDefinitions.map((def) => ({
+      metasBusinessDefinitions.map((def) => ({
         def,
         goal: resolveBusinessGoalForDisplay(goals, def, bonusMonthBounds),
       })),
-    [bonusDefinitions, goals, bonusMonthBounds],
+    [metasBusinessDefinitions, goals, bonusMonthBounds],
   )
 
   const customGoals = useMemo(

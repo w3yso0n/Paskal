@@ -25,6 +25,18 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@shared/scrap/scrap-calculations": [
+        "../shared/scrap/scrap-calculations.ts"
+      ],
+      "@shared/scrap/scrap-types": [
+        "../shared/scrap/scrap-types.ts"
+      ],
+      "@shared/scrap/scrap-materials-defaults": [
+        "../shared/scrap/scrap-materials-defaults.ts"
+      ],
+      "@shared/scrap/*": [
+        "../shared/scrap/*"
       ]
     }
   },
@@ -33,7 +45,8 @@
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",
-    ".next/dev/types/**/*.ts"
+    ".next/dev/types/**/*.ts",
+    "../shared/**/*.ts"
   ],
   "exclude": [
     "node_modules"

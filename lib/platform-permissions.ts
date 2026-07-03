@@ -166,5 +166,6 @@ export const REGLAS_TAB_MODULES: Record<string, PlatformModule> = {
   holidays: "reglas_dias_festivos",
   electrical: "reglas_fallos_electricos",
   thresholds: "reglas_umbrales",
+  scrap: "reglas_umbrales",
   bono: "metricas_asistencia_rotacion_bono",
 }

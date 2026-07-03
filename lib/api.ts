@@ -1303,6 +1303,103 @@ export async function updateBusinessAlertThresholds(
   return parseResponse<AlertThresholdsConfig>(res)
 }
 
+export type ApiScrapFamily = "metal" | "twine" | "other"
+
+export interface ApiScrapMaterialConfig {
+  sourceKey: string
+  name: string
+  family: ApiScrapFamily
+  costPerKgMxn: number
+  scrapSalePricePerKgMxn?: number
+  weightPerPieceKg?: number
+  active: boolean
+}
+
+export interface ApiScrapMaterialsConfig {
+  materials: ApiScrapMaterialConfig[]
+}
+
+export interface ApiEnrichedScrapRow {
+  id: string
+  sourceKey: string
+  materialName: string
+  family: ApiScrapFamily
+  recordYear: number
+  recordMonth: number
+  scrapQtyKg: number
+  costPerKgMxn: number
+  grossCostMxn: number
+  salePricePerKgMxn: number
+  recoveryMxn: number
+  netLossMxn: number
+  participationPercent: number | null
+  notes: string | null
+  costConfigured: boolean
+}
+
+export interface ApiScrapSummary {
+  rows: ApiEnrichedScrapRow[]
+  totals: {
+    scrapQtyKg: number
+    grossCostMxn: number
+    recoveryMxn: number
+    netLossMxn: number
+  }
+  byFamily: Array<{
+    family: ApiScrapFamily
+    scrapQtyKg: number
+    grossCostMxn: number
+    recoveryMxn: number
+    netLossMxn: number
+  }>
+  topByKg: Array<{
+    sourceKey: string
+    materialName: string
+    family: ApiScrapFamily
+    scrapQtyKg: number
+    netLossMxn: number
+  }>
+  topByNetLoss: Array<{
+    sourceKey: string
+    materialName: string
+    family: ApiScrapFamily
+    scrapQtyKg: number
+    netLossMxn: number
+  }>
+}
+
+export async function getScrapMaterialsConfig(
+  accessToken: string,
+): Promise<ApiScrapMaterialsConfig> {
+  const res = await fetchWithAuth("/business-rules/scrap-materials", { accessToken })
+  return parseResponse<ApiScrapMaterialsConfig>(res)
+}
+
+export async function updateScrapMaterialsConfig(
+  accessToken: string,
+  payload: ApiScrapMaterialsConfig,
+): Promise<ApiScrapMaterialsConfig> {
+  const res = await fetchWithAuth("/business-rules/scrap-materials", {
+    accessToken,
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<ApiScrapMaterialsConfig>(res)
+}
+
+export async function getScrapSummary(
+  accessToken: string,
+  params: { recordYear: number; recordMonth?: number },
+): Promise<ApiScrapSummary> {
+  const q = new URLSearchParams()
+  q.set("recordYear", String(params.recordYear))
+  if (params.recordMonth != null) q.set("recordMonth", String(params.recordMonth))
+  const res = await fetchWithAuth(`/data-capture/scrap-summary?${q.toString()}`, {
+    accessToken,
+  })
+  return parseResponse<ApiScrapSummary>(res)
+}
+
 export interface ApiDowntimeNote {
   id: string
   sourceKey: string
