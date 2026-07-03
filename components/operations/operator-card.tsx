@@ -9,6 +9,8 @@ interface OperatorCardProps {
   density?: "normal" | "compact"
   unitsLabel?: string
   progressTitle?: string
+  showSku?: boolean
+  showGoalTarget?: boolean
 }
 
 export function OperatorCard({
@@ -18,6 +20,8 @@ export function OperatorCard({
   density = "normal",
   unitsLabel = "unidades",
   progressTitle = "Bono",
+  showSku = true,
+  showGoalTarget = false,
 }: OperatorCardProps) {
   const isLeader = rank === 1
   const isTopThree = rank <= 3
@@ -120,24 +124,27 @@ export function OperatorCard({
           #{rank} • {isLeader ? "Líder" : "Top 3"}
         </span>
 
-        {/* Machine and SKU */}
-        <div className={cn(compact ? " flex items-center gap-1.5" : " flex items-center gap-2")}>
+        {/* Machine (y SKU opcional) */}
+        <div className={cn(compact ? "mt-1 flex flex-wrap items-center justify-center gap-1.5" : "mt-2 flex flex-wrap items-center justify-center gap-2")}>
           <span className="rounded bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
             {operator.machine}
           </span>
-          <span className="rounded bg-cyan-100 px-2  text-xs font-medium text-cyan-700">
-            {operator.sku}
-          </span>
+          {showSku && (
+            <span className="rounded bg-cyan-100 px-2 text-xs font-medium text-cyan-700">
+              {operator.sku}
+            </span>
+          )}
         </div>
 
         {/* Units */}
-        <span className={cn(compact ? "text-2m font-bold text-card-foreground" : "mt-4 text-3xl font-bold text-card-foreground")}>
-          {operator.units}
+        <span className={cn(compact ? "mt-2 text-2xl font-bold text-card-foreground" : "mt-4 text-3xl font-bold text-card-foreground")}>
+          {operator.units.toLocaleString("es-MX")}
         </span>
         <span className="text-xs text-muted-foreground">{unitsLabel}</span>
 
         {/* Meta diaria */}
-        <div className={cn(compact ? " w-full" : "mt-4 w-full")}>
+        {(operator.goalRemaining != null || (showGoalTarget && operator.goalTarget != null)) && (
+        <div className={cn(compact ? "mt-2 w-full" : "mt-4 w-full")}>
           <div className="mb-1 flex items-center justify-between text-xs">
             <span className="text-muted-foreground">{progressTitle}</span>
             <span className="font-semibold text-foreground">
@@ -148,6 +155,11 @@ export function OperatorCard({
                   : "Meta alcanzada"}
             </span>
           </div>
+          {showGoalTarget && operator.goalTarget != null && operator.goalTarget > 0 && (
+            <div className="mb-1 text-center text-[11px] text-muted-foreground">
+              {operator.percentage}% de {operator.goalTarget.toLocaleString("es-MX")} piezas
+            </div>
+          )}
 
           {/* Progress bar */}
           <div className={cn(compact ? "h-2 w-full overflow-hidden rounded-full bg-black/5" : "h-2.5 w-full overflow-hidden rounded-full bg-black/5")}>
@@ -157,6 +169,7 @@ export function OperatorCard({
             />
           </div>
         </div>
+        )}
       </div>
     )
   }
@@ -170,6 +183,8 @@ interface OperatorRowProps {
   density?: "normal" | "compact"
   unitsLabel?: string
   progressTitle?: string
+  showSku?: boolean
+  showGoalTarget?: boolean
 }
 
 export function OperatorRow({
@@ -178,65 +193,105 @@ export function OperatorRow({
   density = "normal",
   unitsLabel = "unidades",
   progressTitle = "Bono",
+  showSku = true,
+  showGoalTarget = false,
 }: OperatorRowProps) {
   const compact = density === "compact"
+  const hasGoal = operator.goalRemaining != null
   return (
-    <div className={cn("flex items-center", compact ? "gap-2 py-1" : "gap-3 py-2")}>
+    <div
+      className={cn(
+        "flex items-center rounded-lg transition-colors hover:bg-muted/40",
+        compact ? "gap-3 px-2 py-2" : "gap-3 px-3 py-2.5",
+      )}
+    >
       {/* Rank */}
-      <span className={cn(compact ? "w-5 text-[11px] font-medium text-muted-foreground" : "w-6 text-sm font-medium text-muted-foreground")}>
+      <span
+        className={cn(
+          "shrink-0 text-center font-semibold text-muted-foreground",
+          compact ? "w-6 text-xs" : "w-7 text-sm",
+        )}
+      >
         {rank}
       </span>
 
       {/* Avatar */}
       <div
         className={cn(
-          "flex items-center justify-center rounded-full bg-gray-200 font-bold text-gray-600",
-          compact ? "h-7 w-7 text-[11px]" : "h-8 w-8 text-xs"
+          "flex shrink-0 items-center justify-center rounded-full bg-primary/15 font-bold text-primary",
+          compact ? "h-8 w-8 text-xs" : "h-9 w-9 text-sm",
         )}
       >
         {operator.initials}
       </div>
 
-      {/* Name */}
-      <span className={cn("flex-1 font-medium text-foreground", compact ? "text-[12px]" : "text-sm")}>
-        {operator.name}
-      </span>
-
-      {/* Machine and SKU */}
-      <div className="flex items-center gap-2">
-        <span className={cn("rounded bg-primary/10 font-medium text-primary", compact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-0.5 text-xs")}>
+      {/* Name + machine */}
+      <div className="min-w-0 flex-1">
+        <span className={cn("block truncate font-medium text-foreground", compact ? "text-sm" : "text-base")}>
+          {operator.name}
+        </span>
+        <span
+          className={cn(
+            "mt-0.5 inline-block truncate rounded bg-primary/10 font-medium text-primary",
+            compact ? "max-w-full px-1.5 py-0.5 text-[11px]" : "px-2 py-0.5 text-xs",
+          )}
+          title={operator.machine}
+        >
           {operator.machine}
         </span>
-        <span className={cn("rounded bg-cyan-100 font-medium text-cyan-700", compact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-0.5 text-xs")}>
-          {operator.sku}
-        </span>
+        {showSku && (
+          <span className="ml-1.5 inline-block rounded bg-cyan-100 px-1.5 py-0.5 text-[11px] font-medium text-cyan-700">
+            {operator.sku}
+          </span>
+        )}
       </div>
 
       {/* Units */}
-      <span className={cn("text-right font-bold text-foreground", compact ? "w-14 text-[12px]" : "w-16 text-sm")}>
-        {operator.units}
-        <span className="ml-0.5 text-[10px] font-normal text-muted-foreground">{unitsLabel}</span>
-      </span>
+      <div className={cn("shrink-0 text-right", compact ? "w-20" : "w-24")}>
+        <span className={cn("block font-bold tabular-nums text-foreground", compact ? "text-sm" : "text-base")}>
+          {operator.units.toLocaleString("es-MX")}
+        </span>
+        <span className="text-[10px] text-muted-foreground">{unitsLabel}</span>
+      </div>
 
       {/* Progress */}
-      <div className={cn("flex items-center gap-2", compact ? "w-16" : "w-20")}>
-        <div className={cn("flex-1 overflow-hidden rounded-full bg-gray-200", compact ? "h-1.5" : "h-1.5")}>
+      {(operator.goalRemaining != null || (showGoalTarget && operator.goalTarget != null)) && (
+      <div className={cn("shrink-0", compact ? "w-28 sm:w-36" : "w-32 sm:w-40")}>
+        <div className="mb-0.5 flex items-center justify-between text-[10px] text-muted-foreground">
+          <span className="truncate" title={progressTitle}>
+            {progressTitle}
+          </span>
+          {hasGoal && (
+            <span className="font-semibold tabular-nums text-foreground">{operator.percentage}%</span>
+          )}
+        </div>
+        <div className={cn("overflow-hidden rounded-full bg-muted", compact ? "h-2" : "h-2.5")}>
           <div
-            className="h-full rounded-full bg-primary"
+            className="h-full rounded-full bg-primary transition-all"
             style={{ width: `${Math.min(operator.percentage, 100)}%` }}
           />
         </div>
-        <span
-          className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")}
-          title={progressTitle}
-        >
-          {operator.goalRemaining == null
-            ? "—"
-            : operator.goalRemaining > 0
-              ? `-${operator.goalRemaining.toLocaleString("es-MX")}`
-              : "✓"}
-        </span>
+        {showGoalTarget && operator.goalTarget != null && operator.goalTarget > 0 ? (
+          <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+            {hasGoal && operator.goalRemaining != null && operator.goalRemaining > 0
+              ? `Faltan ${operator.goalRemaining.toLocaleString("es-MX")}`
+              : hasGoal
+                ? "Meta alcanzada"
+                : "—"}
+            {" · "}
+            meta {operator.goalTarget.toLocaleString("es-MX")}
+          </div>
+        ) : (
+          <div className="mt-0.5 text-[10px] text-muted-foreground">
+            {operator.goalRemaining == null
+              ? "—"
+              : operator.goalRemaining > 0
+                ? `Faltan ${operator.goalRemaining.toLocaleString("es-MX")}`
+                : "✓ Meta"}
+          </div>
+        )}
       </div>
+      )}
     </div>
   )
 }

@@ -123,7 +123,8 @@ function WindingShiftSection({
               <ReadOnlyField label="Meta mensual 110% (auto)" value={monthly110} />
             </div>
             <p className="text-xs text-muted-foreground">
-              Meta mensual = diaria × días laborables (p. ej. 3,650 × 20 = 73,000 piezas).
+              Meta diaria 100% usada en tablero operativo y en Metas. Mensual = diaria × días
+              laborables (p. ej. 3,650 × 20 = 73,000 piezas).
             </p>
           </div>
         )
@@ -325,8 +326,8 @@ export function BonusConfigPanel({ onSaved }: BonusConfigPanelProps) {
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <p className="text-sm text-muted-foreground max-w-2xl">
-          Metas por área: Winding, Bending (fija) y Roller, más reglas de pago. Al guardar se
-          sincronizan las metas en Metas y los reportes Excel.
+          Metas por área: Winding (meta diaria 100% del tablero operativo), Bending (fija) y Roller,
+          más reglas de pago. Al guardar se reflejan en Metas y en los reportes Excel.
         </p>
         <Button onClick={handleSave} disabled={saving} className="gap-2 shrink-0">
           <Save className="h-4 w-4" />

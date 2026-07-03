@@ -45,8 +45,11 @@ import {
 } from "@/lib/api"
 import {
   bonusConfigToGoalDefinitions,
-  goalMatchesBonusDefinition,
+  buildGoalsForProgressTracking,
+  isBusinessManagedGoal,
+  isVirtualBusinessGoalId,
   monthDateBounds,
+  resolveBusinessGoalForDisplay,
 } from "@/lib/bonus-goals-bridge"
 import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
 import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
@@ -160,6 +163,7 @@ function GoalCard({
   onDelete,
   onToggleActive,
   fromBonusConfig,
+  businessLabel,
   machineLabel,
 }: {
   goal: ApiGoal
@@ -168,6 +172,7 @@ function GoalCard({
   onDelete: (goal: ApiGoal) => void
   onToggleActive?: (goal: ApiGoal, active: boolean) => void
   fromBonusConfig?: boolean
+  businessLabel?: string | null
   machineLabel?: string | null
 }) {
   const target = Number(goal.targetValue)
@@ -190,7 +195,7 @@ function GoalCard({
                 {periodLabels[goal.period]}
               </Badge>
               {fromBonusConfig ? (
-                <Badge className="bg-primary/10 text-primary text-xs">Config. bono</Badge>
+                <Badge className="bg-primary/10 text-primary text-xs">Meta del negocio</Badge>
               ) : null}
               {goal.sku?.trim() ? (
                 <Badge variant="secondary" className="text-xs">
@@ -222,11 +227,13 @@ function GoalCard({
               </Badge>
             </div>
             <h3 className="text-lg font-semibold text-foreground">
-              {metric.label}
+              {businessLabel ?? metric.label}
             </h3>
             <p className="text-sm text-muted-foreground">
-              Periodo: {periodLabels[goal.period]}
-              {machineLabel ? ` · ${machineLabel}` : ""}
+              {fromBonusConfig
+                ? "Definida en Reglas de negocio → Configuración de bono (solo lectura aquí)"
+                : `Periodo: ${periodLabels[goal.period]}`}
+              {!fromBonusConfig && machineLabel ? ` · ${machineLabel}` : ""}
             </p>
           </div>
           <div className="flex flex-col items-end gap-2">
@@ -243,7 +250,7 @@ function GoalCard({
               </div>
             ) : null}
             <div className="flex gap-1">
-            {!fromBonusConfig ? (
+            {!fromBonusConfig && !isVirtualBusinessGoalId(goal.id) ? (
               <>
             <Button
               variant="ghost"
@@ -272,7 +279,7 @@ function GoalCard({
                 onClick={onEdit as () => void}
                 title="Editar en reglas de negocio"
               >
-                Editar en config.
+                Editar en reglas
               </Button>
             )}
           </div>
@@ -373,12 +380,35 @@ export default function MetasPage() {
     [bonusConfig],
   )
 
-  const isBonusSyncedGoal = (goal: ApiGoal) => {
-    if (goal.sku?.trim()) return false
-    return bonusDefinitions.some((def) =>
-      goalMatchesBonusDefinition(goal, def, bonusMonthBounds),
-    )
-  }
+  const businessGoals = useMemo(
+    () =>
+      bonusDefinitions.map((def) => ({
+        def,
+        goal: resolveBusinessGoalForDisplay(goals, def, bonusMonthBounds),
+      })),
+    [bonusDefinitions, goals, bonusMonthBounds],
+  )
+
+  const customGoals = useMemo(
+    () => goals.filter((g) => !isBusinessManagedGoal(g, bonusDefinitions, bonusMonthBounds)),
+    [goals, bonusDefinitions, bonusMonthBounds],
+  )
+
+  const displayGoals = useMemo(
+    () => [
+      ...businessGoals.map(({ goal, def }) => ({
+        goal,
+        fromBonusConfig: true,
+        businessLabel: def.label,
+      })),
+      ...customGoals.map((goal) => ({
+        goal,
+        fromBonusConfig: false,
+        businessLabel: null as string | null,
+      })),
+    ],
+    [businessGoals, customGoals],
+  )
 
   const skuSuggestions = useMemo(() => {
     const set = new Set<string>()
@@ -394,12 +424,19 @@ export default function MetasPage() {
   // ── derived stats ──────────────────────────────────────────────────────────
   const enriched = useMemo(
     () =>
-      goals.map((g) => {
-        const actual = Number(actualByGoalId[g.id] ?? 0)
-        const target = Number(g.targetValue)
-        return { goal: g, actual, target, status: calcStatus(actual, target) }
+      displayGoals.map(({ goal, fromBonusConfig, businessLabel }) => {
+        const actual = Number(actualByGoalId[goal.id] ?? 0)
+        const target = Number(goal.targetValue)
+        return {
+          goal,
+          actual,
+          target,
+          status: calcStatus(actual, target),
+          fromBonusConfig,
+          businessLabel,
+        }
       }),
-    [goals, actualByGoalId],
+    [displayGoals, actualByGoalId],
   )
 
   const filtered = useMemo(() => {
@@ -456,19 +493,27 @@ export default function MetasPage() {
       setGoals(goalsData)
       setMachines(machinesData)
 
+      let cfgNormalized = DEFAULT_BONUS_PRODUCTION_CONFIG
       try {
         const cfg = await getBonusProductionConfigForMonth(token, bonusConfigMonth)
-        setBonusConfig(normalizeBonusProductionConfig(cfg.config))
+        cfgNormalized = normalizeBonusProductionConfig(cfg.config)
+        setBonusConfig(cfgNormalized)
       } catch {
         setBonusConfig(DEFAULT_BONUS_PRODUCTION_CONFIG)
       }
 
-      if (goalsData.length === 0) {
+      const goalsForActual = buildGoalsForProgressTracking(
+        goalsData,
+        cfgNormalized,
+        bonusConfigMonth,
+      )
+
+      if (goalsForActual.length === 0) {
         setActualByGoalId({})
         return
       }
 
-      const actual = await fetchActualByGoalId(token, goalsData, machinesData)
+      const actual = await fetchActualByGoalId(token, goalsForActual, machinesData)
       setActualByGoalId(actual)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al cargar metas")
@@ -585,6 +630,7 @@ export default function MetasPage() {
   }
 
   const onDelete = async (g: ApiGoal) => {
+    if (isVirtualBusinessGoalId(g.id)) return
     const token = await getAccessToken()
     if (!token) return
     setError(null)
@@ -774,12 +820,15 @@ export default function MetasPage() {
 
         <Card className="border-primary/20 bg-primary/5">
           <CardContent className="pt-6 text-sm text-muted-foreground">
-            Las metas de Winding, Bending y Roller provienen de{" "}
+            Las <strong className="text-foreground">metas del negocio</strong> (Winding, Bending, Roller)
+            se definen en{" "}
             <Link href="/reglas-negocio?tab=bono" className="font-medium text-primary underline">
               Reglas de negocio → Configuración de bono
             </Link>
-            {" "}(mes vigente: {bonusConfigMonth}). Al guardar allí se sincronizan aquí y en los
-            reportes Excel.
+            {" "}(mes vigente: {bonusConfigMonth}). La meta diaria de Winding al 100% es la misma que
+            usa el tablero operativo. Aquí solo se muestran; para cambiarlas edita en reglas de negocio
+            y pulsa «Guardar y sincronizar metas». Las metas personalizadas (por SKU, máquina, etc.)
+            las creas tú en esta página.
           </CardContent>
         </Card>
 
@@ -801,7 +850,7 @@ export default function MetasPage() {
               <p className="text-sm text-muted-foreground">Cargando metas…</p>
             </CardContent>
           </Card>
-        ) : goals.length === 0 ? (
+        ) : displayGoals.length === 0 ? (
           <Card>
             <CardContent className="pt-6">
               <p className="text-sm text-muted-foreground">Sin metas configuradas.</p>
@@ -955,7 +1004,7 @@ export default function MetasPage() {
                     </Card>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
-                      {filtered.map(({ goal, actual }) => (
+                      {filtered.map(({ goal, actual, fromBonusConfig, businessLabel }) => (
                         <GoalCard
                           key={goal.id}
                           goal={goal}
@@ -965,14 +1014,11 @@ export default function MetasPage() {
                               ? (machineMaps.labelById.get(goal.machineId) ?? null)
                               : null
                           }
-                          onEdit={
-                            isBonusSyncedGoal(goal)
-                              ? openBonusConfig
-                              : openEdit
-                          }
+                          businessLabel={businessLabel}
+                          onEdit={fromBonusConfig ? openBonusConfig : openEdit}
                           onDelete={onDelete}
-                          onToggleActive={onToggleGoalActive}
-                          fromBonusConfig={isBonusSyncedGoal(goal)}
+                          onToggleActive={fromBonusConfig ? undefined : onToggleGoalActive}
+                          fromBonusConfig={fromBonusConfig}
                         />
                       ))}
                     </div>

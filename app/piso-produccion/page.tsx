@@ -48,7 +48,7 @@ import {
 import { SkuCodeInput, skuUnitsPerBox } from "@/components/sku/sku-code-input"
 import { CreateSkuDialog } from "@/components/sku/create-sku-dialog"
 import { normalizeSkuCode } from "@/lib/sku-catalog"
-import { isOperatorRole, isPackerRole } from "@/lib/employee-production-role"
+import { isFloorOperatorCandidate, isFloorPackerCandidate } from "@/lib/employee-production-role"
 import { loadQuantityRules } from "@/lib/hook-sku-quantity-table"
 import type { HookSkuQuantityRule } from "@/lib/hook-sku-generator"
 
@@ -75,6 +75,41 @@ function personAutocompleteOptions(
     label: name,
     hint: employeeRows.find((e) => e.fullName === name)?.employeeCode ?? undefined,
   }))
+}
+
+function validateMachinePersonnelRoles(
+  rows: MachineData[],
+  employees: ApiEmployee[],
+): string | null {
+  const byName = new Map(employees.map((e) => [e.fullName, e]))
+  for (const m of rows) {
+    const checkOperator = (name?: string) => {
+      if (!name?.trim()) return null
+      const emp = byName.get(name)
+      if (!emp) return `Máquina "${m.name}": no se encontró al empleado "${name}".`
+      if (!isFloorOperatorCandidate(emp)) {
+        return `Máquina "${m.name}": "${name}" no puede ser operador (solo empleados activos con rol primario Operador).`
+      }
+      return null
+    }
+    const checkPacker = (name?: string) => {
+      if (!name?.trim()) return null
+      const emp = byName.get(name)
+      if (!emp) return `Máquina "${m.name}": no se encontró al empleado "${name}".`
+      if (!isFloorPackerCandidate(emp)) {
+        return `Máquina "${m.name}": "${name}" no puede ser empacador (empacador de base o operador con rol secundario Empaque).`
+      }
+      return null
+    }
+    for (const msg of [checkOperator(m.operator), checkOperator(m.operator2)]) {
+      if (msg) return msg
+    }
+    for (const p of m.packers ?? []) {
+      const msg = checkPacker(p)
+      if (msg) return msg
+    }
+  }
+  return null
 }
 
 /**
@@ -176,20 +211,22 @@ export default function ProductionFloorPage() {
     }
     return map
   }, [employeeRows])
-  const operators = useMemo(() => {
-    const byRole = employeeRows
-      .filter((e) => isOperatorRole(e.primaryRole))
-      .map((e) => e.fullName)
-    if (byRole.length > 0) return byRole
-    return employeeRows.filter((e) => e.status === "active").map((e) => e.fullName)
-  }, [employeeRows])
-  const packers = useMemo(() => {
-    const byRole = employeeRows
-      .filter((e) => isPackerRole(e.primaryRole, e.secondaryRole))
-      .map((e) => e.fullName)
-    if (byRole.length > 0) return byRole
-    return employeeRows.filter((e) => e.status === "active").map((e) => e.fullName)
-  }, [employeeRows])
+  const operators = useMemo(
+    () =>
+      employeeRows
+        .filter((e) => isFloorOperatorCandidate(e))
+        .map((e) => e.fullName)
+        .sort((a, b) => a.localeCompare(b, "es")),
+    [employeeRows],
+  )
+  const packers = useMemo(
+    () =>
+      employeeRows
+        .filter((e) => isFloorPackerCandidate(e))
+        .map((e) => e.fullName)
+        .sort((a, b) => a.localeCompare(b, "es")),
+    [employeeRows],
+  )
 
   const [machineData, setMachineData] = useState<MachineData[]>([])
   const [skuCatalog, setSkuCatalog] = useState<ApiProductSku[]>([])
@@ -369,6 +406,23 @@ export default function ProductionFloorPage() {
       return
     }
 
+    const roleError = validateMachinePersonnelRoles(
+      [
+        {
+          ...selectedMachine,
+          operator: operatorInput || undefined,
+          operator2: dialogShowSecondOperator ? operator2Input.trim() || undefined : undefined,
+          packers: nextPackers.length ? nextPackers : undefined,
+        },
+      ],
+      employeeRows,
+    )
+    if (roleError) {
+      setError(roleError)
+      toast.error(roleError)
+      return
+    }
+
     setError(null)
     setMachineData((prev) =>
       prev.map((m) =>
@@ -504,6 +558,12 @@ export default function ProductionFloorPage() {
 
   const applyAndSaveAssignments = () => {
     setError(null)
+    const roleError = validateMachinePersonnelRoles(machineData, employeeRows)
+    if (roleError) {
+      setError(roleError)
+      toast.error(roleError)
+      return
+    }
     // Permitir guardar información incompleta. Solo bloquear si hay empleados repetidos.
     const normalize = (v?: string) => (v ?? "").trim()
     const usedByEmployee = new Map<string, string>() // employee -> machineName

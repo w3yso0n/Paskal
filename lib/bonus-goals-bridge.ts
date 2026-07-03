@@ -1,4 +1,4 @@
-import type { ApiGoalPeriod, ApiGoalShift, CreateGoalPayload } from "@/lib/api"
+import type { ApiGoal, ApiGoalPeriod, ApiGoalShift, CreateGoalPayload } from "@/lib/api"
 import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
 import {
   bendingDailyMetaFromMonthly,
@@ -11,6 +11,13 @@ export type BonusGoalDefinition = {
   targetValue: number
   period: ApiGoalPeriod
   shift: ApiGoalShift | null
+}
+
+/** Prefijo de ids virtuales para metas derivadas de reglas de negocio (no persistidas en BD). */
+export const BUSINESS_GOAL_ID_PREFIX = "business:"
+
+export function isVirtualBusinessGoalId(id: string): boolean {
+  return id.startsWith(BUSINESS_GOAL_ID_PREFIX)
 }
 
 export function monthDateBounds(effectiveMonth: string): { startDate: string; endDate: string } {
@@ -179,4 +186,75 @@ export function buildGoalPayloadFromDefinition(
     startDate: monthBounds.startDate,
     endDate: monthBounds.endDate,
   }
+}
+
+/** Meta virtual (solo UI / tablero) cuando aún no existe fila sincronizada en `goals`. */
+export function syntheticGoalFromDefinition(
+  def: BonusGoalDefinition,
+  monthBounds: { startDate: string; endDate: string },
+): ApiGoal {
+  return {
+    id: `${BUSINESS_GOAL_ID_PREFIX}${def.sourceKey}`,
+    metricKind: "production",
+    machineId: null,
+    sku: null,
+    targetValue: def.targetValue,
+    period: def.period,
+    shift: def.shift,
+    active: true,
+    startDate: monthBounds.startDate,
+    endDate: monthBounds.endDate,
+    createdAt: "",
+    updatedAt: "",
+  }
+}
+
+/**
+ * Resuelve la meta a mostrar: prioriza el valor de reglas de negocio (definición) y
+ * reutiliza la fila de BD si ya fue sincronizada.
+ */
+export function resolveBusinessGoalForDisplay(
+  dbGoals: ApiGoal[],
+  def: BonusGoalDefinition,
+  monthBounds: { startDate: string; endDate: string },
+): ApiGoal {
+  const synced = dbGoals.find((g) => goalMatchesBonusDefinition(g, def, monthBounds))
+  if (synced) {
+    return { ...synced, targetValue: def.targetValue }
+  }
+  return syntheticGoalFromDefinition(def, monthBounds)
+}
+
+export function getBonusDefinitionForGoal(
+  goal: ApiGoal,
+  definitions: BonusGoalDefinition[],
+  monthBounds: { startDate: string; endDate: string },
+): BonusGoalDefinition | null {
+  if (isVirtualBusinessGoalId(goal.id)) {
+    const key = goal.id.slice(BUSINESS_GOAL_ID_PREFIX.length)
+    return definitions.find((d) => d.sourceKey === key) ?? null
+  }
+  return definitions.find((def) => goalMatchesBonusDefinition(goal, def, monthBounds)) ?? null
+}
+
+export function isBusinessManagedGoal(
+  goal: ApiGoal,
+  definitions: BonusGoalDefinition[],
+  monthBounds: { startDate: string; endDate: string },
+): boolean {
+  if (isVirtualBusinessGoalId(goal.id)) return true
+  return definitions.some((def) => goalMatchesBonusDefinition(goal, def, monthBounds))
+}
+
+/** Lista unificada para cumplimiento: metas del negocio (reglas) + metas personalizadas. */
+export function buildGoalsForProgressTracking(
+  dbGoals: ApiGoal[],
+  config: BonusProductionConfigData,
+  effectiveMonth: string,
+): ApiGoal[] {
+  const definitions = bonusConfigToGoalDefinitions(config)
+  const bounds = monthDateBounds(effectiveMonth)
+  const business = definitions.map((def) => resolveBusinessGoalForDisplay(dbGoals, def, bounds))
+  const custom = dbGoals.filter((g) => !isBusinessManagedGoal(g, definitions, bounds))
+  return [...business, ...custom]
 }

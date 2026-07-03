@@ -22,11 +22,12 @@ import {
 } from "@/lib/api"
 import { filterFloorMachines } from "@/lib/machine-floor"
 import { countsAsOperatorProduction } from "@/lib/production-goal-events"
+import { isFloorOperatorCandidate } from "@/lib/employee-production-role"
 import { bonusConfigToGoalDefinitions } from "@/lib/bonus-goals-bridge"
 import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
 import {
   productionShiftFromMeasuredAt,
-  resolveOperatorDailyGoalProgress,
+  resolveTableroWindingDailyGoalProgress,
   todayDateKeyInTimeZone,
 } from "@/lib/tablero-operator-goal"
 
@@ -43,6 +44,7 @@ type UiOperator = {
   units: number
   percentage: number
   goalRemaining: number | null
+  goalTarget: number | null
   opCode: string
   machineId: string | null
   machineCode: string
@@ -228,31 +230,34 @@ function tableroResolveMachineLabel(
   return "—"
 }
 
-function tableroResolveSkuFromMachine(
-  rawFromPayload: string,
-  eventMachineId: string | null,
-  byId: Map<string, ApiMachine>,
-  byCodeLower: Map<string, ApiMachine>,
-  employees: ApiEmployee[],
+function resolveOperatorMachineFromCheckin(
+  operatorCode: string,
   checkins: ApiMachineCheckin[],
-): string | null {
-  const skuFrom = (m: ApiMachine | undefined): string | null => {
-    const s = m?.currentSku?.trim()
-    return s || null
-  }
-  const catalogId = tableroCatalogMachineIdForEvent(
-    rawFromPayload,
-    eventMachineId,
-    byId,
-    byCodeLower,
-    employees,
-    checkins,
+  machineById: Map<string, ApiMachine>,
+): {
+  machine: string
+  machineId: string | null
+  machineCode: string
+  machineName: string
+  unitsPerBox: number | null
+} {
+  const codeLower = operatorCode.trim().toLowerCase()
+  const ch = checkins.find(
+    (c) =>
+      c.operatorCode?.trim().toLowerCase() === codeLower ||
+      c.operator2Code?.trim().toLowerCase() === codeLower,
   )
-  if (catalogId) {
-    const s = skuFrom(byId.get(catalogId))
-    if (s) return s
+  if (!ch?.machineId) {
+    return { machine: "Sin asignar", machineId: null, machineCode: "", machineName: "", unitsPerBox: null }
   }
-  return null
+  const m = machineById.get(ch.machineId)
+  return {
+    machine: m?.code?.trim() || m?.name?.trim() || "—",
+    machineId: ch.machineId,
+    machineCode: m?.code?.trim() || "",
+    machineName: m?.name?.trim() || "",
+    unitsPerBox: m?.unitsPerBox ?? null,
+  }
 }
 
 function pickMoreReadableMachineLabel(prev: string, next: string): string {
@@ -431,19 +436,25 @@ function buildOperatorRanking(
   goals: ApiGoal[],
   todayEvents: ApiProductionEvent[],
   goalDefinitions: ReturnType<typeof bonusConfigToGoalDefinitions>,
+  rankingRange: RankingRange,
 ): UiOperator[] {
   const codeToName = buildEmployeeCodeToNameMap(employees)
   const floorMachines = filterFloorMachines(machines)
   const machineIdx = buildMachineOperatorCodeIndex(floorMachines, checkins)
   const machinesById = buildMachinesByIdMap(floorMachines)
-  const { skuById, upbById, byId: machineById } = buildMachineMaps(floorMachines)
+  const { skuById, upbById } = buildMachineMaps(floorMachines)
   const today = todayDateKeyInTimeZone(TABLERO_TIMEZONE)
-  const byOperatorCode = new Map<
+  const shift =
+    productionShiftFromMeasuredAt(new Date().toISOString()) ??
+    (todayEvents.length > 0
+      ? productionShiftFromMeasuredAt(todayEvents[todayEvents.length - 1].occurredAt)
+      : null)
+
+  const productionByCode = new Map<
     string,
     {
       units: number
       machine: string
-      sku: string
       machineId: string | null
       machineCode: string
       machineName: string
@@ -458,6 +469,8 @@ function buildOperatorRanking(
 
     const payload = e.payload ?? {}
     const { code: opCode } = getOperatorCodeForProductionEvent(e, machineIdx)
+    if (!opCode.trim() || opCode === "SIN_OPERADOR") continue
+
     const eventMid = getEventMachineId(e)
     const machineRaw = String(
       (payload["MACHINE_ID"] as string | undefined) ??
@@ -465,7 +478,6 @@ function buildOperatorRanking(
         eventMid ??
         "",
     ).trim()
-    const payloadSku = String((payload["SKU"] as string | undefined) ?? "").trim()
     const machine = tableroResolveMachineLabel(
       machineRaw,
       eventMid,
@@ -474,16 +486,6 @@ function buildOperatorRanking(
       employees,
       checkins,
     )
-    const skuFromPayload = payloadSku || "—"
-    const skuFromMachine = tableroResolveSkuFromMachine(
-      machineRaw,
-      eventMid,
-      machinesById,
-      machineIdx.machineByCodeLower,
-      employees,
-      checkins,
-    )
-    const sku = skuFromPayload !== "—" ? skuFromPayload : skuFromMachine ?? "—"
     const catalogMachineId = tableroCatalogMachineIdForEvent(
       machineRaw,
       eventMid,
@@ -492,26 +494,24 @@ function buildOperatorRanking(
       employees,
       checkins,
     )
-    const machineEntity = catalogMachineId ? machineById.get(catalogMachineId) : undefined
+    const machineEntity = catalogMachineId ? machinesById.get(catalogMachineId) : undefined
     const machineCode = machineEntity?.code?.trim() || machine
     const machineName = machineEntity?.name?.trim() || ""
     const unitsPerBox = machineEntity?.unitsPerBox ?? null
 
-    const current = byOperatorCode.get(opCode) ?? {
+    const current = productionByCode.get(opCode) ?? {
       units: 0,
       machine,
-      sku,
       machineId: catalogMachineId,
       machineCode,
       machineName,
       unitsPerBox,
     }
     const nextMachineId = catalogMachineId ?? current.machineId
-    const nextMachine = machineById.get(nextMachineId ?? "")
-    byOperatorCode.set(opCode, {
+    const nextMachine = machinesById.get(nextMachineId ?? "")
+    productionByCode.set(opCode, {
       units: current.units + count,
       machine: pickMoreReadableMachineLabel(current.machine, machine),
-      sku: current.sku !== "—" ? current.sku : sku,
       machineId: nextMachineId,
       machineCode: nextMachine?.code?.trim() || current.machineCode || machineCode,
       machineName: nextMachine?.name?.trim() || current.machineName || machineName,
@@ -519,51 +519,67 @@ function buildOperatorRanking(
     })
   }
 
+  const operatorCodes = new Set<string>()
+  for (const emp of employees) {
+    if (!isFloorOperatorCandidate(emp)) continue
+    const code = emp.employeeCode?.trim()
+    if (code) operatorCodes.add(code)
+  }
+  for (const code of productionByCode.keys()) {
+    operatorCodes.add(code)
+  }
+
   const resolveOperatorCode = (e: ApiProductionEvent) =>
     getOperatorCodeForProductionEvent(e, machineIdx).code
 
-  return [...byOperatorCode.entries()]
-    .map(([opCode, v]) => {
-      const displayName = resolveOperatorDisplayName(opCode, codeToName)
-      const shift =
-        productionShiftFromMeasuredAt(new Date().toISOString()) ??
-        (todayEvents.length > 0
-          ? productionShiftFromMeasuredAt(todayEvents[todayEvents.length - 1].occurredAt)
-          : null)
-      const goalProgress = resolveOperatorDailyGoalProgress(
-        goals,
-        goalDefinitions,
-        todayEvents,
-        {
-          operatorCode: opCode,
-          machineId: v.machineId,
-          machineCode: v.machineCode,
-          machineName: v.machineName,
-          sku: v.sku,
-          unitsPerBox: v.unitsPerBox,
-          shift,
-          today,
-        },
-        skuById,
-        upbById,
-        resolveOperatorCode,
-      )
-      return {
-        opCode,
-        initials: initialsFromName(displayName),
-        name: displayName,
-        machine: v.machine,
-        sku: v.sku,
-        units: Math.round(v.units),
-        percentage: goalProgress.percentage,
-        goalRemaining: goalProgress.goalRemaining,
-        machineId: v.machineId,
-        machineCode: v.machineCode,
-        machineName: v.machineName,
-        unitsPerBox: v.unitsPerBox,
-      }
+  const rows: Omit<UiOperator, "id">[] = []
+  for (const opCode of operatorCodes) {
+    const prod = productionByCode.get(opCode)
+    const fromCheckin = resolveOperatorMachineFromCheckin(opCode, checkins, machinesById)
+    const displayName = resolveOperatorDisplayName(opCode, codeToName)
+    const machine = prod?.machine && prod.machine !== "—" ? prod.machine : fromCheckin.machine
+    const machineId = prod?.machineId ?? fromCheckin.machineId
+    const machineCode = prod?.machineCode || fromCheckin.machineCode
+    const machineName = prod?.machineName || fromCheckin.machineName
+    const unitsPerBox = prod?.unitsPerBox ?? fromCheckin.unitsPerBox
+
+    const goalProgress =
+      rankingRange === "day"
+        ? resolveTableroWindingDailyGoalProgress(
+            goals,
+            goalDefinitions,
+            todayEvents,
+            opCode,
+            shift,
+            today,
+            skuById,
+            upbById,
+            resolveOperatorCode,
+          )
+        : { percentage: 0, goalRemaining: null, goalTarget: null }
+
+    rows.push({
+      opCode,
+      initials: initialsFromName(displayName),
+      name: displayName,
+      machine,
+      sku: "",
+      units: Math.round(prod?.units ?? 0),
+      percentage: goalProgress.percentage,
+      goalRemaining: goalProgress.goalRemaining,
+      goalTarget: goalProgress.goalTarget,
+      machineId,
+      machineCode,
+      machineName,
+      unitsPerBox,
     })
-    .sort((a, b) => b.units - a.units)
+  }
+
+  return rows
+    .sort((a, b) => {
+      if (b.units !== a.units) return b.units - a.units
+      return a.name.localeCompare(b.name, "es")
+    })
     .map((row, idx) => ({ ...row, id: idx + 1 }))
 }
 
@@ -575,6 +591,8 @@ export default function OperationsBoardPage() {
   const sinOperadorHintLogged = useRef(false)
   const [operators, setOperators] = useState<UiOperator[]>([])
   const [loading, setLoading] = useState(true)
+  const [dailyGoalTarget, setDailyGoalTarget] = useState<number | null>(null)
+  const [currentShiftLabel, setCurrentShiftLabel] = useState<string | null>(null)
 
   const handleFullscreen = async () => {
     try {
@@ -645,7 +663,18 @@ export default function OperationsBoardPage() {
           goals,
           todayEvents,
           goalDefinitions,
+          rankingRange,
         )
+        const shiftNow = productionShiftFromMeasuredAt(new Date().toISOString())
+        const windingKey =
+          shiftNow === "matutino"
+            ? "winding-t1-daily"
+            : shiftNow === "vespertino"
+              ? "winding-t2-daily"
+              : null
+        const windingDef = windingKey
+          ? goalDefinitions.find((d) => d.sourceKey === windingKey)
+          : null
         const debug = isTableroDebugEnabled()
 
         if (
@@ -668,6 +697,10 @@ export default function OperationsBoardPage() {
         }
 
         setOperators(rows)
+        setDailyGoalTarget(windingDef?.targetValue ?? rows.find((r) => r.goalTarget)?.goalTarget ?? null)
+        setCurrentShiftLabel(
+          shiftNow === "matutino" ? "Turno 1" : shiftNow === "vespertino" ? "Turno 2" : null,
+        )
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -682,16 +715,16 @@ export default function OperationsBoardPage() {
   }, [getAccessToken, rankingRange])
 
   const sortedOperators = useMemo(
-    () => [...operators].sort((a, b) => b.units - a.units),
+    () => [...operators].sort((a, b) => b.units - a.units || a.name.localeCompare(b.name, "es")),
     [operators],
   )
   const topThree = useMemo(() => sortedOperators.slice(0, 3), [sortedOperators])
   const restOperators = useMemo(() => sortedOperators.slice(3), [sortedOperators])
-  const leftColumn = useMemo(() => restOperators.filter((_, i) => i % 2 === 0), [restOperators])
-  const rightColumn = useMemo(() => restOperators.filter((_, i) => i % 2 === 1), [restOperators])
   const hasOperators = operators.length > 0
   const rankingRangeLabel =
     rankingRange === "day" ? "Hoy" : rankingRange === "month" ? "Mes actual" : "Semestre"
+  const unitsLabel = rankingRange === "day" ? "piezas hoy" : "unidades totales"
+  const progressTitle = rankingRange === "day" ? "Meta diaria" : "Avance relativo"
 
   return (
     <DashboardLayout 
@@ -700,124 +733,146 @@ export default function OperationsBoardPage() {
         { label: "Tablero Operativo" }
       ]}
     >
-      <div ref={containerRef} className={`space-y-3 ${isFullscreen ? 'fixed inset-0 bg-background overflow-auto p-8' : ''}`}>
+      <div ref={containerRef} className={`space-y-4 ${isFullscreen ? "fixed inset-0 z-50 overflow-auto bg-background p-6 sm:p-8" : ""}`}>
         {/* Header */}
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
-            <Trophy className="h-5 w-5 text-yellow-500" />
-            <h1 className="text-xl font-bold text-foreground sm:text-2xl">Tablero Operativo en Vivo</h1>
+            <Trophy className="h-5 w-5 shrink-0 text-yellow-500" />
+            <div>
+              <h1 className="text-xl font-bold text-foreground sm:text-2xl">Tablero Operativo en Vivo</h1>
+              {!loading && hasOperators && (
+                <p className="text-xs text-muted-foreground sm:text-sm">
+                  {operators.length} operador{operators.length === 1 ? "" : "es"}
+                  {currentShiftLabel ? ` · ${currentShiftLabel}` : ""}
+                  {dailyGoalTarget != null && rankingRange === "day"
+                    ? ` · Meta Winding: ${dailyGoalTarget.toLocaleString("es-MX")} piezas`
+                    : ""}
+                </p>
+              )}
+            </div>
           </div>
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={handleFullscreen}
-            title={isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
-          >
-            {isFullscreen ? (
-              <Minimize2 className="h-4 w-4" />
-            ) : (
-              <Maximize2 className="h-4 w-4" />
-            )}
-          </Button>
-        </div>
-
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-          <ToggleGroup
-            type="single"
-            value={rankingRange}
-            onValueChange={(v) => {
-              if (v === "day" || v === "month" || v === "semester") setRankingRange(v)
-            }}
-            className="justify-start"
-          >
-            <ToggleGroupItem value="day">Día</ToggleGroupItem>
-            <ToggleGroupItem value="month">Mes</ToggleGroupItem>
-            <ToggleGroupItem value="semester">Semestre</ToggleGroupItem>
-          </ToggleGroup>
+          <div className="flex flex-wrap items-center gap-2">
+            <ToggleGroup
+              type="single"
+              value={rankingRange}
+              onValueChange={(v) => {
+                if (v === "day" || v === "month" || v === "semester") setRankingRange(v)
+              }}
+              className="justify-start"
+            >
+              <ToggleGroupItem value="day">Día</ToggleGroupItem>
+              <ToggleGroupItem value="month">Mes</ToggleGroupItem>
+              <ToggleGroupItem value="semester">Semestre</ToggleGroupItem>
+            </ToggleGroup>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={handleFullscreen}
+              title={isFullscreen ? "Salir de pantalla completa" : "Pantalla completa"}
+            >
+              {isFullscreen ? (
+                <Minimize2 className="h-4 w-4" />
+              ) : (
+                <Maximize2 className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
         </div>
 
         {/* Top 3 Podium */}
         {loading ? (
-          <div className="flex min-h-[200px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-muted-foreground">
+          <div className="flex min-h-[240px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-muted-foreground">
             Cargando tablero…
           </div>
         ) : hasOperators ? (
           <>
-            <div className="flex items-end justify-center">
-              <div className="grid grid-flow-col auto-cols-max items-end gap-2">
+            {topThree.length > 0 && (
+              <div className="flex items-end justify-center gap-3 px-2">
                 {topThree[1] && (
-                  <div className="translate-y-4">
+                  <div className="w-full max-w-[240px] translate-y-3 sm:max-w-[280px]">
                     <OperatorCard
                       operator={topThree[1]}
                       rank={2}
                       density="compact"
-                      unitsLabel="unidades totales"
-                      progressTitle="Meta diaria"
+                      unitsLabel={unitsLabel}
+                      progressTitle={progressTitle}
+                      showSku={false}
+                      showGoalTarget={rankingRange === "day"}
                     />
                   </div>
                 )}
                 {topThree[0] && (
-                  <div>
+                  <div className="w-full max-w-[260px] sm:max-w-[300px]">
                     <OperatorCard
                       operator={topThree[0]}
                       rank={1}
                       density="compact"
-                      unitsLabel="unidades totales"
-                      progressTitle="Meta diaria"
+                      unitsLabel={unitsLabel}
+                      progressTitle={progressTitle}
+                      showSku={false}
+                      showGoalTarget={rankingRange === "day"}
                     />
                   </div>
                 )}
                 {topThree[2] && (
-                  <div className="translate-y-4">
+                  <div className="w-full max-w-[240px] translate-y-3 sm:max-w-[280px]">
                     <OperatorCard
                       operator={topThree[2]}
                       rank={3}
                       density="compact"
-                      unitsLabel="unidades totales"
-                      progressTitle="Meta diaria"
+                      unitsLabel={unitsLabel}
+                      progressTitle={progressTitle}
+                      showSku={false}
+                      showGoalTarget={rankingRange === "day"}
                     />
                   </div>
                 )}
               </div>
-            </div>
+            )}
 
-            {/* Operator Rankings Table */}
-            <div className="grid gap-0 lg:grid-cols-2">
-              <div className="rounded-xl border border-border bg-card p-3">
-                {leftColumn.map((operator, index) => (
-                  <OperatorRow
-                    key={operator.id}
-                    operator={operator}
-                    rank={4 + index * 2}
-                    density="compact"
-                    unitsLabel="unidades totales"
-                    progressTitle="Relativo"
-                  />
-                ))}
+            {/* Resto de operadores */}
+            {restOperators.length > 0 && (
+              <div className="rounded-xl border border-border bg-card">
+                <div className="hidden border-b border-border px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:grid sm:grid-cols-[2rem_2.25rem_minmax(0,1fr)_5rem_minmax(7rem,10rem)] sm:items-center sm:gap-3">
+                  <span>#</span>
+                  <span />
+                  <span>Operador / máquina</span>
+                  <span className="text-right">Producción</span>
+                  <span>Meta diaria</span>
+                </div>
+                <div className="divide-y divide-border/60 p-1 sm:p-2">
+                  {restOperators.map((operator, index) => (
+                    <OperatorRow
+                      key={operator.opCode}
+                      operator={operator}
+                      rank={4 + index}
+                      density="compact"
+                      unitsLabel={unitsLabel}
+                      progressTitle={progressTitle}
+                      showSku={false}
+                      showGoalTarget={rankingRange === "day"}
+                    />
+                  ))}
+                </div>
               </div>
-              <div className="rounded-xl border border-border bg-card p-3">
-                {rightColumn.map((operator, index) => (
-                  <OperatorRow
-                    key={operator.id}
-                    operator={operator}
-                    rank={5 + index * 2}
-                    density="compact"
-                    unitsLabel="unidades totales"
-                    progressTitle="Relativo"
-                  />
-                ))}
-              </div>
-            </div>
+            )}
+
+            {restOperators.length === 0 && topThree.length > 0 && topThree.length < 4 && (
+              <p className="text-center text-sm text-muted-foreground">
+                Todos los operadores activos están en el podio.
+              </p>
+            )}
           </>
         ) : (
-          <div className="flex min-h-[200px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-muted-foreground">
-            Sin datos de operadores.
+          <div className="flex min-h-[240px] items-center justify-center rounded-xl border border-dashed border-border bg-muted/30 text-muted-foreground">
+            No hay operadores activos registrados.
           </div>
         )}
 
         {/* Footer info */}
         <div className="text-center text-xs text-muted-foreground">
-          {`Actualización automática • Ranking por unidades totales (${rankingRangeLabel})`}
+          {`Actualización automática • Ranking por producción (${rankingRangeLabel})`}
+          {rankingRange === "day" ? " • Meta única Winding desde reglas de negocio" : ""}
         </div>
       </div>
     </DashboardLayout>

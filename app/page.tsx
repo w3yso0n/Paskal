@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { KpiCard } from "@/components/dashboard/kpi-card"
-import { Package, Clock, Server, Target, ZoomIn, ZoomOut, RotateCcw } from "lucide-react"
+import { Package, Clock, Server, Target } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import {
   LineChart,
   Line,
@@ -97,16 +99,40 @@ function getMonthBoundsInTimeZone(now: Date, timeZone: string): { start: Date; e
   return { start, end }
 }
 
-function getDayBoundsInTimeZone(now: Date, timeZone: string): { start: Date; end: Date } {
-  const p = getPartsInTimeZone(now, timeZone)
-  const start = makeZonedDate(p.year, p.month, p.day, 0, 0, timeZone)
+function todayDateInputValue(timeZone: string): string {
+  const p = getPartsInTimeZone(new Date(), timeZone)
+  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`
+}
 
-  // Para calcular el "siguiente día" respetando DST, usamos un punto seguro (mediodía) y le sumamos 24h.
-  const noon = makeZonedDate(p.year, p.month, p.day, 12, 0, timeZone)
+/** Límites del día calendario elegido en el input (medianoche a medianoche en zona de planta). */
+function getDayBoundsFromDateInput(
+  dateStr: string,
+  timeZone: string,
+): { start: Date; end: Date } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr.trim())
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null
+  const start = makeZonedDate(year, month, day, 0, 0, timeZone)
+  const noon = makeZonedDate(year, month, day, 12, 0, timeZone)
   const tomorrowNoon = new Date(noon.getTime() + 24 * 60 * 60 * 1000)
   const tp = getPartsInTimeZone(tomorrowNoon, timeZone)
   const end = makeZonedDate(tp.year, tp.month, tp.day, 0, 0, timeZone)
   return { start, end }
+}
+
+function formatSelectedDayLabel(dateStr: string, timeZone: string): string {
+  const bounds = getDayBoundsFromDateInput(dateStr, timeZone)
+  if (!bounds) return dateStr
+  return new Intl.DateTimeFormat("es-MX", {
+    timeZone,
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(bounds.start)
 }
 
 function formatHmInTimeZone(date: Date, timeZone: string): string {
@@ -195,7 +221,7 @@ const machineColors = [
 
 type OperatorProductionStats = {
   month: number
-  today: number
+  day: number
   shift: number
 }
 
@@ -216,14 +242,6 @@ function extractOperatorCode(payload: Record<string, unknown>): string {
   return String(rawOperator ?? "—").trim() || "—"
 }
 
-function resolveOperatorKey(
-  payload: Record<string, unknown>,
-  employeeNameByCode: Map<string, string>,
-): string {
-  const opCode = extractOperatorCode(payload)
-  return employeeNameByCode.get(opCode) ?? employeeNameByCode.get(opCode.toLowerCase()) ?? opCode
-}
-
 export default function HomePage() {
   const { getAccessToken } = useAuth()
   const [loading, setLoading] = useState(true)
@@ -231,12 +249,19 @@ export default function HomePage() {
   const [machines, setMachines] = useState<ApiMachine[]>([])
   const [employees, setEmployees] = useState<ApiEmployee[]>([])
   const [totalProduced, setTotalProduced] = useState(0)
-  const [producedToday, setProducedToday] = useState(0)
+  const [producedOnSelectedDay, setProducedOnSelectedDay] = useState(0)
   const [monthlyGoal, setMonthlyGoal] = useState<{ actual: number; target: number; pct: number } | null>(
     null,
   )
   const [operatorStats, setOperatorStats] = useState<Record<string, OperatorProductionStats>>({})
   const [selectedShift, setSelectedShift] = useState<ShiftId>("shift1")
+  const [selectedDate, setSelectedDate] = useState(() => todayDateInputValue(DASHBOARD_TIMEZONE))
+
+  const isViewingToday = selectedDate === todayDateInputValue(DASHBOARD_TIMEZONE)
+  const selectedDayLabel = useMemo(
+    () => formatSelectedDayLabel(selectedDate, DASHBOARD_TIMEZONE),
+    [selectedDate],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -250,16 +275,41 @@ export default function HomePage() {
             setMachines([])
             setEmployees([])
             setTotalProduced(0)
-            setProducedToday(0)
+            setProducedOnSelectedDay(0)
             setOperatorStats({})
           }
           return
         }
 
-        const [apiMachines, apiEmployees, events, goals] = await Promise.all([
+        const dayBounds = getDayBoundsFromDateInput(selectedDate, DASHBOARD_TIMEZONE)
+        if (!dayBounds) {
+          if (!cancelled) {
+            setOperatorProductionData([])
+            setProducedOnSelectedDay(0)
+            setOperatorStats({})
+          }
+          return
+        }
+
+        const now = new Date()
+        const { start: startOfMonthTz, end: endOfMonthTz } = getMonthBoundsInTimeZone(
+          now,
+          DASHBOARD_TIMEZONE,
+        )
+
+        const [apiMachines, apiEmployees, dayEvents, monthEvents, goals] = await Promise.all([
           getMachines(token),
           getEmployees(token),
-          getProductionEvents(token, { limit: 2500 }),
+          getProductionEvents(token, {
+            from: dayBounds.start.toISOString(),
+            to: dayBounds.end.toISOString(),
+            limit: 5000,
+          }),
+          getProductionEvents(token, {
+            from: startOfMonthTz.toISOString(),
+            to: endOfMonthTz.toISOString(),
+            limit: 5000,
+          }),
           getGoals(token),
         ])
         if (cancelled) return
@@ -301,21 +351,29 @@ export default function HomePage() {
 
         const byBucket = new Map<string, Record<string, string | number>>()
         const statsByOperator = new Map<string, OperatorProductionStats>()
-        // Horas (ms, alineadas) con producción del turno seleccionado HOY → eje dinámico.
         const shiftHourMs: number[] = []
-        let total = 0
-        let today = 0
-        const now = new Date()
-        const { start: startOfTodayTz, end: endOfTodayTz } = getDayBoundsInTimeZone(
-          now,
-          DASHBOARD_TIMEZONE,
-        )
-        const { start: startOfMonthTz, end: endOfMonthTz } = getMonthBoundsInTimeZone(
-          now,
-          DASHBOARD_TIMEZONE,
-        )
+        let monthTotal = 0
+        let dayTotal = 0
 
-        for (const e of events) {
+        for (const e of monthEvents) {
+          const payload = e.payload ?? {}
+          const count = productionUnitsFromEvent(e, upbById)
+          if (count <= 0) continue
+
+          const ts = new Date(e.occurredAt)
+          if (Number.isNaN(ts.getTime())) continue
+
+          const opCode = extractOperatorCode(payload)
+          const operatorKey =
+            employeeNameByCode.get(opCode) ?? employeeNameByCode.get(opCode.toLowerCase()) ?? opCode
+
+          const opStats = statsByOperator.get(operatorKey) ?? { month: 0, day: 0, shift: 0 }
+          monthTotal += count
+          opStats.month += count
+          statsByOperator.set(operatorKey, opStats)
+        }
+
+        for (const e of dayEvents) {
           const payload = e.payload ?? {}
           const count = productionUnitsFromEvent(e, upbById)
           if (count <= 0) continue
@@ -333,28 +391,15 @@ export default function HomePage() {
             shiftByName.get(operatorKey.toLowerCase()) ??
             null
 
-          const opStats = statsByOperator.get(operatorKey) ?? { month: 0, today: 0, shift: 0 }
-          const isThisMonth = ts >= startOfMonthTz && ts < endOfMonthTz
-          if (isThisMonth) {
-            total += count
-            opStats.month += count
-          }
-          const isToday = ts >= startOfTodayTz && ts < endOfTodayTz
-          if (isToday) {
-            today += count
-            opStats.today += count
-          }
+          const opStats = statsByOperator.get(operatorKey) ?? { month: 0, day: 0, shift: 0 }
+          dayTotal += count
+          opStats.day += count
           statsByOperator.set(operatorKey, opStats)
 
-          // La gráfica agrupa por TURNO ASIGNADO del operador (no por la hora del evento):
-          // toda la producción de HOY de los operadores del turno seleccionado, aun fuera de hora.
-          if (!isToday || opShift !== selectedShiftNum) continue
+          if (opShift !== selectedShiftNum) continue
           opStats.shift += count
           statsByOperator.set(operatorKey, opStats)
 
-          // Corte por hora "hacia adelante": lo producido dentro de una hora se acumula en el
-          // corte de la hora SIGUIENTE (p. ej. producción a las 10:23 → etiqueta 11:00). La
-          // producción exactamente en la hora en punto (10:00:00) se queda en ese mismo corte.
           const bucket = new Date(ts)
           bucket.setMinutes(0, 0, 0)
           if (bucket.getTime() < ts.getTime()) {
@@ -367,8 +412,6 @@ export default function HomePage() {
           byBucket.set(label, row)
         }
 
-        // Eje de horas DINÁMICO: de la primera a la última hora con producción del turno hoy,
-        // rellenando las horas intermedias con 0 para un eje continuo. Vacío si no hubo nada.
         const bucketLabels: string[] = []
         if (shiftHourMs.length > 0) {
           const minH = Math.min(...shiftHourMs)
@@ -395,8 +438,8 @@ export default function HomePage() {
         })
         setOperatorProductionData(rows)
         setOperatorStats(Object.fromEntries(statsByOperator))
-        setTotalProduced(total)
-        setProducedToday(today)
+        setTotalProduced(monthTotal)
+        setProducedOnSelectedDay(dayTotal)
 
         const actualByGoalId = await fetchActualByGoalId(token, goals, floorMachines)
         if (cancelled) return
@@ -415,12 +458,14 @@ export default function HomePage() {
       }
     }
     load(false)
-    const intervalId = window.setInterval(() => load(true), 30_000)
+    const intervalId = isViewingToday
+      ? window.setInterval(() => load(true), 30_000)
+      : undefined
     return () => {
       cancelled = true
-      window.clearInterval(intervalId)
+      if (intervalId != null) window.clearInterval(intervalId)
     }
-  }, [getAccessToken, selectedShift])
+  }, [getAccessToken, selectedShift, selectedDate, isViewingToday])
 
   const hasProductionData = operatorProductionData.length > 0
   const operatorKeys = useMemo(() => {
@@ -480,20 +525,20 @@ export default function HomePage() {
     if (!operatorFilterActive || selectedOperators.length === 0) {
       return {
         month: totalProduced,
-        today: producedToday,
+        day: producedOnSelectedDay,
         shift: null as number | null,
         operatorLabel: null as string | null,
       }
     }
 
     let month = 0
-    let today = 0
+    let day = 0
     let shift = 0
     for (const op of selectedOperators) {
       const stats = operatorStats[op]
       if (!stats) continue
       month += stats.month
-      today += stats.today
+      day += stats.day
       shift += stats.shift
     }
 
@@ -502,13 +547,13 @@ export default function HomePage() {
         ? selectedOperators[0]
         : `${selectedOperators.length} operadores seleccionados`
 
-    return { month, today, shift, operatorLabel }
+    return { month, day, shift, operatorLabel }
   }, [
     operatorFilterActive,
     selectedOperators,
     operatorStats,
     totalProduced,
-    producedToday,
+    producedOnSelectedDay,
   ])
 
   const filteredMonthlyGoal = useMemo(() => {
@@ -529,7 +574,8 @@ export default function HomePage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">¡Bienvenido, Paskal!</h1>
           <p className="text-muted-foreground">
-            Aquí tienes una vista general de la producción y el estado de tus máquinas.
+            Vista general de producción y estado de máquinas
+            {!isViewingToday ? ` · ${selectedDayLabel}` : ""}.
           </p>
         </div>
 
@@ -543,9 +589,19 @@ export default function HomePage() {
             iconColor="text-primary"
           />
           <KpiCard
-            title={operatorFilterActive ? "Producido hoy (operador)" : "Producido Hoy"}
-            value={loading ? "—" : displayKpis.today.toLocaleString()}
-            subtitle={displayKpis.operatorLabel ?? undefined}
+            title={
+              operatorFilterActive
+                ? isViewingToday
+                  ? "Producido hoy (operador)"
+                  : "Producido del día (operador)"
+                : isViewingToday
+                  ? "Producido Hoy"
+                  : "Producido del Día"
+            }
+            value={loading ? "—" : displayKpis.day.toLocaleString()}
+            subtitle={
+              displayKpis.operatorLabel ?? (isViewingToday ? undefined : selectedDayLabel)
+            }
             icon={Clock}
             iconColor="text-cyan-600"
           />
@@ -593,9 +649,39 @@ export default function HomePage() {
 
         {/* Production Chart */}
         <div className="rounded-xl border border-border bg-card p-6">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-card-foreground">Producción por Operador</h2>
-            <div className="flex items-center gap-2">
+          <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-card-foreground">Producción por Operador</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {isViewingToday ? "Hoy" : selectedDayLabel} · {shiftLabel}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="dashboard-date" className="text-xs text-muted-foreground">
+                  Día
+                </Label>
+                <Input
+                  id="dashboard-date"
+                  type="date"
+                  value={selectedDate}
+                  max={todayDateInputValue(DASHBOARD_TIMEZONE)}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    if (v) setSelectedDate(v)
+                  }}
+                  className="w-[11.5rem]"
+                />
+              </div>
+              {!isViewingToday && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setSelectedDate(todayDateInputValue(DASHBOARD_TIMEZONE))}
+                >
+                  Hoy
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="outline"
@@ -612,7 +698,7 @@ export default function HomePage() {
             </div>
           ) : !hasProductionData ? (
             <div className="flex h-[400px] items-center justify-center rounded-lg border border-dashed border-border bg-muted/30 text-muted-foreground">
-              Sin datos de producción.
+              Sin datos de producción{isViewingToday ? "" : ` para ${selectedDayLabel}`}.
             </div>
           ) : (
             <>

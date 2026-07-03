@@ -1,5 +1,9 @@
 import type { ApiGoal, ApiGoalShift, ApiProductionEvent } from "@/lib/api"
 import type { BonusGoalDefinition } from "@/lib/bonus-goals-bridge"
+import {
+  monthDateBounds,
+  resolveBusinessGoalForDisplay,
+} from "@/lib/bonus-goals-bridge"
 import { goalComplianceDateRange, isGoalActive } from "@/lib/goal-compliance-range"
 import { getPartsInTimeZone } from "@/lib/shift-timezone"
 import {
@@ -97,18 +101,9 @@ function findGoalByBonusDefinition(
 ): ApiGoal | null {
   const def = definitions.find((d) => d.sourceKey === sourceKey)
   if (!def) return null
-  return (
-    goals.find(
-      (g) =>
-        g.period === "daily" &&
-        (g.shift ?? null) === def.shift &&
-        !g.machineId?.trim() &&
-        !normalizeSku(g.sku) &&
-        g.startDate <= today &&
-        g.endDate >= today &&
-        Math.abs(Number(g.targetValue) - def.targetValue) < 0.01,
-    ) ?? null
-  )
+  const month = today.slice(0, 7)
+  const monthBounds = monthDateBounds(month)
+  return resolveBusinessGoalForDisplay(goals, def, monthBounds)
 }
 
 export function findDailyGoalForOperator(
@@ -206,6 +201,46 @@ export type OperatorDailyGoalResult = {
   percentage: number
   goalRemaining: number | null
   goalTarget: number | null
+}
+
+/** Meta diaria Winding (reglas de negocio) para el tablero — misma meta para todos los operadores. */
+export function resolveTableroWindingDailyGoalProgress(
+  goals: ApiGoal[],
+  definitions: BonusGoalDefinition[],
+  todayEvents: ApiProductionEvent[],
+  operatorCode: string,
+  shift: ApiGoalShift | null,
+  today: string,
+  skuById: Map<string, string>,
+  upbById: Map<string, number>,
+  resolveOperatorCode: (e: ApiProductionEvent) => string,
+): OperatorDailyGoalResult {
+  if (!shift) {
+    return { percentage: 0, goalRemaining: null, goalTarget: null }
+  }
+  const sourceKey = shift === "matutino" ? "winding-t1-daily" : "winding-t2-daily"
+  const def = definitions.find((d) => d.sourceKey === sourceKey)
+  if (!def) {
+    return { percentage: 0, goalRemaining: null, goalTarget: null }
+  }
+
+  const monthBounds = monthDateBounds(today.slice(0, 7))
+  const goal = resolveBusinessGoalForDisplay(goals, def, monthBounds)
+  const target = Number(goal.targetValue)
+  if (!Number.isFinite(target) || target <= 0) {
+    return { percentage: 0, goalRemaining: null, goalTarget: null }
+  }
+
+  const actual = aggregateOperatorDailyProduction(
+    todayEvents,
+    operatorCode,
+    false,
+    skuById,
+    upbById,
+    resolveOperatorCode,
+  )
+  const { percentage, remaining } = computeDailyGoalProgress(actual, target)
+  return { percentage, goalRemaining: remaining, goalTarget: target }
 }
 
 export function resolveOperatorDailyGoalProgress(

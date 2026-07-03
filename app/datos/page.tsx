@@ -43,6 +43,7 @@ import {
 } from "@/components/ui/dialog"
 import { useAuth } from "@/contexts/auth-context"
 import { getApiErrorMessage, runDataQuery, type DataQueryResult } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
 const PAGE_SIZE = 50
 
@@ -142,6 +143,63 @@ function safeStringify(value: unknown): string {
   } catch {
     return String(value)
   }
+}
+
+/** Texto plano de un valor para el atributo `title` (tooltip nativo al pasar el cursor). */
+function cellTitle(value: unknown): string | undefined {
+  if (value === null || value === undefined || value === "") return undefined
+  if (typeof value === "string") {
+    return ISO_DATETIME_RE.test(value) ? formatDateTime(value) : value
+  }
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  return safeStringify(value)
+}
+
+/**
+ * Ancho de columna por heurística de nombre. Las columnas con contenido corto
+ * (códigos, contadores, banderas) se mantienen angostas; las de texto libre / json
+ * se acotan con un máximo y truncado para que nunca se encimen con la vecina.
+ */
+function columnWidthClass(col: string): string {
+  const c = col.toLowerCase()
+  if (c === "id" || c.endsWith("_id")) return "w-[90px] max-w-[90px]"
+  if (c.includes("payload") || c.includes("metadata") || c.includes("config")) {
+    return "w-[120px] max-w-[120px]"
+  }
+  if (c.includes("message") || c.includes("notes") || c.includes("description") || c.includes("sql")) {
+    return "min-w-[220px] max-w-[340px]"
+  }
+  if (c.includes("_at") || c.includes("date") || c.includes("occurred") || c.includes("timestamp")) {
+    return "w-[170px] max-w-[170px]"
+  }
+  if (c.includes("nfc") || c.includes("uid")) return "w-[150px] max-w-[150px]"
+  if (c.includes("email")) return "min-w-[200px] max-w-[260px]"
+  if (c.includes("name") || c.includes("full_name") || c.includes("label") || c.includes("title")) {
+    return "min-w-[160px] max-w-[240px]"
+  }
+  if (c.includes("sku") || c.includes("code")) return "w-[140px] max-w-[160px]"
+  if (
+    c.includes("status") ||
+    c.includes("type") ||
+    c.includes("role") ||
+    c.includes("shift") ||
+    c === "is_active"
+  ) {
+    return "w-[120px] max-w-[130px]"
+  }
+  if (
+    c.includes("count") ||
+    c.includes("units") ||
+    c.includes("seq") ||
+    c.includes("row") ||
+    c.includes("col") ||
+    c.includes("orphan") ||
+    c.includes("qty") ||
+    c.includes("total")
+  ) {
+    return "w-[110px] max-w-[120px]"
+  }
+  return "min-w-[130px] max-w-[200px]"
 }
 
 function renderCell(value: unknown): React.ReactNode {
@@ -407,10 +465,14 @@ export default function DatosPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="w-10" />
+                        <TableHead className="w-10 min-w-10" />
                         {columns.map((col) => (
-                          <TableHead key={col} className="whitespace-nowrap">
-                            {col}
+                          <TableHead
+                            key={col}
+                            className={cn("whitespace-nowrap", columnWidthClass(col))}
+                            title={col}
+                          >
+                            <span className="block truncate">{col}</span>
                           </TableHead>
                         ))}
                       </TableRow>
@@ -418,7 +480,7 @@ export default function DatosPage() {
                     <TableBody>
                       {pageRows.map((row, idx) => (
                         <TableRow key={(row.id as string) ?? idx}>
-                          <TableCell className="w-10">
+                          <TableCell className="w-10 min-w-10">
                             <Button
                               variant="ghost"
                               size="icon"
@@ -433,7 +495,11 @@ export default function DatosPage() {
                             const value = row[col]
                             const isObject = value !== null && typeof value === "object"
                             return (
-                              <TableCell key={col} className="max-w-xs align-top text-sm">
+                              <TableCell
+                                key={col}
+                                className={cn("align-top text-sm", columnWidthClass(col))}
+                                title={isObject ? undefined : cellTitle(value)}
+                              >
                                 {isObject ? (
                                   <Button
                                     variant="ghost"
@@ -446,7 +512,7 @@ export default function DatosPage() {
                                     {Array.isArray(value) ? `[${value.length}]` : "{…}"}
                                   </Button>
                                 ) : (
-                                  renderCell(value)
+                                  <div className="truncate">{renderCell(value)}</div>
                                 )}
                               </TableCell>
                             )

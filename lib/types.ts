@@ -22,6 +22,8 @@ export interface Operator {
   percentage: number
   /** Unidades/cajas que faltan para la meta diaria; null si no hay meta asignada. */
   goalRemaining?: number | null
+  /** Meta diaria en piezas/cajas (reglas de negocio). */
+  goalTarget?: number | null
   isLeader?: boolean
 }
 

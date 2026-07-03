@@ -23,17 +23,21 @@ export function goalComplianceDateRange(
   goal: { period: ApiGoalPeriod; startDate: string; endDate: string },
   ref: Date = new Date(),
 ): { startDate: string; endDate: string } {
+  const today = todayYmd(ref)
+
+  // Diaria = siempre el día de referencia (aunque en BD venga el rango del mes de bono).
+  if (goal.period === "daily") {
+    return { startDate: today, endDate: today }
+  }
+
   if (!isOpenEndedGoal(goal)) {
     return { startDate: goal.startDate, endDate: goal.endDate }
   }
 
   const y = ref.getFullYear()
   const m = ref.getMonth()
-  const today = todayYmd(ref)
 
   switch (goal.period) {
-    case "daily":
-      return { startDate: today, endDate: today }
     case "weekly": {
       const day = ref.getDay()
       const diffToMon = day === 0 ? -6 : 1 - day

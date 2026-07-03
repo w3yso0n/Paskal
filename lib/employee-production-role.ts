@@ -82,6 +82,24 @@ export function isPackerRole(
   return primaryRole === "operator" && secondaryRole === "packer"
 }
 
+/** Empleado activo que puede asignarse como operador en piso de producción. */
+export function isFloorOperatorCandidate(
+  emp: { status?: string; primaryRole: EmployeeProductionRole | null | undefined },
+): boolean {
+  return emp.status === "active" && isOperatorRole(emp.primaryRole)
+}
+
+/** Empleado activo que puede asignarse como empacador en piso de producción. */
+export function isFloorPackerCandidate(
+  emp: {
+    status?: string
+    primaryRole: EmployeeProductionRole | null | undefined
+    secondaryRole: EmployeeSecondaryRole | null | undefined
+  },
+): boolean {
+  return emp.status === "active" && isPackerRole(emp.primaryRole, emp.secondaryRole)
+}
+
 export function nfcRoleFromProductionRole(
   role: EmployeeProductionRole | null,
 ): "OPERATOR" | "PACKAGER" | "MAINTENANCE" {
