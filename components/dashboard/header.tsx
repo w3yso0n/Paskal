@@ -82,15 +82,12 @@ export function Header({ breadcrumbs, onOpenMobileMenu }: HeaderProps) {
             <ChevronDown className="h-4 w-4" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem>Perfil</DropdownMenuItem>
-            {user?.isPlatformAdmin && (
-              <DropdownMenuItem asChild>
-                <Link href="/configuracion" className="flex items-center gap-2">
-                  <Settings className="h-4 w-4" />
-                  Configuración
-                </Link>
-              </DropdownMenuItem>
-            )}
+            <DropdownMenuItem asChild>
+              <Link href="/configuracion" className="flex items-center gap-2">
+                <Settings className="h-4 w-4" />
+                Configuración
+              </Link>
+            </DropdownMenuItem>
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => logout()}

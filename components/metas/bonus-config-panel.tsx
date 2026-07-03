@@ -10,7 +10,6 @@ import { useAuth } from "@/contexts/auth-context"
 import {
   createGoal,
   getGoals,
-  getMetrics,
   updateGoal,
   getBonusProductionConfigs,
   upsertBonusProductionConfig,
@@ -171,20 +170,15 @@ async function syncGoalsFromBonusConfig(
   config: BonusProductionConfigData,
   effectiveMonth: string,
 ): Promise<number> {
-  const metrics = await getMetrics(token)
-  const productionMetric =
-    metrics.find((m) => m.name.toLowerCase() === "producción") ?? metrics[0]
-  if (!productionMetric) return 0
-
   const bounds = monthDateBounds(effectiveMonth)
   const definitions = bonusConfigToGoalDefinitions(config)
   const existing = await getGoals(token)
   let synced = 0
 
   for (const def of definitions) {
-    const payload = buildGoalPayloadFromDefinition(def, productionMetric.id, bounds)
+    const payload = buildGoalPayloadFromDefinition(def, bounds)
     const match = existing.find((g) =>
-      goalMatchesBonusDefinition(g, def, productionMetric.id, bounds),
+      goalMatchesBonusDefinition(g, def, bounds),
     )
     if (match) {
       await updateGoal(token, match.id, {

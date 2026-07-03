@@ -7,6 +7,7 @@ import {
   REGLAS_MODULES,
   REGLAS_TAB_MODULES,
   ROLE_LABELS,
+  USER_ROLES,
 } from "./platform-permissions"
 import type { PlatformModule } from "./platform-permissions"
 export type { PlatformModule } from "./platform-permissions"
@@ -28,8 +29,6 @@ export type Permission =
   | "data-capture.manage"
   | "bonus-config.manage"
   | "business-rules.manage"
-  | "platform-config.view"
-  | "platform-config.edit"
   | "data.browse"
 
 const MODULE_TO_PERMISSIONS: Partial<Record<PlatformModule, readonly Permission[]>> = {
@@ -47,8 +46,6 @@ const MODULE_TO_PERMISSIONS: Partial<Record<PlatformModule, readonly Permission[
   reglas_fallos_electricos: ["business-rules.manage"],
   captura_historico: ["data-capture.manage"],
   captura_produccion: ["data-capture.manage"],
-  config_organizacion: ["platform-config.view", "platform-config.edit"],
-  configuracion: ["platform-config.view", "platform-config.edit"],
   datos: ["data.browse"],
   metricas_asistencia_rotacion_bono: ["bonus-config.manage"],
 }
@@ -136,20 +133,16 @@ export const ROUTE_MODULES: Record<string, PlatformModule[]> = {
   "/captura-datos": ["captura_produccion", "captura_historico"],
   "/reglas-negocio": [...REGLAS_MODULES, "metricas_asistencia_rotacion_bono"],
   "/configuracion-bono": ["metricas_asistencia_rotacion_bono"],
-  "/administracion/configuracion-organizacion": ["config_organizacion"],
-  "/configuracion": ["configuracion"],
   "/datos": ["datos"],
 }
 
 /** Compatibilidad con RequirePermission existente. */
 export const ROUTE_PERMISSIONS: Record<string, Permission[]> = {
   "/administracion/usuarios": ["users.list"],
-  "/administracion/configuracion-organizacion": ["platform-config.view"],
   "/administracion/gestion-skus": ["business-rules.manage"],
   "/captura-datos": ["data-capture.manage"],
   "/configuracion-bono": ["bonus-config.manage"],
   "/reglas-negocio": ["business-rules.manage"],
-  "/configuracion": ["platform-config.view"],
   "/datos": ["data.browse"],
 }
 
@@ -178,12 +171,11 @@ export function showAdminSection(user: RequestUser | null | undefined): boolean 
     "captura_produccion",
     ...REGLAS_MODULES,
     "metricas_asistencia_rotacion_bono",
-    "config_organizacion",
   ])
 }
 
-export function showPlatformSection(user: RequestUser | null | undefined): boolean {
-  return hasModuleAccess(user, "configuracion")
+export function showConfigSection(user: RequestUser | null | undefined): boolean {
+  return !!user && USER_ROLES.includes(user.role)
 }
 
 export function showDataSection(user: RequestUser | null | undefined): boolean {

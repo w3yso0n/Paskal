@@ -15,8 +15,7 @@ import {
   User,
   Bell,
   Target,
-  Palette,
-  Shield,
+  Settings,
   ClipboardList,
   Scale,
   Tags,
@@ -27,7 +26,7 @@ import { useAuth } from "@/contexts/auth-context"
 import {
   hasModuleAccess,
   showAdminSection,
-  showPlatformSection,
+  showConfigSection,
   showDataSection,
   type PlatformModule,
 } from "@/lib/permissions"
@@ -88,12 +87,6 @@ const adminItems: MenuItem[] = [
       "reglas_umbrales",
       "metricas_asistencia_rotacion_bono",
     ],
-  },
-  {
-    icon: Palette,
-    label: "Configuración de la organización",
-    href: "/administracion/configuracion-organizacion",
-    modules: ["config_organizacion"],
   },
 ]
 
@@ -159,7 +152,7 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
   )
   const visibleAdminItems = adminItems.filter((item) => isMenuItemVisible(user, item))
   const hasAdmin = showAdminSection(user)
-  const hasPlatform = showPlatformSection(user)
+  const hasConfig = showConfigSection(user)
   const hasData = showDataSection(user)
 
   return (
@@ -241,15 +234,12 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
           </>
         )}
 
-        {hasPlatform && (
-          <>
-            <SectionLabel label="Plataforma" collapsed={collapsed} />
-            <NavLink
-              item={platformConfigItem}
-              isActive={pathname === "/configuracion"}
-              collapsed={collapsed}
-            />
-          </>
+        {hasConfig && (
+          <NavLink
+            item={accountConfigItem}
+            isActive={pathname === "/configuracion"}
+            collapsed={collapsed}
+          />
         )}
       </nav>
 
@@ -286,8 +276,8 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
 export const productionMenuItems = productionItems
 export const adminMenuItems = adminItems
 export const dataMenuItems = dataItems
-export const platformConfigItem: MenuItem = {
-  icon: Shield,
+export const accountConfigItem: MenuItem = {
+  icon: Settings,
   label: "Configuración",
   href: "/configuracion",
   modules: ["configuracion"],

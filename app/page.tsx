@@ -23,7 +23,6 @@ import {
   getMachines,
   getProductionEvents,
   getGoals,
-  getMetrics,
   type ApiEmployee,
   type ApiMachine,
   type ApiProductionEvent,
@@ -33,6 +32,7 @@ import {
   fetchActualByGoalId,
   summarizeMonthlyGoalProgress,
 } from "@/lib/goal-actual-progress"
+import { productionUnitsFromEvent } from "@/lib/production-goal-events"
 
 const DASHBOARD_TIMEZONE = "America/Mexico_City"
 
@@ -224,25 +224,6 @@ function resolveOperatorKey(
   return employeeNameByCode.get(opCode) ?? employeeNameByCode.get(opCode.toLowerCase()) ?? opCode
 }
 
-function isProductionEvent(e: ApiProductionEvent): boolean {
-  const payload = e.payload ?? {}
-  const rawEvent =
-    (payload["EVENT"] as string | undefined) ??
-    (payload["event"] as string | undefined) ??
-    e.eventType
-  const event = String(rawEvent ?? "").toLowerCase()
-  return event.includes("produ") || event === "prod" || event.includes("prod")
-}
-
-function eventProductionCount(payload: Record<string, unknown>): number {
-  const rawCount =
-    (payload["COUNT"] as unknown) ??
-    (payload["count"] as unknown) ??
-    (payload["units"] as unknown)
-  const count = typeof rawCount === "number" ? rawCount : Number(rawCount)
-  return Number.isFinite(count) && count > 0 ? count : 0
-}
-
 export default function HomePage() {
   const { getAccessToken } = useAuth()
   const [loading, setLoading] = useState(true)
@@ -275,16 +256,22 @@ export default function HomePage() {
           return
         }
 
-        const [apiMachines, apiEmployees, events, goals, metrics] = await Promise.all([
+        const [apiMachines, apiEmployees, events, goals] = await Promise.all([
           getMachines(token),
           getEmployees(token),
           getProductionEvents(token, { limit: 2500 }),
           getGoals(token),
-          getMetrics(token),
         ])
         if (cancelled) return
-        setMachines(filterFloorMachines(apiMachines))
+        const floorMachines = filterFloorMachines(apiMachines)
+        setMachines(floorMachines)
         setEmployees(apiEmployees)
+
+        const upbById = new Map<string, number>()
+        for (const m of floorMachines) {
+          const upb = m.unitsPerBox
+          if (upb != null && Number.isFinite(upb) && upb > 0) upbById.set(m.id, upb)
+        }
 
         const employeeNameByCode = new Map<string, string>()
         for (const emp of apiEmployees) {
@@ -330,9 +317,7 @@ export default function HomePage() {
 
         for (const e of events) {
           const payload = e.payload ?? {}
-          if (!isProductionEvent(e)) continue
-
-          const count = eventProductionCount(payload)
+          const count = productionUnitsFromEvent(e, upbById)
           if (count <= 0) continue
 
           const ts = new Date(e.occurredAt)
@@ -413,9 +398,9 @@ export default function HomePage() {
         setTotalProduced(total)
         setProducedToday(today)
 
-        const actualByGoalId = await fetchActualByGoalId(token, goals, apiMachines, metrics)
+        const actualByGoalId = await fetchActualByGoalId(token, goals, floorMachines)
         if (cancelled) return
-        const monthlySummary = summarizeMonthlyGoalProgress(goals, actualByGoalId, metrics)
+        const monthlySummary = summarizeMonthlyGoalProgress(goals, actualByGoalId)
         setMonthlyGoal(
           monthlySummary
             ? {

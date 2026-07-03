@@ -21,7 +21,6 @@ export type PlatformModule =
   | "reglas_dias_festivos"
   | "reglas_fallos_electricos"
   | "reglas_umbrales"
-  | "config_organizacion"
   | "datos"
   | "configuracion"
 
@@ -130,9 +129,8 @@ export const MODULE_ACCESS: Record<PlatformModule, readonly UserRole[]> = {
     "droven",
   ],
   reglas_umbrales: ["jefe_produccion", "gerente_operaciones", "director", "droven"],
-  config_organizacion: ["droven"],
   datos: ["director", "droven"],
-  configuracion: ["droven"],
+  configuracion: USER_ROLES,
 }
 
 export const EMPLOYEE_MODULES: readonly PlatformModule[] = [

@@ -43,9 +43,8 @@ El frontend **no** envía datos al PLC; consume los eventos ya almacenados en el
 | 6 | Metas | `/metas` | Mock / pendiente |
 | 7 | Alertas | `/alertas` | **PLC + API** (`/alert`, `/production-event`, `/machine`) |
 | 8 | Administración – Usuarios | `/administracion/usuarios` | API backend |
-| 9 | Administración – Config. organización | `/administracion/configuracion-organizacion` | Solo UI (no persistido) |
+| 9 | Configuración | `/configuracion` | API (cambio de contraseña) |
 | 10 | Administración – Empleados | `/empleados` | API backend (`/employee`) |
-| 11 | Configuración plataforma | `/configuracion` | API backend |
 
 ---
 
@@ -57,8 +56,7 @@ El frontend **no** envía datos al PLC; consume los eventos ya almacenados en el
 | POST | `/auth/refresh` | Renovación de tokens |
 | POST | `/auth/logout` | Cierre de sesión |
 | GET | `/auth/me` | Usuario actual (perfil/rol) |
-| GET | `/config/email` | Obtener configuración SMTP |
-| PUT | `/config/email` | Guardar configuración SMTP |
+| PATCH | `/auth/me/password` | Cambiar contraseña del usuario actual |
 | GET | `/business-rules/alert-thresholds` | Umbrales de alerta (config) |
 | PUT | `/business-rules/alert-thresholds` | Guardar umbrales de alerta |
 | GET | `/users` | Listar usuarios |
@@ -74,7 +72,7 @@ El frontend **no** envía datos al PLC; consume los eventos ya almacenados en el
 | PATCH | `/alert/:id` | Actualizar alerta (marcar leída, cerrar) |
 | DELETE | `/alert/:id` | Eliminar alerta |
 | GET | `/production-event` | Eventos de producción (origen PLC) |
-| GET | `/metric-point` | Series de métricas (opcional) |
+| GET | `/goal` | Metas de producción y scrap (`metric_kind`) |
 
 **Ingesta PLC (fuera del frontend, lo usa la ESP/PLC):**
 
@@ -98,9 +96,8 @@ El frontend **no** envía datos al PLC; consume los eventos ya almacenados en el
 | `/metas` | Metas | Listado y gestión de metas de producción (períodos y estados) | Pendiente |
 | `/alertas` | Centro de Alertas | Reglas de alerta, monitoreo producción, listado y filtros | PLC + API |
 | `/administracion/usuarios` | Gestión de usuarios | Listado, alta y baja de usuarios | API |
-| `/administracion/configuracion-organizacion` | Config. organización | Colores, logo, contraseñas (UI; no persistido) | Solo UI |
 | `/empleados` | Gestión de empleados | Listado, alta y baja de empleados | API |
-| `/configuracion` | Configuración de plataforma | SMTP y lista de organizaciones | API |
+| `/configuracion` | Configuración | Cambio de contraseña de la cuenta | API |
 
 ---
 

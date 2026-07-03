@@ -224,24 +224,21 @@ export async function fetchMe(accessToken: string): Promise<RequestUser> {
   return parseResponse<RequestUser>(res);
 }
 
-// --- Config (requiere token) ---
-
-export interface EmailConfigResponse {
-  host: string;
-  port: number;
-  secure: boolean;
-  user: string;
-  from: string;
-  configured: boolean;
+export interface ChangePasswordPayload {
+  currentPassword: string;
+  newPassword: string;
 }
 
-export interface EmailConfigPayload {
-  host: string;
-  port: number;
-  secure?: boolean;
-  user?: string;
-  password?: string;
-  from: string;
+export async function changeMyPassword(
+  accessToken: string,
+  payload: ChangePasswordPayload,
+): Promise<{ success: true }> {
+  const res = await fetchWithAuth("/auth/me/password", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+    accessToken,
+  });
+  return parseResponse<{ success: true }>(res);
 }
 
 async function fetchWithAuth(
@@ -258,25 +255,6 @@ async function fetchWithAuth(
       ...init.headers,
     },
   });
-}
-
-export async function getEmailConfig(
-  accessToken: string
-): Promise<EmailConfigResponse> {
-  const res = await fetchWithAuth("/config/email", { accessToken });
-  return parseResponse<EmailConfigResponse>(res);
-}
-
-export async function setEmailConfig(
-  accessToken: string,
-  payload: EmailConfigPayload
-): Promise<EmailConfigResponse> {
-  const res = await fetchWithAuth("/config/email", {
-    method: "PUT",
-    body: JSON.stringify(payload),
-    accessToken,
-  });
-  return parseResponse<EmailConfigResponse>(res);
 }
 
 // --- Users (requiere token) ---
@@ -394,7 +372,12 @@ export interface AttributeOrphanResult {
 export async function attributeOrphanProduction(
   accessToken: string,
   machineId: string,
-  body: { operatorCode?: string | null; operator2Code?: string | null; sku?: string | null },
+  body: {
+    alertId: string
+    operatorCode?: string | null
+    operator2Code?: string | null
+    sku?: string | null
+  },
 ): Promise<AttributeOrphanResult> {
   const res = await fetchWithAuth(`/machine/${machineId}/attribute-orphan`, {
     accessToken,
@@ -526,10 +509,11 @@ export async function updateMachine(
 export type ApiGoalPeriod = "daily" | "weekly" | "monthly" | "quarterly" | "yearly"
 export type ApiGoalShift = "matutino" | "vespertino"
 
+export type ApiGoalMetricKind = "production" | "scrap"
+
 export interface ApiGoal {
   id: string
-  metricId: string
-  lineId: string | null
+  metricKind: ApiGoalMetricKind
   machineId: string | null
   sku?: string | null
   targetValue: number
@@ -550,8 +534,7 @@ export async function getGoals(accessToken: string): Promise<ApiGoal[]> {
 }
 
 export interface CreateGoalPayload {
-  metricId: string
-  lineId?: string | null
+  metricKind: ApiGoalMetricKind
   machineId?: string | null
   sku?: string | null
   targetValue: number
@@ -592,22 +575,6 @@ export async function deleteGoal(accessToken: string, id: string): Promise<void>
     accessToken,
   })
   await parseResponse<void>(res)
-}
-
-// --- Metrics ---
-
-export interface ApiMetric {
-  id: string
-  name: string
-  unit: string | null
-  description: string | null
-  createdAt: string
-  updatedAt: string
-}
-
-export async function getMetrics(accessToken: string): Promise<ApiMetric[]> {
-  const res = await fetchWithAuth("/metric", { accessToken })
-  return parseResponse<ApiMetric[]>(res)
 }
 
 // --- Orgs (solo platform admin, para dropdown al crear usuario) ---
@@ -700,7 +667,6 @@ export type ApiAlertStatus = "open" | "acknowledged" | "closed";
 
 export interface ApiAlert {
   id: string;
-  lineId: string | null;
   machineId: string | null;
   title: string;
   message: string | null;
@@ -717,7 +683,6 @@ export interface UpdateAlertPayload {
   title?: string;
   message?: string | null;
   closedAt?: string | Date | null;
-  lineId?: string | null;
   machineId?: string | null;
 }
 
@@ -874,40 +839,6 @@ export async function getProductionEvents(
   const qs = q.toString();
   const res = await fetchWithAuth(`/production-event${qs ? `?${qs}` : ""}`, { accessToken });
   return parseResponse<ApiProductionEvent[]>(res);
-}
-
-// --- Metric points (series de tiempo) ---
-
-export interface ApiMetricPoint {
-  id: string;
-  metricId: string;
-  lineId: string | null;
-  machineId: string | null;
-  value: number;
-  measuredAt: string;
-}
-
-export async function getMetricPoints(
-  accessToken: string,
-  params: {
-    metricId?: string;
-    lineId?: string;
-    machineId?: string;
-    from?: string;
-    to?: string;
-    limit?: number;
-  } = {},
-): Promise<ApiMetricPoint[]> {
-  const q = new URLSearchParams();
-  if (params.metricId) q.set("metricId", params.metricId);
-  if (params.lineId) q.set("lineId", params.lineId);
-  if (params.machineId) q.set("machineId", params.machineId);
-  if (params.from) q.set("from", params.from);
-  if (params.to) q.set("to", params.to);
-  if (params.limit != null) q.set("limit", String(params.limit));
-  const qs = q.toString();
-  const res = await fetchWithAuth(`/metric-point${qs ? `?${qs}` : ""}`, { accessToken });
-  return parseResponse<ApiMetricPoint[]>(res);
 }
 
 // --- Captura de datos (solo administradores) ---

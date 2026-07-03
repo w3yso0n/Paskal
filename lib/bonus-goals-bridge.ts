@@ -147,7 +147,7 @@ export function bonusConfigToGoalDefinitions(
 
 export function goalMatchesBonusDefinition(
   goal: {
-    metricId: string
+    metricKind: string
     period: ApiGoalPeriod
     shift?: ApiGoalShift | null
     sku?: string | null
@@ -156,10 +156,9 @@ export function goalMatchesBonusDefinition(
     targetValue: number
   },
   def: BonusGoalDefinition,
-  productionMetricId: string,
   monthBounds: { startDate: string; endDate: string },
 ): boolean {
-  if (goal.metricId !== productionMetricId) return false
+  if (goal.metricKind !== "production") return false
   if (goal.sku?.trim()) return false
   if (goal.period !== def.period) return false
   if ((goal.shift ?? null) !== def.shift) return false
@@ -170,11 +169,10 @@ export function goalMatchesBonusDefinition(
 
 export function buildGoalPayloadFromDefinition(
   def: BonusGoalDefinition,
-  productionMetricId: string,
   monthBounds: { startDate: string; endDate: string },
 ): CreateGoalPayload {
   return {
-    metricId: productionMetricId,
+    metricKind: "production",
     targetValue: def.targetValue,
     period: def.period,
     shift: def.shift,

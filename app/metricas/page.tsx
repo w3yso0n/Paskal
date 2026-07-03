@@ -102,12 +102,10 @@ import {
   getResolvedHolidaysForMonth,
   getProductionEvents,
   getGoals,
-  getMetrics,
   getAlerts,
   getMaintenanceSessions,
   getProductSkus,
   type ApiGoal,
-  type ApiMetric,
   type ApiMaintenanceSession,
   type ApiProductSku,
   type ApiEmployee,
@@ -152,7 +150,6 @@ import {
 import { productionShiftFromMeasuredAt } from "@/lib/tablero-operator-goal"
 import {
   fetchActualByGoalId,
-  getProductionMetricIds,
   summarizeMonthlyGoalProgress,
 } from "@/lib/goal-actual-progress"
 import {
@@ -453,6 +450,11 @@ function mapEventsToProductionBaseRows(
 
   return events
     .filter((e) => !(e.payload as Record<string, unknown>)?.excludedMaintenance)
+    .filter((e) => (e.eventType ?? "").toUpperCase() !== "ORPHAN_PROD")
+    .filter((e) => {
+      const attr = (e.payload as Record<string, unknown>)?.attributedFrom
+      return attr !== "orphan" && attr !== "packager_orphan"
+    })
     .map((e: ApiProductionEvent) => {
     const payload = e.payload ?? {}
     const eventRaw = String(payloadString(payload, "EVENT", "event") ?? e.eventType ?? "")
@@ -818,7 +820,6 @@ export default function MetricsPage() {
   const [employeeRows, setEmployeeRows] = useState<ApiEmployee[]>([])
   const [goalsRows, setGoalsRows] = useState<ApiGoal[]>([])
   const [goalActualByGoalId, setGoalActualByGoalId] = useState<Record<string, number>>({})
-  const [metricsRows, setMetricsRows] = useState<ApiMetric[]>([])
   const [dataLoading, setDataLoading] = useState(true)
   const [dataError, setDataError] = useState<string | null>(null)
   const [reloadNonce, setReloadNonce] = useState(0)
@@ -922,14 +923,13 @@ export default function MetricsPage() {
         const ytdFromIso = new Date(`${ytdYear}-01-01T00:00:00`).toISOString()
         const ytdToIso = new Date().toISOString()
 
-        const [events, employees, apiMachines, checkins, goals, metrics, dayRecords, maintenanceSessions, ytdEvents, productSkus, alerts, bonusCfg] =
+        const [events, employees, apiMachines, checkins, goals, dayRecords, maintenanceSessions, ytdEvents, productSkus, alerts, bonusCfg] =
           await Promise.all([
           getProductionEvents(token, { from: fromIso, to: toIso, limit: 120_000 }),
           getEmployees(token),
           getMachines(token),
           getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
           getGoals(token),
-          getMetrics(token),
           getEmployeeDayRecords(token, {
             from: filterStartDate,
             to: filterEndDate,
@@ -945,7 +945,6 @@ export default function MetricsPage() {
 
         setEmployeeRows(employees)
         setGoalsRows(goals)
-        setMetricsRows(metrics)
         setMachineCheckinsLoaded(checkins)
         setEmployeeDayRecordsLoaded(dayRecords)
         setMaintenanceSessionsLoaded(maintenanceSessions)
@@ -956,7 +955,7 @@ export default function MetricsPage() {
         )
         setMachinesLoaded(filterFloorMachines(apiMachines))
 
-        const actualByGoalId = await fetchActualByGoalId(token, goals, apiMachines, metrics)
+        const actualByGoalId = await fetchActualByGoalId(token, goals, apiMachines)
         if (cancelled) return
         setGoalActualByGoalId(actualByGoalId)
 
@@ -1335,10 +1334,10 @@ export default function MetricsPage() {
   }, [analytics.machineScatter, scopedProductionRows, filterStartDate, filterEndDate])
 
   const monthlyGoalSummary = useMemo(() => {
-    return summarizeMonthlyGoalProgress(goalsRows, goalActualByGoalId, metricsRows, {
+    return summarizeMonthlyGoalProgress(goalsRows, goalActualByGoalId, {
       shiftFilter,
     })
-  }, [goalsRows, goalActualByGoalId, metricsRows, shiftFilter])
+  }, [goalsRows, goalActualByGoalId, shiftFilter])
 
   const maintenanceMetrics = useMemo(() => {
     const startDate = new Date(filterStartDate)
@@ -1591,7 +1590,7 @@ export default function MetricsPage() {
       let manualCaptures: ProductionShiftManualCapture[] = []
       let reportConfiguredSkus: string[] = []
       if (token) {
-        const [windingRows, bendingRows, goals, metrics] = await Promise.all([
+        const [windingRows, bendingRows, goals] = await Promise.all([
           getManualDataCaptures(token, {
             category: "winding",
             from: monthBounds.start,
@@ -1605,23 +1604,18 @@ export default function MetricsPage() {
             limit: 2000,
           }),
           getGoals(token),
-          getMetrics(token),
         ])
-        const productionMetricIds = getProductionMetricIds(metrics)
-        reportConfiguredSkus =
-          productionMetricIds.size > 0
-          ? [
-              ...new Set(
-                goals
-                  .filter((g) => {
-                    const sku = g.sku?.trim()
-                    if (!sku || !productionMetricIds.has(g.metricId)) return false
-                    return g.startDate <= monthBounds.end && g.endDate >= monthBounds.start
-                  })
-                  .map((g) => g.sku!.trim()),
-              ),
-            ]
-          : []
+        reportConfiguredSkus = [
+          ...new Set(
+            goals
+              .filter((g) => {
+                const sku = g.sku?.trim()
+                if (!sku || g.metricKind !== "production") return false
+                return g.startDate <= monthBounds.end && g.endDate >= monthBounds.start
+              })
+              .map((g) => g.sku!.trim()),
+          ),
+        ]
         manualCaptures = [...windingRows, ...bendingRows]
           .filter((c) => c.recordDate && c.productionQty != null)
           .map((c) => ({

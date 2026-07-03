@@ -106,8 +106,6 @@ const TABLES: TableDef[] = [
   { table: "users", label: "Usuarios", group: "Personal" },
   { table: "product_skus", label: "SKUs", group: "Catálogo / SKU" },
   { table: "sku_component_options", label: "Opciones de componente SKU", group: "Catálogo / SKU" },
-  { table: "metrics", label: "Métricas", group: "Métricas y metas" },
-  { table: "metric_points", label: "Puntos de métrica", group: "Métricas y metas" },
   { table: "goals", label: "Metas", group: "Métricas y metas" },
   { table: "bonus_production_configs", label: "Configuración de bono", group: "Métricas y metas" },
   { table: "manual_data_captures", label: "Capturas manuales", group: "Reglas y registros" },

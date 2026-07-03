@@ -14,13 +14,13 @@ import {
   productionMenuItems,
   adminMenuItems,
   dataMenuItems,
-  platformConfigItem,
+  accountConfigItem,
 } from "./sidebar"
 import { Header } from "./header"
 import {
   hasModuleAccess,
   showAdminSection,
-  showPlatformSection,
+  showConfigSection,
   showDataSection,
 } from "@/lib/permissions"
 
@@ -71,7 +71,7 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false)
   const hasAdmin = showAdminSection(user)
-  const hasPlatform = showPlatformSection(user)
+  const hasConfig = showConfigSection(user)
   const hasData = showDataSection(user)
   const visibleProductionItems = productionMenuItems.filter((item) =>
     item.modules.some((module) => hasModuleAccess(user, module)),
@@ -151,17 +151,14 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
                 ))}
               </>
             )}
-            {hasPlatform && (
-              <>
-                <MobileSectionLabel label="Plataforma" />
-                <MobileNavLink
-                  href={platformConfigItem.href}
-                  label={platformConfigItem.label}
-                  icon={platformConfigItem.icon}
-                  isActive={pathname === platformConfigItem.href}
-                  onClick={() => setMobileMenuOpen(false)}
-                />
-              </>
+            {hasConfig && (
+              <MobileNavLink
+                href={accountConfigItem.href}
+                label={accountConfigItem.label}
+                icon={accountConfigItem.icon}
+                isActive={pathname === accountConfigItem.href}
+                onClick={() => setMobileMenuOpen(false)}
+              />
             )}
           </nav>
 

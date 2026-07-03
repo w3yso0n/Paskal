@@ -13,7 +13,8 @@ export function normalizeActivityEventType(eventRaw: string): string {
 
 export function isProductionActivityEvent(eventRaw: string): boolean {
   const v = normalizeActivityEventType(eventRaw)
-  return v === "PROD" || v === "BOOT" || v.includes("PROD")
+  if (v === "ORPHAN_PROD") return false
+  return v === "PROD" || v === "BOOT"
 }
 
 export function isInactivityActivityEvent(eventRaw: string): boolean {

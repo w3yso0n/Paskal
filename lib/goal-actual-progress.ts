@@ -1,11 +1,10 @@
 import {
-  getMetricPoints,
+  getManualDataCaptures,
   getProductionEvents,
   type ApiGoal,
   type ApiGoalShift,
   type ApiMachine,
-  type ApiMetric,
-  type ApiMetricPoint,
+  type ApiManualDataCapture,
   type ApiProductionEvent,
 } from "@/lib/api"
 import {
@@ -16,10 +15,8 @@ import {
 } from "@/lib/goal-compliance-range"
 import {
   normalizeSku,
-  productionUnitsFromEvent,
-  resolveProductionEventSku,
+  sumProductionUnitsInRange,
 } from "@/lib/production-goal-events"
-import { productionShiftFromMeasuredAt } from "@/lib/tablero-operator-goal"
 
 function toDateTimeRange(dateOnlyStart: string, dateOnlyEnd: string) {
   return {
@@ -53,23 +50,6 @@ export function normalizeGoalDate(value: string): string {
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`
 }
 
-export function isProductionMetricName(name: string): boolean {
-  const normalized = name
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-  return normalized === "produccion"
-}
-
-export function getProductionMetricIds(metrics: ApiMetric[]): Set<string> {
-  return new Set(metrics.filter((m) => isProductionMetricName(m.name)).map((m) => m.id))
-}
-
-export function resolveProductionMetricId(metrics: ApiMetric[]): string | null {
-  return metrics.find((m) => isProductionMetricName(m.name))?.id ?? null
-}
-
 function goalAppliesToCurrentMonth(goal: ApiGoal, ref: Date = new Date()): boolean {
   const endDate = normalizeGoalDate(goal.endDate)
   if (endDate >= GOAL_OPEN_END_DATE) return true
@@ -85,16 +65,12 @@ function goalAppliesToCurrentMonth(goal: ApiGoal, ref: Date = new Date()): boole
 
 export function selectMonthlyProductionGoals(
   goals: ApiGoal[],
-  metrics: ApiMetric[],
   options?: { shiftFilter?: "all" | ApiGoalShift; ref?: Date },
 ): ApiGoal[] {
-  const productionMetricIds = getProductionMetricIds(metrics)
-  if (productionMetricIds.size === 0) return []
-
   const ref = options?.ref ?? new Date()
   return goals.filter((g) => {
     if (!isGoalActive(g)) return false
-    if (!productionMetricIds.has(g.metricId)) return false
+    if (g.metricKind !== "production") return false
     if (g.period !== "monthly") return false
     if (!goalAppliesToCurrentMonth(g, ref)) return false
     if (
@@ -109,68 +85,70 @@ export function selectMonthlyProductionGoals(
   })
 }
 
+function yearMonthFromDate(dateOnly: string): number {
+  const y = Number(dateOnly.slice(0, 4))
+  const m = Number(dateOnly.slice(5, 7))
+  return y * 100 + m
+}
+
+/** Suma scrap de capturas manuales (categoría scrap) en el rango de cumplimiento. */
+export function sumScrapQtyInComplianceRange(
+  captures: ApiManualDataCapture[],
+  startDate: string,
+  endDate: string,
+): number {
+  const startYm = yearMonthFromDate(startDate)
+  const endYm = yearMonthFromDate(endDate)
+  let sum = 0
+  for (const c of captures) {
+    if (c.category !== "scrap") continue
+    const y = c.recordYear
+    const m = c.recordMonth
+    if (y == null || m == null) continue
+    const ym = y * 100 + m
+    if (ym < startYm || ym > endYm) continue
+    const q = c.scrapQty
+    if (q != null && Number.isFinite(q) && q > 0) sum += q
+  }
+  return sum
+}
+
 export function computeActualByGoalId(input: {
   goals: ApiGoal[]
   machines: ApiMachine[]
-  metricPoints: ApiMetricPoint[]
   productionEvents: ApiProductionEvent[]
-  metrics?: ApiMetric[]
+  scrapCaptures?: ApiManualDataCapture[]
 }): Record<string, number> {
-  const { goals, machines, metricPoints, productionEvents, metrics = [] } = input
+  const { goals, machines, productionEvents, scrapCaptures = [] } = input
   const { skuById, upbById } = buildMachineMaps(machines)
-  const productionMetricIds = getProductionMetricIds(metrics)
   const activeGoals = goals.filter(isGoalActive)
-  const skuGoals = activeGoals.filter((g) => normalizeSku(g.sku))
-  const nonSkuGoals = activeGoals.filter((g) => !normalizeSku(g.sku))
   const actual: Record<string, number> = {}
 
-  for (const g of nonSkuGoals) {
+  for (const g of activeGoals) {
     const range = goalComplianceDateRange(g)
     const { from, to } = toDateTimeRange(range.startDate, range.endDate)
     const shift = g.shift ?? null
-    let sum = metricPoints
-      .filter((p) => p.metricId === g.metricId)
-      .filter((p) => (g.lineId ? p.lineId === g.lineId : true))
-      .filter((p) => (g.machineId ? p.machineId === g.machineId : true))
-      .filter((p) => p.measuredAt >= from && p.measuredAt <= to)
-      .filter((p) => {
-        if (!shift) return true
-        return productionShiftFromMeasuredAt(p.measuredAt) === shift
-      })
-      .reduce((acc, p) => acc + Number(p.value ?? 0), 0)
+    const goalSku = normalizeSku(g.sku)
 
-    if (sum <= 0 && productionMetricIds.has(g.metricId)) {
-      sum = productionEvents
-        .filter((e) => (g.machineId ? e.machineId === g.machineId : true))
-        .filter((e) => e.occurredAt >= from && e.occurredAt <= to)
-        .filter((e) => {
-          if (!shift) return true
-          return productionShiftFromMeasuredAt(e.occurredAt) === shift
-        })
-        .reduce((acc, e) => acc + productionUnitsFromEvent(e, upbById), 0)
+    if (g.metricKind === "production") {
+      actual[g.id] = sumProductionUnitsInRange(productionEvents, {
+        machineId: g.machineId,
+        from,
+        to,
+        shift,
+        sku: goalSku,
+        machineSkuById: skuById,
+        machineUpbById: upbById,
+      })
+    } else if (g.metricKind === "scrap") {
+      actual[g.id] = sumScrapQtyInComplianceRange(
+        scrapCaptures,
+        range.startDate,
+        range.endDate,
+      )
+    } else {
+      actual[g.id] = 0
     }
-
-    actual[g.id] = sum
-  }
-
-  for (const g of skuGoals) {
-    const goalSku = normalizeSku(g.sku)?.toLowerCase()
-    if (!goalSku) continue
-    const range = goalComplianceDateRange(g)
-    const { from, to } = toDateTimeRange(range.startDate, range.endDate)
-    const shift = g.shift ?? null
-    actual[g.id] = productionEvents
-      .filter((e) => (g.machineId ? e.machineId === g.machineId : true))
-      .filter((e) => e.occurredAt >= from && e.occurredAt <= to)
-      .filter((e) => {
-        if (!shift) return true
-        return productionShiftFromMeasuredAt(e.occurredAt) === shift
-      })
-      .filter((e) => {
-        const eventSku = resolveProductionEventSku(e, skuById)
-        return eventSku?.trim().toLowerCase() === goalSku
-      })
-      .reduce((acc, e) => acc + productionUnitsFromEvent(e, upbById), 0)
   }
 
   for (const g of goals) {
@@ -184,7 +162,6 @@ export async function fetchActualByGoalId(
   accessToken: string,
   goals: ApiGoal[],
   machines: ApiMachine[],
-  metrics: ApiMetric[] = [],
 ): Promise<Record<string, number>> {
   if (goals.length === 0) return {}
 
@@ -193,13 +170,8 @@ export async function fetchActualByGoalId(
     return Object.fromEntries(goals.map((g) => [g.id, 0]))
   }
 
-  const skuGoals = activeGoals.filter((g) => normalizeSku(g.sku))
-  const nonSkuGoals = activeGoals.filter((g) => !normalizeSku(g.sku))
-  const metricIds = Array.from(new Set(activeGoals.map((g) => g.metricId)))
-  const productionMetricIds = getProductionMetricIds(metrics)
-  const needsProductionEvents =
-    skuGoals.length > 0 ||
-    nonSkuGoals.some((g) => productionMetricIds.has(g.metricId))
+  const needsProductionEvents = activeGoals.some((g) => g.metricKind === "production")
+  const needsScrapCaptures = activeGoals.some((g) => g.metricKind === "scrap")
 
   const complianceRanges = activeGoals.map((g) => goalComplianceDateRange(g))
   const minStart = complianceRanges.reduce(
@@ -212,40 +184,34 @@ export async function fetchActualByGoalId(
   )
   const range = toDateTimeRange(minStart, maxEnd)
 
-  const [pointsByMetric, productionEvents] = await Promise.all([
-    nonSkuGoals.length > 0
-      ? Promise.all(
-          metricIds.map((metricId) =>
-            getMetricPoints(accessToken, {
-              metricId,
-              from: range.from,
-              to: range.to,
-              limit: 5000,
-            }),
-          ),
-        )
-      : Promise.resolve([] as ApiMetricPoint[][]),
+  const [productionEvents, scrapCaptures] = await Promise.all([
     needsProductionEvents
       ? getProductionEvents(accessToken, { from: range.from, to: range.to, limit: 10000 })
       : Promise.resolve([] as ApiProductionEvent[]),
+    needsScrapCaptures
+      ? getManualDataCaptures(accessToken, {
+          category: "scrap",
+          from: minStart,
+          to: maxEnd,
+          limit: 2000,
+        })
+      : Promise.resolve([] as ApiManualDataCapture[]),
   ])
 
   return computeActualByGoalId({
     goals,
     machines,
-    metricPoints: pointsByMetric.flat(),
     productionEvents,
-    metrics,
+    scrapCaptures,
   })
 }
 
 export function summarizeMonthlyGoalProgress(
   goals: ApiGoal[],
   actualByGoalId: Record<string, number>,
-  metrics: ApiMetric[],
   options?: { shiftFilter?: "all" | ApiGoalShift },
 ): { actual: number; target: number; pct: number; goalCount: number } | null {
-  const monthly = selectMonthlyProductionGoals(goals, metrics, options)
+  const monthly = selectMonthlyProductionGoals(goals, options)
   if (monthly.length === 0) return null
   const target = monthly.reduce((acc, g) => acc + Number(g.targetValue || 0), 0)
   if (!Number.isFinite(target) || target <= 0) return null

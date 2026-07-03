@@ -36,13 +36,12 @@ import {
   getBonusProductionConfigForMonth,
   getGoals,
   getMachines,
-  getMetrics,
   updateGoal,
   type ApiGoal,
+  type ApiGoalMetricKind,
   type ApiGoalPeriod,
   type ApiGoalShift,
   type ApiMachine,
-  type ApiMetric,
 } from "@/lib/api"
 import {
   bonusConfigToGoalDefinitions,
@@ -59,7 +58,7 @@ import {
   isGoalActive,
   todayYmd,
 } from "@/lib/goal-compliance-range"
-import { fetchActualByGoalId, isProductionMetricName } from "@/lib/goal-actual-progress"
+import { fetchActualByGoalId } from "@/lib/goal-actual-progress"
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -129,12 +128,13 @@ const statusConfig: Record<
   },
 }
 
-function isProductionMetric(metric: ApiMetric | undefined): boolean {
-  return metric != null && isProductionMetricName(metric.name)
+const metricKindLabels: Record<ApiGoalMetricKind, { label: string; unit: string }> = {
+  production: { label: "Producción", unit: "unidades" },
+  scrap: { label: "Scrap", unit: "unidades" },
 }
 
-function isExcludedGoalMetric(metric: ApiMetric): boolean {
-  return metric.name.trim().toLowerCase() === "oee"
+function metricKindInfo(kind: ApiGoalMetricKind) {
+  return metricKindLabels[kind] ?? metricKindLabels.production
 }
 
 function buildMachineMaps(machines: ApiMachine[]) {
@@ -155,7 +155,6 @@ function buildMachineMaps(machines: ApiMachine[]) {
 
 function GoalCard({
   goal,
-  metric,
   actual,
   onEdit,
   onDelete,
@@ -164,7 +163,6 @@ function GoalCard({
   machineLabel,
 }: {
   goal: ApiGoal
-  metric: ApiMetric | undefined
   actual: number
   onEdit: (goal: ApiGoal) => void
   onDelete: (goal: ApiGoal) => void
@@ -177,6 +175,7 @@ function GoalCard({
   const status = calcStatus(actual, target)
   const cfg = statusConfig[status]
   const StatusIcon = cfg.icon
+  const metric = metricKindInfo(goal.metricKind)
   const remaining = target - actual
   const isActive = isGoalActive(goal)
 
@@ -223,7 +222,7 @@ function GoalCard({
               </Badge>
             </div>
             <h3 className="text-lg font-semibold text-foreground">
-              {metric?.name ?? "Métrica no encontrada"}
+              {metric.label}
             </h3>
             <p className="text-sm text-muted-foreground">
               Periodo: {periodLabels[goal.period]}
@@ -288,7 +287,7 @@ function GoalCard({
               </span>
               <span className="ml-1 text-muted-foreground">
                 / {target.toLocaleString()}
-                {metric?.unit ? ` ${metric.unit}` : ""}
+                {metric.unit ? ` ${metric.unit}` : ""}
               </span>
             </div>
             <span className="text-2xl font-bold text-primary">{pct.toFixed(0)}%</span>
@@ -304,7 +303,7 @@ function GoalCard({
           {remaining > 0 && status !== "exceeded" && status !== "completed" ? (
             <span className="text-muted-foreground">
               Faltan: {remaining.toLocaleString()}
-              {metric?.unit ? ` ${metric.unit}` : ""}
+              {metric.unit ? ` ${metric.unit}` : ""}
             </span>
           ) : (
             <span className="font-medium text-green-600">Meta alcanzada</span>
@@ -338,7 +337,6 @@ export default function MetasPage() {
   const [error, setError] = useState<string | null>(null)
 
   const [goals, setGoals] = useState<ApiGoal[]>([])
-  const [metrics, setMetrics] = useState<ApiMetric[]>([])
   const [machines, setMachines] = useState<ApiMachine[]>([])
   const [actualByGoalId, setActualByGoalId] = useState<Record<string, number>>({})
   const [filterPeriod, setFilterPeriod] = useState<ApiGoalPeriod | "all">("all")
@@ -354,7 +352,7 @@ export default function MetasPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingGoal, setEditingGoal] = useState<ApiGoal | null>(null)
   const [formData, setFormData] = useState({
-    metricId: "",
+    metricKind: "production" as ApiGoalMetricKind,
     period: "daily" as ApiGoalPeriod,
     shift: "matutino" as ApiGoalShift | "none",
     targetValue: "",
@@ -363,23 +361,7 @@ export default function MetasPage() {
     machineId: "none",
   })
 
-  const metricById = useMemo(
-    () => new Map(metrics.map((m) => [m.id, m] as const)),
-    [metrics],
-  )
-
   const machineMaps = useMemo(() => buildMachineMaps(machines), [machines])
-
-  const productionMetricId = useMemo(() => {
-    const prod =
-      metrics.find((m) => m.name.toLowerCase() === "producción") ?? metrics[0]
-    return prod?.id ?? null
-  }, [metrics])
-
-  const selectableMetrics = useMemo(
-    () => metrics.filter((m) => !isExcludedGoalMetric(m)),
-    [metrics],
-  )
 
   const bonusMonthBounds = useMemo(
     () => monthDateBounds(bonusConfigMonth),
@@ -392,9 +374,9 @@ export default function MetasPage() {
   )
 
   const isBonusSyncedGoal = (goal: ApiGoal) => {
-    if (!productionMetricId || goal.sku?.trim()) return false
+    if (goal.sku?.trim()) return false
     return bonusDefinitions.some((def) =>
-      goalMatchesBonusDefinition(goal, def, productionMetricId, bonusMonthBounds),
+      goalMatchesBonusDefinition(goal, def, bonusMonthBounds),
     )
   }
 
@@ -407,11 +389,7 @@ export default function MetasPage() {
     return [...set].sort((a, b) => a.localeCompare(b, "es"))
   }, [machines])
 
-  const selectedFormMetric = useMemo(
-    () => metrics.find((m) => m.id === formData.metricId),
-    [metrics, formData.metricId],
-  )
-  const showProductionSkuFields = isProductionMetric(selectedFormMetric)
+  const showProductionSkuFields = formData.metricKind === "production"
 
   // ── derived stats ──────────────────────────────────────────────────────────
   const enriched = useMemo(
@@ -467,18 +445,15 @@ export default function MetasPage() {
       const token = await getAccessToken()
       if (!token) {
         setGoals([])
-        setMetrics([])
         setActualByGoalId({})
         return
       }
 
-      const [goalsData, metricsData, machinesData] = await Promise.all([
+      const [goalsData, machinesData] = await Promise.all([
         getGoals(token),
-        getMetrics(token),
         getMachines(token),
       ])
       setGoals(goalsData)
-      setMetrics(metricsData)
       setMachines(machinesData)
 
       try {
@@ -493,12 +468,11 @@ export default function MetasPage() {
         return
       }
 
-      const actual = await fetchActualByGoalId(token, goalsData, machinesData, metricsData)
+      const actual = await fetchActualByGoalId(token, goalsData, machinesData)
       setActualByGoalId(actual)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al cargar metas")
       setGoals([])
-      setMetrics([])
       setActualByGoalId({})
     } finally {
       if (!silent) setLoading(false)
@@ -517,11 +491,8 @@ export default function MetasPage() {
 
   const openCreate = () => {
     setEditingGoal(null)
-    const defaultMetric =
-      selectableMetrics.find((m) => m.name.toLowerCase() === "producción") ??
-      selectableMetrics[0]
     setFormData({
-      metricId: defaultMetric?.id ?? "",
+      metricKind: "production",
       period: "daily",
       shift: "matutino",
       targetValue: "",
@@ -535,7 +506,7 @@ export default function MetasPage() {
   const openEdit = (g: ApiGoal) => {
     setEditingGoal(g)
     setFormData({
-      metricId: g.metricId,
+      metricKind: g.metricKind,
       period: g.period,
       shift: g.shift ?? "none",
       targetValue: String(g.targetValue),
@@ -550,24 +521,23 @@ export default function MetasPage() {
     const token = await getAccessToken()
     if (!token) return
 
-    const selectedMetric = metrics.find((m) => m.id === formData.metricId)
     const skuValue = normalizeSku(formData.sku)
 
     const payload = {
-      metricId: formData.metricId,
+      metricKind: formData.metricKind,
       period: formData.period,
       shift: formData.shift === "none" ? null : formData.shift,
       targetValue: Number(formData.targetValue),
       active: formData.isActive,
       machineId: formData.machineId === "none" ? null : formData.machineId,
-      sku: isProductionMetric(selectedMetric) ? skuValue : null,
+      sku: formData.metricKind === "production" ? skuValue : null,
     }
 
-    if (!payload.metricId) {
-      setError("Selecciona una métrica.")
+    if (!payload.metricKind) {
+      setError("Selecciona el tipo de meta.")
       return
     }
-    if (isProductionMetric(selectedMetric) && formData.sku.trim() && !skuValue) {
+    if (formData.metricKind === "production" && formData.sku.trim() && !skuValue) {
       setError("El SKU no puede estar vacío.")
       return
     }
@@ -659,20 +629,19 @@ export default function MetasPage() {
               </DialogHeader>
               <div className="grid gap-4 py-4">
                 <div className="space-y-2">
-                  <Label>Métrica</Label>
+                  <Label>Tipo de meta</Label>
                   <Select
-                    value={formData.metricId}
-                    onValueChange={(v) => setFormData((s) => ({ ...s, metricId: v }))}
+                    value={formData.metricKind}
+                    onValueChange={(v) =>
+                      setFormData((s) => ({ ...s, metricKind: v as ApiGoalMetricKind }))
+                    }
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccionar" />
                     </SelectTrigger>
                     <SelectContent>
-                      {selectableMetrics.map((m) => (
-                        <SelectItem key={m.id} value={m.id}>
-                          {m.name}
-                        </SelectItem>
-                      ))}
+                      <SelectItem value="production">Producción</SelectItem>
+                      <SelectItem value="scrap">Scrap</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -990,7 +959,6 @@ export default function MetasPage() {
                         <GoalCard
                           key={goal.id}
                           goal={goal}
-                          metric={metricById.get(goal.metricId)}
                           actual={actual}
                           machineLabel={
                             goal.machineId

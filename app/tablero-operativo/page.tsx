@@ -21,6 +21,7 @@ import {
   type ApiProductionEvent,
 } from "@/lib/api"
 import { filterFloorMachines } from "@/lib/machine-floor"
+import { countsAsOperatorProduction } from "@/lib/production-goal-events"
 import { bonusConfigToGoalDefinitions } from "@/lib/bonus-goals-bridge"
 import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
 import {
@@ -55,18 +56,9 @@ function initialsFromName(name: string): string {
   return ini || "?"
 }
 
-/** Alineado con ingesta PLC/ESP: PROD, PRODUCCION, etc. */
+/** Alineado con ingesta MQTT: solo PROD asignado cuenta (no ORPHAN_PROD ni ajustes). */
 function isProductionIncrementEvent(e: ApiProductionEvent): boolean {
-  const payload = e.payload ?? {}
-  const rawEvent =
-    (payload["EVENT"] as string | undefined) ??
-    (payload["event"] as string | undefined) ??
-    e.eventType
-  const v = String(rawEvent ?? "").trim().toLowerCase()
-  if (!v) return false
-  if (v === "prod") return true
-  if (v.includes("produ")) return true
-  return v === "producción" || v === "produccion"
+  return countsAsOperatorProduction(e)
 }
 
 function getEventCount(e: ApiProductionEvent): number {

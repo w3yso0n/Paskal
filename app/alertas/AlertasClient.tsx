@@ -71,6 +71,7 @@ import {
   type ApiProductSku,
 } from "@/lib/api"
 import { toast } from "sonner"
+import { sumOrphanPendingForAlert, countsAsOperatorProduction } from "@/lib/production-goal-events"
 import {
   buildDowntimeNoteContextFromAlert,
   isDowntimeParoAlert,
@@ -144,15 +145,7 @@ function mapApiAlertToUi(a: ApiAlert): Alert {
 }
 
 function isProductionIncrementEvent(e: ApiProductionEvent): boolean {
-  const payload = e.payload ?? {}
-  const rawEvent =
-    (payload["EVENT"] as string | undefined) ??
-    (payload["event"] as string | undefined) ??
-    e.eventType
-  const event = String(rawEvent ?? "").toLowerCase()
-  if (!event) return false
-  if (event.includes("produ")) return true
-  return event === "producción" || event === "produccion"
+  return countsAsOperatorProduction(e)
 }
 
 function getEventCount(e: ApiProductionEvent): number {
@@ -235,6 +228,7 @@ export default function AlertasClient() {
   const [alertsLoading, setAlertsLoading] = useState(true)
   const [machineRows, setMachineRows] = useState<ApiMachine[]>([])
   const [machineCounters, setMachineCounters] = useState<Record<string, number>>({})
+  const [productionEvents, setProductionEvents] = useState<ApiProductionEvent[]>([])
   const [lastIncreaseAtByMachine, setLastIncreaseAtByMachine] = useState<Record<string, number>>(
     {},
   )
@@ -308,6 +302,7 @@ export default function AlertasClient() {
 
       const events = await getProductionEvents(token, { limit: 1500 })
       if (cancelled) return
+      setProductionEvents(events)
 
       const lastByMachine: Record<string, number> = {}
       const counters: Record<string, number> = {}
@@ -433,8 +428,16 @@ export default function AlertasClient() {
 
   // --- Atribución de producción huérfana (alertas "sin check-in") ---
   const isOrphanAlert = (a: Alert) => a.title.startsWith("Producción sin check-in")
-  const orphanUnitsForMachine = (machineId?: string) =>
-    machineId ? machineRows.find((m) => m.id === machineId)?.orphanUnits ?? 0 : 0
+
+  const orphanUnitsForAlert = (alert: Alert | null): number => {
+    if (!alert) return 0
+    const fromEvents = sumOrphanPendingForAlert(productionEvents, alert.id)
+    if (fromEvents > 0) return fromEvents
+    const api = apiAlertsById.get(alert.id)
+    const msg = api?.message ?? alert.description ?? ""
+    const m = msg.match(/(\d+)\s*piezas/i)
+    return m ? Number(m[1]) : 0
+  }
 
   const openAssign = (alert: Alert) => {
     setAssignOperator("")
@@ -488,6 +491,7 @@ export default function AlertasClient() {
         return
       }
       const res = await attributeOrphanProduction(token, assignAlert.machineId, {
+        alertId: assignAlert.id,
         operatorCode: assignOperator,
         sku: assignSku || null,
       })
@@ -894,7 +898,7 @@ export default function AlertasClient() {
             <p className="text-sm text-muted-foreground">
               Hay{" "}
               <span className="font-medium text-foreground">
-                {orphanUnitsForMachine(assignAlert?.machineId)} piezas
+                {orphanUnitsForAlert(assignAlert)} piezas
               </span>{" "}
               producidas sin estar en verde. Elige el operador y SKU a quien se le acreditarán.
             </p>

@@ -3,6 +3,7 @@ import type { BonusGoalDefinition } from "@/lib/bonus-goals-bridge"
 import { goalComplianceDateRange, isGoalActive } from "@/lib/goal-compliance-range"
 import { getPartsInTimeZone } from "@/lib/shift-timezone"
 import {
+  countsAsOperatorProduction,
   normalizeSku,
   productionUnitsFromEvent,
 } from "@/lib/production-goal-events"
@@ -158,19 +159,6 @@ export function findDailyGoalForOperator(
   return { goal, sourceKey }
 }
 
-function isProductionIncrementEvent(e: ApiProductionEvent): boolean {
-  const payload = e.payload ?? {}
-  const rawEvent =
-    (payload["EVENT"] as string | undefined) ??
-    (payload["event"] as string | undefined) ??
-    e.eventType
-  const v = String(rawEvent ?? "").trim().toLowerCase()
-  if (!v) return false
-  if (v === "prod") return true
-  if (v.includes("produ")) return true
-  return v === "producción" || v === "produccion"
-}
-
 function getEventBoxCount(e: ApiProductionEvent): number {
   const payload = e.payload ?? {}
   const raw =
@@ -194,7 +182,7 @@ export function aggregateOperatorDailyProduction(
 
   let total = 0
   for (const e of events) {
-    if (!isProductionIncrementEvent(e)) continue
+    if (!countsAsOperatorProduction(e)) continue
     const op = resolveOperatorCode(e).trim().toLowerCase()
     if (op !== codeLower) continue
     total += useBoxes
