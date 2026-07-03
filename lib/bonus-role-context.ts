@@ -18,7 +18,6 @@ export type BonusEmployeePrimaryRole = {
   fullName: string
   primaryRole?: EmployeeProductionRole | null
   secondaryRole?: EmployeeSecondaryRole | null
-  position?: string | null
 }
 
 function normalizePersonName(value: string): string {
@@ -41,7 +40,7 @@ export function buildPrimaryRoleByPerson(
   const out = new Map<string, BonusSectionRole>()
   for (const emp of employees) {
     const name = normalizePersonName(emp.fullName)
-    const role = resolveEmployeeProductionRole(emp.primaryRole, emp.position)
+    const role = resolveEmployeeProductionRole(emp.primaryRole)
     if (!name || !role) continue
     out.set(name, role)
   }
@@ -54,7 +53,7 @@ export function buildDefaultSecondaryRoleByPerson(
   const out = new Map<string, EmployeeSecondaryRole>()
   for (const emp of employees) {
     const name = normalizePersonName(emp.fullName)
-    const primary = resolveEmployeeProductionRole(emp.primaryRole, emp.position)
+    const primary = resolveEmployeeProductionRole(emp.primaryRole)
     if (!name || primary !== "operator" || !emp.secondaryRole) continue
     out.set(name, emp.secondaryRole)
   }

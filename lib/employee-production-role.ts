@@ -53,27 +53,33 @@ export function isEmployeeSecondaryRole(value: string): value is EmployeeSeconda
   )
 }
 
-/** Inferir rol primordial desde texto de puesto (legacy). */
-export function inferProductionRoleFromPosition(
-  position: string | null | undefined,
-): EmployeeProductionRole | null {
-  const p = String(position ?? "").toLowerCase()
-  if (!p.trim()) return null
-  if (p.includes("mantenim")) return "maintenance"
-  if (p.includes("empac")) return "packer"
-  if (p.includes("bend") || p.includes("dobl")) return "bending"
-  if (p.includes("roll") || p.includes("rodill")) return "roller"
-  if (p.includes("aux")) return "operator"
-  if (p.includes("oper")) return "operator"
-  return "operator"
-}
-
 export function resolveEmployeeProductionRole(
   primaryRole: EmployeeProductionRole | null | undefined,
-  position: string | null | undefined,
 ): EmployeeProductionRole | null {
   if (primaryRole && isEmployeeProductionRole(primaryRole)) return primaryRole
-  return inferProductionRoleFromPosition(position)
+  return null
+}
+
+/**
+ * ¿El empleado se puede asignar como **operador**? Solo cuenta su rol primordial:
+ * un operador es quien tiene `primaryRole = operator`.
+ */
+export function isOperatorRole(
+  primaryRole: EmployeeProductionRole | null | undefined,
+): boolean {
+  return primaryRole === "operator"
+}
+
+/**
+ * ¿El empleado se puede asignar como **empacador**? Aplica a empacadores de base
+ * (`primaryRole = packer`) y a operadores que cubren empaque (`secondaryRole = packer`).
+ */
+export function isPackerRole(
+  primaryRole: EmployeeProductionRole | null | undefined,
+  secondaryRole: EmployeeSecondaryRole | null | undefined,
+): boolean {
+  if (primaryRole === "packer") return true
+  return primaryRole === "operator" && secondaryRole === "packer"
 }
 
 export function nfcRoleFromProductionRole(
@@ -92,7 +98,7 @@ export function resolveEffectiveBonusRole(
   secondaryRole: EmployeeSecondaryRole | null | undefined,
 ): BonusEffectiveRole | null {
   if (primaryRole === "maintenance") return null
-  const primary = resolveEmployeeProductionRole(primaryRole, null)
+  const primary = resolveEmployeeProductionRole(primaryRole)
   if (!primary) return null
   if (primary === "operator" && secondaryRole) {
     return secondaryRole === "auxiliary" ? "auxiliary" : secondaryRole

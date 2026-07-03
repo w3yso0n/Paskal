@@ -366,6 +366,10 @@ export async function getMachines(accessToken: string): Promise<ApiMachine[]> {
 export interface AttributeOrphanResult {
   attributed: number;
   machine: ApiMachine;
+  /** `true` si el operador quedó asignado (check-in) a la máquina tras la atribución. */
+  assigned?: boolean;
+  /** Motivo si no se pudo asignar el operador (p. ej. ya activo en otra máquina). */
+  assignError?: string | null;
 }
 
 /** Atribuye la producción huérfana de una máquina a un operador + SKU (acción de alerta). */
@@ -591,7 +595,6 @@ export interface ApiEmployee {
   fullName: string;
   rfc: string | null;
   imss: string | null;
-  position: string | null;
   primaryRole: import("@/lib/employee-production-role").EmployeeProductionRole | null;
   secondaryRole: import("@/lib/employee-production-role").EmployeeSecondaryRole | null;
   status: ApiEmployeeStatus;
@@ -610,7 +613,6 @@ export interface CreateEmployeePayload {
   nfcCardUid?: string | null;
   rfc?: string | null;
   imss?: string | null;
-  position?: string | null;
   primaryRole?: import("@/lib/employee-production-role").EmployeeProductionRole | null;
   secondaryRole?: import("@/lib/employee-production-role").EmployeeSecondaryRole | null;
   status?: ApiEmployeeStatus;

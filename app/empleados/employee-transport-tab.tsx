@@ -9,10 +9,7 @@ import { Bus, Search } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
 import { updateEmployee, type ApiEmployee } from "@/lib/api"
-import {
-  EMPLOYEE_PRODUCTION_ROLE_LABELS,
-  inferProductionRoleFromPosition,
-} from "@/lib/employee-production-role"
+import { EMPLOYEE_PRODUCTION_ROLE_LABELS } from "@/lib/employee-production-role"
 import {
   formatTransportMxn,
   LOCAL_TRANSPORT_POLICY_SUMMARY,
@@ -42,7 +39,7 @@ export function EmployeeTransportTab({
       .filter((e) => e.status === "active")
       .filter((e) => {
         if (!q) return true
-        const haystack = [e.fullName, e.employeeCode, e.position, e.rfc, e.imss]
+        const haystack = [e.fullName, e.employeeCode, e.rfc, e.imss]
           .filter(Boolean)
           .join(" ")
           .toLowerCase()
@@ -149,10 +146,7 @@ export function EmployeeTransportTab({
                 </thead>
                 <tbody>
                   {rows.map((employee) => {
-                    const role =
-                      employee.primaryRole ??
-                      inferProductionRoleFromPosition(employee.position) ??
-                      "operator"
+                    const role = employee.primaryRole ?? "operator"
                     const checked = Boolean(employee.localTransportSupport)
                     const saving = savingId === employee.id
                     return (

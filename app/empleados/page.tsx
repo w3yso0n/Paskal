@@ -74,7 +74,6 @@ import {
 import {
   EMPLOYEE_PRODUCTION_ROLE_LABELS,
   EMPLOYEE_SECONDARY_ROLE_LABELS,
-  inferProductionRoleFromPosition,
   isEmployeeProductionRole,
   PRIMARY_ROLES,
   SECONDARY_ROLES,
@@ -156,7 +155,6 @@ type EmployeeFormState = {
   nfcCardUid: string
   rfc: string
   imss: string
-  position: string
   primaryRole: EmployeeProductionRole
   secondaryRole: EmployeeSecondaryRole | ""
   /** Turno asignado: "" = sin asignar, "1" = matutino, "2" = vespertino. */
@@ -169,7 +167,6 @@ const EMPTY_EMPLOYEE_FORM: EmployeeFormState = {
   nfcCardUid: "",
   rfc: "",
   imss: "",
-  position: "",
   primaryRole: "operator",
   secondaryRole: "",
   shift: "",
@@ -198,15 +195,12 @@ function monthBoundsFromInput(monthValue: string) {
 function employeeToForm(employee: ApiEmployee): EmployeeFormState {
   const fromApi = employee.primaryRole
   const primaryRole: EmployeeProductionRole =
-    fromApi && isEmployeeProductionRole(fromApi)
-      ? fromApi
-      : (inferProductionRoleFromPosition(employee.position) ?? "operator")
+    fromApi && isEmployeeProductionRole(fromApi) ? fromApi : "operator"
   return {
     fullName: employee.fullName,
     nfcCardUid: employee.nfcCardUid ?? "",
     rfc: employee.rfc ?? "",
     imss: employee.imss ?? "",
-    position: employee.position ?? "",
     primaryRole,
     secondaryRole: employee.secondaryRole ?? "",
     shift: employee.shift === 1 ? "1" : employee.shift === 2 ? "2" : "",
@@ -259,15 +253,6 @@ function EmployeeFormFields({
             prueba no cuenta para operadores ni empacadores.
           </p>
         ) : null}
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-position`}>Puesto</Label>
-        <Input
-          id={`${idPrefix}-position`}
-          value={form.position}
-          onChange={(e) => onChange({ ...form, position: e.target.value })}
-          placeholder="Ej: Operador"
-        />
       </div>
       <div className="space-y-2">
         <Label htmlFor={`${idPrefix}-hiredAt`}>Fecha de ingreso</Label>
@@ -587,13 +572,7 @@ export default function EmployeesPage() {
   }, [employees])
 
   const operatorEmployees = useMemo(
-    () =>
-      employees.filter(
-        (e) =>
-          (e.primaryRole ??
-            inferProductionRoleFromPosition(e.position) ??
-            "operator") === "operator",
-      ),
+    () => employees.filter((e) => (e.primaryRole ?? "operator") === "operator"),
     [employees],
   )
 
@@ -604,7 +583,6 @@ export default function EmployeesPage() {
       const haystack = [
         e.fullName,
         e.nfcCardUid,
-        e.position,
         e.rfc,
         e.imss,
         e.primaryRole ? EMPLOYEE_PRODUCTION_ROLE_LABELS[e.primaryRole] : "",
@@ -642,7 +620,6 @@ export default function EmployeesPage() {
         nfcCardUid: employeeForm.nfcCardUid.trim() || null,
         rfc: employeeForm.rfc.trim() || null,
         imss: employeeForm.imss.trim() || null,
-        position: employeeForm.position.trim() || null,
         primaryRole: employeeForm.primaryRole,
         secondaryRole:
           employeeForm.primaryRole === "operator" && employeeForm.secondaryRole
@@ -986,7 +963,7 @@ export default function EmployeesPage() {
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   className="pl-9"
-                  placeholder="Buscar por nombre, NFC, puesto…"
+                  placeholder="Buscar por nombre, NFC, rol…"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
@@ -1008,10 +985,7 @@ export default function EmployeesPage() {
             ) : (
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                 {filteredEmployees.map((employee) => {
-                  const role =
-                    employee.primaryRole ??
-                    inferProductionRoleFromPosition(employee.position) ??
-                    "operator"
+                  const role = employee.primaryRole ?? "operator"
                   return (
                     <Card key={employee.id} className="overflow-hidden">
                       <CardContent className="p-0">
@@ -1020,11 +994,9 @@ export default function EmployeesPage() {
                             <h3 className="font-semibold text-foreground truncate">
                               {employee.fullName}
                             </h3>
-                            {employee.position ? (
-                              <p className="text-sm text-muted-foreground truncate">
-                                {employee.position}
-                              </p>
-                            ) : null}
+                            <p className="text-sm text-muted-foreground truncate">
+                              {EMPLOYEE_PRODUCTION_ROLE_LABELS[role]}
+                            </p>
                           </div>
                           {employee.shift === 1 || employee.shift === 2 ? (
                             <Badge variant="outline" className="font-normal shrink-0">

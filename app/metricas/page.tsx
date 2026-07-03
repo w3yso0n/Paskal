@@ -236,7 +236,7 @@ function buildEmployeeNameToRoleLabelMap(employees: ApiEmployee[]): Map<string, 
   for (const emp of employees) {
     const name = emp.fullName?.trim()
     if (!name) continue
-    const role = resolveEmployeeProductionRole(emp.primaryRole, emp.position)
+    const role = resolveEmployeeProductionRole(emp.primaryRole)
     if (role) map.set(name, EMPLOYEE_PRODUCTION_ROLE_LABELS[role])
   }
   return map
@@ -671,7 +671,8 @@ function buildPersonnelMovementsFromCheckins(
   for (const e of employees) {
     const c = e.employeeCode?.trim()
     if (!c) continue
-    const p = (e.position ?? "").trim() || "Colaborador"
+    const role = resolveEmployeeProductionRole(e.primaryRole)
+    const p = role ? EMPLOYEE_PRODUCTION_ROLE_LABELS[role] : "Colaborador"
     posByCode.set(c, p)
     posByCode.set(c.toLowerCase(), p)
   }
@@ -1782,7 +1783,6 @@ export default function MetricsPage() {
           fullName: e.fullName,
           primaryRole: e.primaryRole,
           secondaryRole: e.secondaryRole,
-          position: e.position,
         }))
       }
 

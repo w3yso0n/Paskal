@@ -48,6 +48,7 @@ import {
 import { SkuCodeInput, skuUnitsPerBox } from "@/components/sku/sku-code-input"
 import { CreateSkuDialog } from "@/components/sku/create-sku-dialog"
 import { normalizeSkuCode } from "@/lib/sku-catalog"
+import { isOperatorRole, isPackerRole } from "@/lib/employee-production-role"
 import { loadQuantityRules } from "@/lib/hook-sku-quantity-table"
 import type { HookSkuQuantityRule } from "@/lib/hook-sku-generator"
 
@@ -176,17 +177,17 @@ export default function ProductionFloorPage() {
     return map
   }, [employeeRows])
   const operators = useMemo(() => {
-    const byPosition = employeeRows
-      .filter((e) => (e.position ?? "").toLowerCase().includes("oper"))
+    const byRole = employeeRows
+      .filter((e) => isOperatorRole(e.primaryRole))
       .map((e) => e.fullName)
-    if (byPosition.length > 0) return byPosition
+    if (byRole.length > 0) return byRole
     return employeeRows.filter((e) => e.status === "active").map((e) => e.fullName)
   }, [employeeRows])
   const packers = useMemo(() => {
-    const byPosition = employeeRows
-      .filter((e) => (e.position ?? "").toLowerCase().includes("empac"))
+    const byRole = employeeRows
+      .filter((e) => isPackerRole(e.primaryRole, e.secondaryRole))
       .map((e) => e.fullName)
-    if (byPosition.length > 0) return byPosition
+    if (byRole.length > 0) return byRole
     return employeeRows.filter((e) => e.status === "active").map((e) => e.fullName)
   }, [employeeRows])
 

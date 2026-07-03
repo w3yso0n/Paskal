@@ -21,8 +21,7 @@ import {
   StickyNote,
 } from "lucide-react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -42,22 +41,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import {
   type Alert,
   type AlertType,
   type AlertCategory,
 } from "@/lib/types"
-import { useSearchParams } from "next/navigation"
-import Link from "next/link"
 import { useAuth } from "@/contexts/auth-context"
 import { hasPermission } from "@/lib/permissions"
 import {
   attributeOrphanProduction,
   deleteAlert,
   getAlerts,
-  getBusinessAlertThresholds,
   getDowntimeNotes,
   getEmployees,
   getMachines,
@@ -72,12 +68,13 @@ import {
   type ApiProductSku,
 } from "@/lib/api"
 import { toast } from "sonner"
-import { sumOrphanPendingForAlert, countsAsOperatorProduction } from "@/lib/production-goal-events"
+import { sumOrphanPendingForAlert } from "@/lib/production-goal-events"
 import {
   buildDowntimeNoteContextFromAlert,
   isDowntimeParoAlert,
 } from "@/lib/employee-downtime-analytics"
-import { DEFAULT_ALERT_THRESHOLDS } from "@/lib/business-rules"
+
+const ALERTS_POLL_MS = 30_000
 
 // --- Constants ---
 
@@ -145,20 +142,6 @@ function mapApiAlertToUi(a: ApiAlert): Alert {
   }
 }
 
-function isProductionIncrementEvent(e: ApiProductionEvent): boolean {
-  return countsAsOperatorProduction(e)
-}
-
-function getEventCount(e: ApiProductionEvent): number {
-  const payload = e.payload ?? {}
-  const raw =
-    (payload["COUNT"] as unknown) ??
-    (payload["count"] as unknown) ??
-    (payload["units"] as unknown)
-  const n = typeof raw === "number" ? raw : Number(raw)
-  return Number.isFinite(n) ? n : 0
-}
-
 // --- Helpers ---
 
 function formatTimeAgo(date: Date): string {
@@ -179,61 +162,28 @@ function formatDateTime(date: Date): string {
   })
 }
 
+function isOrphanProductionAlert(a: Alert): boolean {
+  return a.title.startsWith("Producción sin check-in")
+}
+
 // --- Component ---
 
 export default function AlertasClient() {
-  const searchParams = useSearchParams()
   const { user, getAccessToken } = useAuth()
 
   const canDismissAlerts = hasPermission(user, "alerts.dismiss")
 
-  // --- View and filter state ---
-  const [view, setView] = useState<"production" | "operations">("production")
   const [filterType, setFilterType] = useState("all")
   const [filterCategory, setFilterCategory] = useState("all")
   const [searchQuery, setSearchQuery] = useState("")
   const [activeTab, setActiveTab] = useState("all")
 
-  // --- Idle threshold ---
-  const initialIdleThresholdMinutes = useMemo(() => {
-    const fromQuery = Number(searchParams.get("idleMin"))
-    return Number.isFinite(fromQuery) && fromQuery > 0
-      ? Math.round(fromQuery)
-      : DEFAULT_ALERT_THRESHOLDS.idleMinutesStage1
-  }, [searchParams])
-  const [idleThresholdMinutes, setIdleThresholdMinutes] = useState(initialIdleThresholdMinutes)
-
-  useEffect(() => {
-    let cancelled = false
-    const loadThresholds = async () => {
-      try {
-        const token = await getAccessToken()
-        if (!token || cancelled) return
-        const cfg = await getBusinessAlertThresholds(token)
-        if (!cancelled && !searchParams.get("idleMin")) {
-          setIdleThresholdMinutes(cfg.idleMinutesStage1)
-        }
-      } catch {
-        // mantiene valor por defecto o query string
-      }
-    }
-    void loadThresholds()
-    return () => {
-      cancelled = true
-    }
-  }, [getAccessToken, searchParams])
-
-  // --- Alerts state ---
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [apiAlertsById, setApiAlertsById] = useState<Map<string, ApiAlert>>(new Map())
   const [notesBySourceKey, setNotesBySourceKey] = useState<Map<string, string>>(new Map())
   const [alertsLoading, setAlertsLoading] = useState(true)
   const [machineRows, setMachineRows] = useState<ApiMachine[]>([])
-  const [machineCounters, setMachineCounters] = useState<Record<string, number>>({})
   const [productionEvents, setProductionEvents] = useState<ApiProductionEvent[]>([])
-  const [lastIncreaseAtByMachine, setLastIncreaseAtByMachine] = useState<Record<string, number>>(
-    {},
-  )
   const [employees, setEmployees] = useState<ApiEmployee[]>([])
   const [skus, setSkus] = useState<ApiProductSku[]>([])
   const [assignAlert, setAssignAlert] = useState<Alert | null>(null)
@@ -259,6 +209,31 @@ export default function AlertasClient() {
     }
   }, [getAccessToken])
 
+  const reloadAlerts = useCallback(
+    async (opts?: { showSpinner?: boolean }) => {
+      const showSpinner = opts?.showSpinner ?? false
+      if (showSpinner) setAlertsLoading(true)
+      try {
+        const token = await getAccessToken()
+        if (!token) {
+          setAlerts([])
+          setApiAlertsById(new Map())
+          return
+        }
+        const [apiAlerts, events] = await Promise.all([
+          getAlerts(token),
+          getProductionEvents(token, { limit: 1500 }),
+        ])
+        setProductionEvents(events)
+        setApiAlertsById(new Map(apiAlerts.map((a) => [a.id, a])))
+        setAlerts(apiAlerts.map(mapApiAlertToUi))
+      } finally {
+        if (showSpinner) setAlertsLoading(false)
+      }
+    },
+    [getAccessToken],
+  )
+
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -272,16 +247,18 @@ export default function AlertasClient() {
           }
           return
         }
-        const [apiAlerts, apiMachines, apiEmployees, apiSkus] = await Promise.all([
+        const [apiAlerts, apiMachines, apiEmployees, apiSkus, events] = await Promise.all([
           getAlerts(token),
           getMachines(token),
           getEmployees(token),
           getProductSkus(token),
+          getProductionEvents(token, { limit: 1500 }),
         ])
         if (cancelled) return
         setMachineRows(apiMachines)
         setEmployees(apiEmployees)
         setSkus(apiSkus)
+        setProductionEvents(events)
         setApiAlertsById(new Map(apiAlerts.map((a) => [a.id, a])))
         setAlerts(apiAlerts.map(mapApiAlertToUi))
       } finally {
@@ -296,43 +273,12 @@ export default function AlertasClient() {
   }, [getAccessToken, loadDowntimeNotes])
 
   useEffect(() => {
-    if (view !== "production") return
-    let cancelled = false
-    const run = async () => {
-      const token = await getAccessToken()
-      if (!token || !user) return
+    const intervalId = window.setInterval(() => {
+      void reloadAlerts()
+    }, ALERTS_POLL_MS)
+    return () => window.clearInterval(intervalId)
+  }, [reloadAlerts])
 
-      const events = await getProductionEvents(token, { limit: 1500 })
-      if (cancelled) return
-      setProductionEvents(events)
-
-      const lastByMachine: Record<string, number> = {}
-      const counters: Record<string, number> = {}
-      for (const e of events) {
-        if (!e.machineId) continue
-        if (!isProductionIncrementEvent(e)) continue
-        const count = getEventCount(e)
-        if (count <= 0) continue
-        const ts = new Date(e.occurredAt).getTime()
-        if (!Number.isFinite(ts)) continue
-        counters[e.machineId] = (counters[e.machineId] ?? 0) + count
-        lastByMachine[e.machineId] = Math.max(lastByMachine[e.machineId] ?? 0, ts)
-      }
-
-      setMachineCounters(counters)
-      setLastIncreaseAtByMachine(lastByMachine)
-    }
-
-    run()
-    const intervalId = window.setInterval(run, 20_000)
-    return () => {
-      cancelled = true
-      window.clearInterval(intervalId)
-    }
-  }, [getAccessToken, view])
-
-  // --- Derived state ---
-  /** machineId (UUID) → código legible (M-022) para no mostrar el UUID crudo en las alertas. */
   const machineCodeById = useMemo(() => {
     const map = new Map<string, string>()
     for (const m of machineRows) {
@@ -341,27 +287,18 @@ export default function AlertasClient() {
     return map
   }, [machineRows])
 
-  const scopedAlerts = useMemo(
-    () =>
-      view === "production"
-        ? alerts.filter((a) => a.category === "production")
-        : alerts.filter((a) => a.category !== "production"),
-    [alerts, view],
-  )
+  const unreadCount = alerts.filter((a) => !a.isRead).length
+  const actionRequiredCount = alerts.filter((a) => a.actionRequired && !a.isRead).length
+  const errorCount = alerts.filter((a) => a.type === "error" && !a.isRead).length
+  const warningCount = alerts.filter((a) => a.type === "warning" && !a.isRead).length
 
-  const unreadCount = scopedAlerts.filter((a) => !a.isRead).length
-  const actionRequiredCount = scopedAlerts.filter((a) => a.actionRequired && !a.isRead).length
-  const errorCount = scopedAlerts.filter((a) => a.type === "error" && !a.isRead).length
-  const warningCount = scopedAlerts.filter((a) => a.type === "warning" && !a.isRead).length
-
-  const filteredAlerts = scopedAlerts.filter((alert) => {
+  const filteredAlerts = alerts.filter((alert) => {
     const matchesTab =
       activeTab === "all" ||
       (activeTab === "unread" && !alert.isRead) ||
       (activeTab === "action" && alert.actionRequired && !alert.isRead)
     const matchesType = filterType === "all" || alert.type === filterType
-    const matchesCategory =
-      view === "production" ? true : filterCategory === "all" || alert.category === filterCategory
+    const matchesCategory = filterCategory === "all" || alert.category === filterCategory
     const matchesSearch =
       searchQuery === "" ||
       alert.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -388,7 +325,6 @@ export default function AlertasClient() {
     [filteredAlerts],
   )
 
-  // --- Alert actions ---
   const handleMarkAsRead = async (id: string) => {
     setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, isRead: true } : a)))
     const token = await getAccessToken()
@@ -400,7 +336,7 @@ export default function AlertasClient() {
     setAlerts((prev) => prev.map((a) => ({ ...a, isRead: true })))
     const token = await getAccessToken()
     if (!token) return
-    const unread = scopedAlerts.filter((a) => !a.isRead).map((a) => a.id)
+    const unread = alerts.filter((a) => !a.isRead).map((a) => a.id)
     await Promise.allSettled(unread.map((id) => updateAlert(token, id, { status: "acknowledged" })))
   }
 
@@ -415,7 +351,7 @@ export default function AlertasClient() {
     const token = await getAccessToken()
     setAlerts((prev) => prev.filter((a) => !a.isRead))
     if (!token) return
-    const toDelete = scopedAlerts.filter((a) => a.isRead).map((a) => a.id)
+    const toDelete = alerts.filter((a) => a.isRead).map((a) => a.id)
     await Promise.allSettled(toDelete.map((id) => deleteAlert(token, id)))
   }
 
@@ -428,15 +364,12 @@ export default function AlertasClient() {
     await updateAlert(token, id, { status: "closed", closedAt: new Date().toISOString() })
   }
 
-  // --- Atribución de producción huérfana (alertas "sin check-in") ---
-  const isOrphanAlert = (a: Alert) => a.title.startsWith("Producción sin check-in")
-
   const orphanUnitsForAlert = (alert: Alert | null): number => {
     if (!alert) return 0
     const fromEvents = sumOrphanPendingForAlert(productionEvents, alert.id)
     if (fromEvents > 0) return fromEvents
     const api = apiAlertsById.get(alert.id)
-    const msg = api?.message ?? alert.description ?? ""
+    const msg = api?.message ?? alert.message ?? ""
     const m = msg.match(/(\d+)\s*piezas/i)
     return m ? Number(m[1]) : 0
   }
@@ -497,10 +430,20 @@ export default function AlertasClient() {
         operatorCode: assignOperator,
         sku: assignSku || null,
       })
-      toast.success(`Se atribuyeron ${res.attributed} piezas a ${assignOperator}.`)
-      setAlerts((prev) => prev.filter((a) => a.id !== assignAlert.id))
+      if (res.assigned) {
+        toast.success(
+          `Se atribuyeron ${res.attributed} piezas a ${assignOperator} y quedó asignado a la máquina.`,
+        )
+      } else {
+        toast.warning(
+          res.assignError
+            ? `Se atribuyeron ${res.attributed} piezas, pero no se pudo asignar el operador: ${res.assignError}`
+            : `Se atribuyeron ${res.attributed} piezas a ${assignOperator}.`,
+        )
+      }
       setMachineRows((prev) => prev.map((m) => (m.id === res.machine.id ? res.machine : m)))
       setAssignAlert(null)
+      await reloadAlerts()
     } catch (e) {
       const msg = e instanceof Error ? e.message : "No se pudo atribuir la producción."
       toast.error(msg)
@@ -512,7 +455,6 @@ export default function AlertasClient() {
   return (
     <DashboardLayout breadcrumbs={[{ label: "Inicio", href: "/" }, { label: "Alertas" }]}>
       <div className="space-y-6">
-        {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -521,11 +463,15 @@ export default function AlertasClient() {
             <div>
               <h1 className="text-2xl font-bold text-foreground">Centro de Alertas</h1>
               <p className="text-sm text-muted-foreground">
-                Monitorea todas las alertas y notificaciones del sistema
+                Funcionamiento de planta: paros, conectividad y producción sin asignar
               </p>
             </div>
           </div>
           <div className="flex gap-2">
+            <Button variant="outline" onClick={() => void reloadAlerts({ showSpinner: true })}>
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Actualizar
+            </Button>
             <Button variant="outline" onClick={handleMarkAllAsRead} disabled={unreadCount === 0}>
               <Check className="mr-2 h-4 w-4" />
               Marcar todas como leídas
@@ -539,96 +485,6 @@ export default function AlertasClient() {
           </div>
         </div>
 
-        {/* View Switch */}
-        <Card>
-          <CardContent className="py-4">
-            <Tabs value={view} onValueChange={(v) => setView(v as "production" | "operations")}>
-              <TabsList>
-                <TabsTrigger value="production">Monitoreo de Producción</TabsTrigger>
-                <TabsTrigger value="operations">Funcionamiento</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          </CardContent>
-        </Card>
-
-        {/* Production Monitor */}
-        {view === "production" && (
-          <Card>
-            <CardHeader className="pb-4">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <CardTitle>Estado de producción por máquina</CardTitle>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Muestra el tiempo desde el último incremento. Dispara alerta al superar el
-                    umbral.
-                  </p>
-                </div>
-                <div className="text-right text-sm">
-                  <p className="text-muted-foreground">
-                    Umbral alerta 1:{" "}
-                    <span className="font-medium text-foreground">{idleThresholdMinutes} min</span>
-                  </p>
-                  <Link
-                    href="/reglas-negocio?tab=thresholds"
-                    className="text-xs text-primary hover:underline"
-                  >
-                    Configurar en reglas de negocio
-                  </Link>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {machineRows
-                  .filter((m) => m.status === "green")
-                  .map((m) => {
-                    const lastIncreaseAt = lastIncreaseAtByMachine[m.id] ?? Date.now()
-                    const minutes = Math.max(
-                      0,
-                      Math.floor((Date.now() - lastIncreaseAt) / 60000),
-                    )
-                    const isOverThreshold = minutes >= idleThresholdMinutes
-                    const counter = machineCounters[m.id] ?? 0
-
-                    return (
-                      <div key={m.id} className="rounded-lg border border-border bg-card p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2">
-                            <Monitor className="h-4 w-4 text-muted-foreground" />
-                            <span className="font-medium text-foreground">{m.name}</span>
-                          </div>
-                          <Badge variant={isOverThreshold ? "destructive" : "secondary"}>
-                            {isOverThreshold ? "Sin avance" : "OK"}
-                          </Badge>
-                        </div>
-                        <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
-                          <div>
-                            <p className="text-xs text-muted-foreground">
-                              Min desde último incremento
-                            </p>
-                            <p
-                              className={cn(
-                                "font-semibold",
-                                isOverThreshold ? "text-destructive" : "text-foreground",
-                              )}
-                            >
-                              {minutes} min
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground">Contador</p>
-                            <p className="font-semibold text-foreground">{counter} uds</p>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Stats Cards */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
           <Card className="border-red-200 bg-red-50">
             <CardContent className="flex items-center gap-4 p-4">
@@ -676,13 +532,12 @@ export default function AlertasClient() {
           </Card>
         </div>
 
-        {/* Filters and Tabs */}
         <Card>
           <CardHeader className="pb-4">
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <Tabs value={activeTab} onValueChange={setActiveTab}>
                 <TabsList>
-                  <TabsTrigger value="all">Todas ({scopedAlerts.length})</TabsTrigger>
+                  <TabsTrigger value="all">Todas ({alerts.length})</TabsTrigger>
                   <TabsTrigger value="unread">Sin leer ({unreadCount})</TabsTrigger>
                   <TabsTrigger value="action">
                     Acción requerida ({actionRequiredCount})
@@ -712,19 +567,16 @@ export default function AlertasClient() {
                     <SelectItem value="success">Éxito</SelectItem>
                   </SelectContent>
                 </Select>
-                {view === "operations" && (
-                  <Select value={filterCategory} onValueChange={setFilterCategory}>
-                    <SelectTrigger className="w-44">
-                      <SelectValue placeholder="Categoría" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Todas las categorías</SelectItem>
-                      <SelectItem value="machine">Máquina</SelectItem>
-                      <SelectItem value="maintenance">Mantenimiento</SelectItem>
-                      <SelectItem value="system">Sistema</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
+                <Select value={filterCategory} onValueChange={setFilterCategory}>
+                  <SelectTrigger className="w-44">
+                    <SelectValue placeholder="Categoría" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas las categorías</SelectItem>
+                    <SelectItem value="machine">Máquina</SelectItem>
+                    <SelectItem value="system">Sistema</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
           </CardHeader>
@@ -749,6 +601,14 @@ export default function AlertasClient() {
                   const noteCtx = apiAlert ? buildDowntimeNoteContextFromAlert(apiAlert) : null
                   const alertNote = noteCtx ? notesBySourceKey.get(noteCtx.sourceKey) : undefined
                   const canAddNote = apiAlert ? isDowntimeParoAlert(apiAlert.title) : false
+                  const isOrphan = isOrphanProductionAlert(alert)
+                  const updatedAt = apiAlert?.updatedAt
+                    ? new Date(apiAlert.updatedAt)
+                    : alert.timestamp
+                  const showUpdated =
+                    isOrphan &&
+                    !Number.isNaN(updatedAt.getTime()) &&
+                    updatedAt.getTime() > alert.timestamp.getTime() + 60_000
 
                   return (
                     <div
@@ -797,12 +657,17 @@ export default function AlertasClient() {
                                 <span className="font-medium text-foreground">Nota:</span> {alertNote}
                               </p>
                             ) : null}
-                            <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
+                            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                               <span className="flex items-center gap-1">
                                 <CategoryIcon className="h-3 w-3" />
                                 {categoryLabels[alert.category]}
                               </span>
-                              <span>{formatTimeAgo(alert.timestamp)}</span>
+                              <span>Creada {formatTimeAgo(alert.timestamp)}</span>
+                              {showUpdated && (
+                                <span className="text-amber-700">
+                                  Actualizada {formatTimeAgo(updatedAt)}
+                                </span>
+                              )}
                               <span>{formatDateTime(alert.timestamp)}</span>
                               {alert.machineId && (
                                 <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
@@ -823,7 +688,7 @@ export default function AlertasClient() {
                                 {alertNote ? "Editar nota" : "Añadir nota"}
                               </Button>
                             )}
-                            {isOrphanAlert(alert) && !alert.isRead && (
+                            {isOrphan && !alert.isRead && (
                               <Button
                                 size="sm"
                                 variant="default"
@@ -873,13 +738,12 @@ export default function AlertasClient() {
           </CardContent>
         </Card>
 
-        {/* Real-time indicator */}
         <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
           <span className="relative flex h-2 w-2">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75" />
             <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
           </span>
-          Actualizaciones en tiempo real activas
+          Actualización automática cada {ALERTS_POLL_MS / 1000} s
         </div>
       </div>
 

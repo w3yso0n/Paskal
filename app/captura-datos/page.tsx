@@ -50,6 +50,7 @@ import {
   formatScrapCostMxn,
   scrapCostPerKgMxn,
 } from "@/lib/scrap-cost"
+import { isOperatorRole, isPackerRole } from "@/lib/employee-production-role"
 import { ClipboardList, Loader2, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -75,18 +76,18 @@ interface DailyFormState {
 
 function useProductionStaff(employees: ApiEmployee[]) {
   const operators = useMemo(() => {
-    const byPosition = employees
-      .filter((e) => e.status === "active" && (e.position ?? "").toLowerCase().includes("oper"))
+    const byRole = employees
+      .filter((e) => e.status === "active" && isOperatorRole(e.primaryRole))
       .filter((e) => e.employeeCode)
-    if (byPosition.length > 0) return byPosition
+    if (byRole.length > 0) return byRole
     return employees.filter((e) => e.status === "active" && e.employeeCode)
   }, [employees])
 
   const packers = useMemo(() => {
-    const byPosition = employees
-      .filter((e) => e.status === "active" && (e.position ?? "").toLowerCase().includes("empac"))
+    const byRole = employees
+      .filter((e) => e.status === "active" && isPackerRole(e.primaryRole, e.secondaryRole))
       .filter((e) => e.employeeCode)
-    if (byPosition.length > 0) return byPosition
+    if (byRole.length > 0) return byRole
     return employees.filter((e) => e.status === "active" && e.employeeCode)
   }, [employees])
 

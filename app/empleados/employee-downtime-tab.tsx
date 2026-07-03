@@ -33,9 +33,6 @@ import {
   getProductionEvents,
   type ApiEmployee,
 } from "@/lib/api"
-import {
-  inferProductionRoleFromPosition,
-} from "@/lib/employee-production-role"
 import { filterFloorMachines } from "@/lib/machine-floor"
 import {
   buildEmployeeDowntimeAnalytics,
@@ -97,12 +94,7 @@ export function EmployeeDowntimeTab({ employees }: EmployeeDowntimeTabProps) {
 
   const operatorEmployees = useMemo(
     () =>
-      employees.filter(
-        (e) =>
-          (e.primaryRole ??
-            inferProductionRoleFromPosition(e.position) ??
-            "operator") === "operator",
-      ),
+      employees.filter((e) => (e.primaryRole ?? "operator") === "operator"),
     [employees],
   )
 
