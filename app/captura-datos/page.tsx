@@ -29,7 +29,6 @@ import { useAuth } from "@/contexts/auth-context"
 import {
   createManualDataCapture,
   deleteManualDataCapture,
-  getBusinessAlertThresholds,
   getEmployees,
   getManualDataCaptures,
   type ApiDataCaptureCategory,
@@ -46,7 +45,6 @@ import {
   WINDING_MACHINES,
   sourceKeyLabel,
 } from "@/lib/data-capture-config"
-import { DEFAULT_ALERT_THRESHOLDS, type AlertThresholdsConfig } from "@/lib/business-rules"
 import {
   computeScrapCostMxn,
   formatScrapCostMxn,
@@ -433,7 +431,6 @@ function ScrapCaptureSection() {
   const [rows, setRows] = useState<ApiManualDataCapture[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [costConfig, setCostConfig] = useState<AlertThresholdsConfig>(DEFAULT_ALERT_THRESHOLDS)
   const [form, setForm] = useState<ScrapFormState>({
     recordYear: String(currentYear),
     recordMonth: String(new Date().getMonth() + 1),
@@ -447,17 +444,6 @@ function ScrapCaptureSection() {
     for (let y = currentYear; y >= currentYear - 15; y--) years.push(y)
     return years
   }, [currentYear])
-
-  const loadCosts = useCallback(async () => {
-    try {
-      const token = await getAccessToken()
-      if (!token) return
-      const thresholds = await getBusinessAlertThresholds(token)
-      setCostConfig(thresholds)
-    } catch {
-      setCostConfig(DEFAULT_ALERT_THRESHOLDS)
-    }
-  }, [getAccessToken])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -488,10 +474,6 @@ function ScrapCaptureSection() {
   }, [filterYear, getAccessToken])
 
   useEffect(() => {
-    loadCosts()
-  }, [loadCosts])
-
-  useEffect(() => {
     load()
   }, [load])
 
@@ -499,17 +481,16 @@ function ScrapCaptureSection() {
   const previewCost = computeScrapCostMxn(
     Number.isFinite(previewKg) ? previewKg : 0,
     form.materialKey,
-    costConfig,
   )
-  const previewRate = scrapCostPerKgMxn(form.materialKey, costConfig)
+  const previewRate = scrapCostPerKgMxn(form.materialKey)
 
   const monthlyTotalCost = useMemo(
     () =>
       rows.reduce(
-        (sum, row) => sum + computeScrapCostMxn(row.scrapQty, row.sourceKey, costConfig),
+        (sum, row) => sum + computeScrapCostMxn(row.scrapQty, row.sourceKey),
         0,
       ),
-    [rows, costConfig],
+    [rows],
   )
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -726,7 +707,7 @@ function ScrapCaptureSection() {
                 </TableHeader>
                 <TableBody>
                   {rows.map((r) => {
-                    const cost = computeScrapCostMxn(r.scrapQty, r.sourceKey, costConfig)
+                    const cost = computeScrapCostMxn(r.scrapQty, r.sourceKey)
                     const monthLabel =
                       r.recordMonth != null ? MONTH_LABELS[r.recordMonth - 1] ?? r.recordMonth : "—"
                     return (

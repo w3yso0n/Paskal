@@ -50,6 +50,7 @@ import {
   type AlertCategory,
 } from "@/lib/types"
 import { useSearchParams } from "next/navigation"
+import Link from "next/link"
 import { useAuth } from "@/contexts/auth-context"
 import { hasPermission } from "@/lib/permissions"
 import {
@@ -76,7 +77,7 @@ import {
   buildDowntimeNoteContextFromAlert,
   isDowntimeParoAlert,
 } from "@/lib/employee-downtime-analytics"
-import { EspIdleAlertConfigCard } from "./EspIdleAlertConfigCard"
+import { DEFAULT_ALERT_THRESHOLDS } from "@/lib/business-rules"
 
 // --- Constants ---
 
@@ -185,7 +186,6 @@ export default function AlertasClient() {
   const { user, getAccessToken } = useAuth()
 
   const canDismissAlerts = hasPermission(user, "alerts.dismiss")
-  const canEditThreshold = hasPermission(user, "production.edit-threshold")
 
   // --- View and filter state ---
   const [view, setView] = useState<"production" | "operations">("production")
@@ -197,7 +197,9 @@ export default function AlertasClient() {
   // --- Idle threshold ---
   const initialIdleThresholdMinutes = useMemo(() => {
     const fromQuery = Number(searchParams.get("idleMin"))
-    return Number.isFinite(fromQuery) && fromQuery > 0 ? Math.round(fromQuery) : 10
+    return Number.isFinite(fromQuery) && fromQuery > 0
+      ? Math.round(fromQuery)
+      : DEFAULT_ALERT_THRESHOLDS.idleMinutesStage1
   }, [searchParams])
   const [idleThresholdMinutes, setIdleThresholdMinutes] = useState(initialIdleThresholdMinutes)
 
@@ -209,7 +211,7 @@ export default function AlertasClient() {
         if (!token || cancelled) return
         const cfg = await getBusinessAlertThresholds(token)
         if (!cancelled && !searchParams.get("idleMin")) {
-          setIdleThresholdMinutes(cfg.idleMinutesWithoutProduction)
+          setIdleThresholdMinutes(cfg.idleMinutesStage1)
         }
       } catch {
         // mantiene valor por defecto o query string
@@ -549,11 +551,6 @@ export default function AlertasClient() {
           </CardContent>
         </Card>
 
-        <EspIdleAlertConfigCard
-          machines={machineRows}
-          canConfigure={hasPermission(user, "production.esp-idle-config")}
-        />
-
         {/* Production Monitor */}
         {view === "production" && (
           <Card>
@@ -566,20 +563,17 @@ export default function AlertasClient() {
                     umbral.
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground">Umbral (min)</span>
-                  <Input
-                    type="number"
-                    min={1}
-                    value={idleThresholdMinutes}
-                    onChange={(e) =>
-                      canEditThreshold &&
-                      setIdleThresholdMinutes(Math.max(1, Number(e.target.value) || 1))
-                    }
-                    className="w-24"
-                    readOnly={!canEditThreshold}
-                    disabled={!canEditThreshold}
-                  />
+                <div className="text-right text-sm">
+                  <p className="text-muted-foreground">
+                    Umbral alerta 1:{" "}
+                    <span className="font-medium text-foreground">{idleThresholdMinutes} min</span>
+                  </p>
+                  <Link
+                    href="/reglas-negocio?tab=thresholds"
+                    className="text-xs text-primary hover:underline"
+                  >
+                    Configurar en reglas de negocio
+                  </Link>
                 </div>
               </div>
             </CardHeader>

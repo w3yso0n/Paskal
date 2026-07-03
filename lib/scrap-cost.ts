@@ -1,4 +1,3 @@
-import type { AlertThresholdsConfig } from "@/lib/business-rules"
 import { SCRAP_MATERIALS, type ScrapMaterialKey } from "@/lib/data-capture-config"
 
 export function scrapMaterialLabel(sourceKey: string): string {
@@ -8,23 +7,17 @@ export function scrapMaterialLabel(sourceKey: string): string {
   return sourceKey
 }
 
-export function scrapCostPerKgMxn(
-  sourceKey: string,
-  thresholds: Pick<AlertThresholdsConfig, "scrapMetalCostPerKgMxn" | "scrapTwineCostPerKgMxn">,
-): number {
-  if (sourceKey === "scrap-metal") return thresholds.scrapMetalCostPerKgMxn
-  if (sourceKey === "scrap-twine") return thresholds.scrapTwineCostPerKgMxn
+export function scrapCostPerKgMxn(_sourceKey: string): number {
   return 0
 }
 
 export function computeScrapCostMxn(
   kg: number | null | undefined,
   sourceKey: string,
-  thresholds: Pick<AlertThresholdsConfig, "scrapMetalCostPerKgMxn" | "scrapTwineCostPerKgMxn">,
 ): number {
   const qty = Number(kg)
   if (!Number.isFinite(qty) || qty <= 0) return 0
-  const rate = scrapCostPerKgMxn(sourceKey, thresholds)
+  const rate = scrapCostPerKgMxn(sourceKey)
   if (!Number.isFinite(rate) || rate <= 0) return 0
   return qty * rate
 }

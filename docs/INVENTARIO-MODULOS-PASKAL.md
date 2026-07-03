@@ -6,26 +6,10 @@
 
 ## 1. Flujo de datos desde el PLC
 
-**La información de producción se recibe del PLC/ESP** mediante el endpoint de ingesta:
-
-| Endpoint | Descripción |
-|----------|-------------|
-| `POST /production-event/ingest` | Recibe eventos enviados por la ESP/PLC en batch |
-
-**Payload por evento (IngestPlcEventDto):**
-
-| Campo | Tipo | Descripción |
-|-------|------|-------------|
-| `MACHINE_ID` | string | Código de máquina PA-05: `M-###` (tres dígitos, ej. `M-001`). Debe coincidir con `Machine.code` en la org. |
-| `TIMESTAMP` | string | Fecha/hora ISO 8601 del evento |
-| `OPERATOR` | string? | Código del operador (NFC ID o employee_code) |
-| `PACKAGER_1` | string? | Código del empacador 1 |
-| `PACKAGER_2` | string? | Código del empacador 2 |
-| `COUNT` | number? | Unidades producidas en el evento |
-| `EVENT` | string | Tipo: `Producción` \| `Cambio SKU` \| `Parada` (o equivalentes del PLC) |
-| `SKU` | string? | Código del producto (ej. "SKU-001") |
-
-**Body del request:** `{ events: IngestPlcEventDto[] }`
+**La información de producción se recibe del PLC/ESP por MQTT.** El firmware publica
+`telemetry` (conteo + heartbeat), `tap` (UID NFC) y `status` (presencia); el backend
+(`MqttIngestService`) calcula el delta, atribuye producción y escribe `production_events`.
+No hay ingesta HTTP: la vieja `POST /production-event/ingest` fue retirada.
 
 El frontend **no** envía datos al PLC; consume los eventos ya almacenados en el backend vía `GET /production-event` y otros endpoints.
 
@@ -74,11 +58,7 @@ El frontend **no** envía datos al PLC; consume los eventos ya almacenados en el
 | GET | `/production-event` | Eventos de producción (origen PLC) |
 | GET | `/goal` | Metas de producción y scrap (`metric_kind`) |
 
-**Ingesta PLC (fuera del frontend, lo usa la ESP/PLC):**
-
-| Método | Ruta | Uso |
-|--------|------|-----|
-| POST | `/production-event/ingest` | Ingesta de eventos enviados por el PLC |
+**Ingesta PLC:** por MQTT (`telemetry` / `tap` / `status`), no por HTTP.
 
 **Base URL:** definida por variable de entorno `NEXT_PUBLIC_API_URL` (backend externo al repositorio).
 

@@ -598,102 +598,50 @@ export default function ReglasNegocioPage() {
               <TabsContent value="thresholds">
                 <Card className="max-w-3xl">
                   <CardHeader>
-                    <CardTitle className="text-lg">Umbrales de alertas</CardTitle>
+                    <CardTitle className="text-lg">Alertas de inactividad</CardTitle>
                     <CardDescription>
-                      Valores por defecto para la vista de Alertas y detección de paros.
+                      Minutos sin producción antes de generar alerta en el centro de alertas. El
+                      motor del backend evalúa <code className="text-xs">last_production_at</code>{" "}
+                      de cada máquina.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div className="grid gap-2">
-                        <Label>Minutos sin producción (paro)</Label>
+                        <Label>Alerta 1 (minutos)</Label>
                         <Input
                           type="number"
                           min={1}
                           max={240}
-                          value={thresholds.idleMinutesWithoutProduction}
+                          value={thresholds.idleMinutesStage1}
                           onChange={(e) =>
                             setThresholds((t) => ({
                               ...t,
-                              idleMinutesWithoutProduction: Number(e.target.value) || 1,
+                              idleMinutesStage1: Number(e.target.value) || 1,
                             }))
                           }
                         />
+                        <p className="text-xs text-muted-foreground">
+                          Primera alerta de paro (por defecto 15 min).
+                        </p>
                       </div>
                       <div className="grid gap-2">
-                        <Label>Scrap — alerta (%)</Label>
+                        <Label>Alerta 2 (minutos)</Label>
                         <Input
                           type="number"
                           min={1}
-                          max={100}
-                          value={thresholds.scrapPercentWarning}
+                          max={480}
+                          value={thresholds.idleMinutesStage2}
                           onChange={(e) =>
                             setThresholds((t) => ({
                               ...t,
-                              scrapPercentWarning: Number(e.target.value) || 1,
+                              idleMinutesStage2: Number(e.target.value) || 1,
                             }))
                           }
                         />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label>Scrap metal — costo por kg (MXN)</Label>
-                        <Input
-                          type="number"
-                          min={0}
-                          step={0.01}
-                          value={thresholds.scrapMetalCostPerKgMxn}
-                          onChange={(e) =>
-                            setThresholds((t) => ({
-                              ...t,
-                              scrapMetalCostPerKgMxn: Number(e.target.value) || 0,
-                            }))
-                          }
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label>Scrap twine/rafia — costo por kg (MXN)</Label>
-                        <Input
-                          type="number"
-                          min={0}
-                          step={0.01}
-                          value={thresholds.scrapTwineCostPerKgMxn}
-                          onChange={(e) =>
-                            setThresholds((t) => ({
-                              ...t,
-                              scrapTwineCostPerKgMxn: Number(e.target.value) || 0,
-                            }))
-                          }
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label>Producción baja (% de meta)</Label>
-                        <Input
-                          type="number"
-                          min={1}
-                          max={100}
-                          value={thresholds.lowProductionPercent}
-                          onChange={(e) =>
-                            setThresholds((t) => ({
-                              ...t,
-                              lowProductionPercent: Number(e.target.value) || 1,
-                            }))
-                          }
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label>Producción crítica (% de meta)</Label>
-                        <Input
-                          type="number"
-                          min={1}
-                          max={100}
-                          value={thresholds.criticalProductionPercent}
-                          onChange={(e) =>
-                            setThresholds((t) => ({
-                              ...t,
-                              criticalProductionPercent: Number(e.target.value) || 1,
-                            }))
-                          }
-                        />
+                        <p className="text-xs text-muted-foreground">
+                          Escalada de severidad (por defecto 45 min). Debe ser ≥ alerta 1.
+                        </p>
                       </div>
                     </div>
                     <Button onClick={handleSaveThresholds} disabled={savingThresholds}>
