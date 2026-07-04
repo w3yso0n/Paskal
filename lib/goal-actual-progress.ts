@@ -121,10 +121,9 @@ export function computeActualByGoalId(input: {
 }): Record<string, number> {
   const { goals, machines, productionEvents, scrapCaptures = [] } = input
   const { skuById, upbById } = buildMachineMaps(machines)
-  const activeGoals = goals.filter(isGoalActive)
   const actual: Record<string, number> = {}
 
-  for (const g of activeGoals) {
+  for (const g of goals) {
     const range = goalComplianceDateRange(g)
     const { from, to } = toDateTimeRange(range.startDate, range.endDate)
     const shift = g.shift ?? null
@@ -151,10 +150,6 @@ export function computeActualByGoalId(input: {
     }
   }
 
-  for (const g of goals) {
-    if (!isGoalActive(g)) actual[g.id] = 0
-  }
-
   return actual
 }
 
@@ -165,15 +160,10 @@ export async function fetchActualByGoalId(
 ): Promise<Record<string, number>> {
   if (goals.length === 0) return {}
 
-  const activeGoals = goals.filter(isGoalActive)
-  if (activeGoals.length === 0) {
-    return Object.fromEntries(goals.map((g) => [g.id, 0]))
-  }
+  const needsProductionEvents = goals.some((g) => g.metricKind === "production")
+  const needsScrapCaptures = goals.some((g) => g.metricKind === "scrap")
 
-  const needsProductionEvents = activeGoals.some((g) => g.metricKind === "production")
-  const needsScrapCaptures = activeGoals.some((g) => g.metricKind === "scrap")
-
-  const complianceRanges = activeGoals.map((g) => goalComplianceDateRange(g))
+  const complianceRanges = goals.map((g) => goalComplianceDateRange(g))
   const minStart = complianceRanges.reduce(
     (min, r) => (r.startDate < min ? r.startDate : min),
     complianceRanges[0].startDate,

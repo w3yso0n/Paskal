@@ -438,6 +438,16 @@ export interface CreateProductSkuPayload {
   unitsPerBox: number
 }
 
+export interface UpdateProductSkuPayload {
+  code?: string
+  hookType?: string
+  color?: string
+  length?: string
+  extra?: string
+  unitsPerBox?: number
+  isActive?: boolean
+}
+
 export async function getProductSkus(
   accessToken: string,
   opts?: { includeInactive?: boolean },
@@ -460,6 +470,19 @@ export async function createProductSku(
 ): Promise<ApiProductSku> {
   const res = await fetchWithAuth("/product-sku", {
     method: "POST",
+    body: JSON.stringify(payload),
+    accessToken,
+  })
+  return parseResponse<ApiProductSku>(res)
+}
+
+export async function updateProductSku(
+  accessToken: string,
+  id: string,
+  payload: UpdateProductSkuPayload,
+): Promise<ApiProductSku> {
+  const res = await fetchWithAuth(`/product-sku/${id}`, {
+    method: "PATCH",
     body: JSON.stringify(payload),
     accessToken,
   })

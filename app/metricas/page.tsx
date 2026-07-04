@@ -661,58 +661,50 @@ type PersonnelMovementItem = {
   at: number
 }
 
-/** Movimientos para pestaña Rotación: ingreso/salida por persona según check-in en máquina. */
-function buildPersonnelMovementsFromCheckins(
-  checkins: ApiMachineCheckin[],
+/**
+ * Movimientos para pestaña Rotación: altas (ingreso = nuevo empleado) y bajas (salida =
+ * empleado dado de baja). NO usa check-ins de máquina; la rotación de plantilla se basa en
+ * la fecha de ingreso (`hiredAt`/`createdAt`) y la baja (`status = terminated`, fecha `updatedAt`).
+ */
+function buildPersonnelMovementsFromEmployees(
   employees: ApiEmployee[],
 ): PersonnelMovementItem[] {
-  const codeToName = buildEmployeeCodeToNameMap(employees)
-  const posByCode = new Map<string, string>()
-  for (const e of employees) {
-    const c = e.employeeCode?.trim()
-    if (!c) continue
+  const roleLabel = (e: ApiEmployee) => {
     const role = resolveEmployeeProductionRole(e.primaryRole)
-    const p = role ? EMPLOYEE_PRODUCTION_ROLE_LABELS[role] : "Colaborador"
-    posByCode.set(c, p)
-    posByCode.set(c.toLowerCase(), p)
+    return role ? EMPLOYEE_PRODUCTION_ROLE_LABELS[role] : "Colaborador"
   }
-  const resolve = (code: string) =>
-    codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
-  const roleLine = (code: string) =>
-    posByCode.get(code) ?? posByCode.get(code.toLowerCase()) ?? "Colaborador"
+  const parseYmd = (raw: string | null | undefined): Date | null => {
+    const t = raw?.trim().slice(0, 10)
+    if (!t || !/^\d{4}-\d{2}-\d{2}$/.test(t)) return null
+    const d = new Date(`${t}T00:00:00`)
+    return Number.isNaN(d.getTime()) ? null : d
+  }
   const fmtShort = (d: Date) =>
     d.toLocaleDateString("es-MX", { year: "numeric", month: "short", day: "2-digit" })
 
   const out: PersonnelMovementItem[] = []
-  for (const c of checkins) {
-    const people: { code: string }[] = []
-    const op1 = c.operatorCode?.trim()
-    if (op1) people.push({ code: op1 })
-    if (c.operator2Code?.trim()) people.push({ code: c.operator2Code.trim() })
-    const pks = [c.packager1Code, c.packager2Code, c.packager3Code, c.packager4Code]
-    pks.forEach((pk) => {
-      const t = pk?.trim()
-      if (t) people.push({ code: t })
-    })
-    const checkedIn = new Date(c.checkedInAt)
-    const checkedOut = c.checkedOutAt ? new Date(c.checkedOutAt) : null
-    for (const p of people) {
-      const name = resolve(p.code)
-      const role = roleLine(p.code)
+  for (const e of employees) {
+    const name = e.fullName?.trim() || e.employeeCode || "—"
+    const role = roleLabel(e)
+    const start = parseYmd(e.hiredAt) ?? parseYmd(e.createdAt)
+    if (start) {
       out.push({
-        id: `${c.id}-in-${p.code}`,
+        id: `emp-${e.id}-alta`,
         kind: "ingreso",
         employeeName: name,
-        subtitle: `Ingreso • ${fmtShort(checkedIn)} • ${role} · ${c.machineCode}`,
-        at: checkedIn.getTime(),
+        subtitle: `Alta • ${fmtShort(start)} • ${role}`,
+        at: start.getTime(),
       })
-      if (checkedOut) {
+    }
+    if (e.status === "terminated") {
+      const term = parseYmd(e.updatedAt)
+      if (term) {
         out.push({
-          id: `${c.id}-out-${p.code}`,
+          id: `emp-${e.id}-baja`,
           kind: "salida",
           employeeName: name,
-          subtitle: `Salida • ${fmtShort(checkedOut)} · ${c.machineCode} (fin asignación)`,
-          at: checkedOut.getTime(),
+          subtitle: `Baja • ${fmtShort(term)} • ${role}`,
+          at: term.getTime(),
         })
       }
     }
@@ -847,9 +839,9 @@ export default function MetricsPage() {
   const attendanceStats = useMemo(() => [] as unknown[], [])
 
   const scopedProductionRows = useMemo(() => {
-    const startDate = new Date(filterStartDate)
+    const startDate = new Date(`${filterStartDate}T00:00:00`)
     startDate.setHours(0, 0, 0, 0)
-    const endDate = new Date(filterEndDate)
+    const endDate = new Date(`${filterEndDate}T00:00:00`)
     endDate.setHours(23, 59, 59, 999)
     return productionBaseRows.filter((r) => {
       const rowDate = new Date(r.timestamp)
@@ -871,9 +863,9 @@ export default function MetricsPage() {
   }, [employeeDayRecordsLoaded, shiftFilter])
 
   const productionRowsForIncidents = useMemo(() => {
-    const startDate = new Date(filterStartDate)
+    const startDate = new Date(`${filterStartDate}T00:00:00`)
     startDate.setHours(0, 0, 0, 0)
-    const endDate = new Date(filterEndDate)
+    const endDate = new Date(`${filterEndDate}T00:00:00`)
     endDate.setHours(23, 59, 59, 999)
     return productionBaseRows.filter((r) => {
       const rowDate = new Date(r.timestamp)
@@ -882,9 +874,9 @@ export default function MetricsPage() {
   }, [productionBaseRows, filterStartDate, filterEndDate])
 
   const checkinsForIncidents = useMemo(() => {
-    const startDate = new Date(filterStartDate)
+    const startDate = new Date(`${filterStartDate}T00:00:00`)
     startDate.setHours(0, 0, 0, 0)
-    const endDate = new Date(filterEndDate)
+    const endDate = new Date(`${filterEndDate}T00:00:00`)
     endDate.setHours(23, 59, 59, 999)
     return machineCheckinsLoaded.filter((ch) => {
       const t = new Date(ch.checkedInAt)
@@ -1288,9 +1280,9 @@ export default function MetricsPage() {
   }, [scopedProductionRows, lastDayWithData, filterEndDate])
 
   const topMachinesData = useMemo(() => {
-    const start = new Date(filterStartDate)
+    const start = new Date(`${filterStartDate}T00:00:00`)
     start.setHours(0, 0, 0, 0)
-    const end = new Date(filterEndDate)
+    const end = new Date(`${filterEndDate}T00:00:00`)
     end.setHours(23, 59, 59, 999)
     const daysInRange = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000))
 
@@ -1341,9 +1333,9 @@ export default function MetricsPage() {
   }, [goalsRows, goalActualByGoalId, shiftFilter])
 
   const maintenanceMetrics = useMemo(() => {
-    const startDate = new Date(filterStartDate)
+    const startDate = new Date(`${filterStartDate}T00:00:00`)
     startDate.setHours(0, 0, 0, 0)
-    const endDate = new Date(filterEndDate)
+    const endDate = new Date(`${filterEndDate}T00:00:00`)
     endDate.setHours(23, 59, 59, 999)
 
     const sessionsInRange = maintenanceSessionsLoaded.filter((s) =>
@@ -1470,9 +1462,9 @@ export default function MetricsPage() {
 
   // Filtro por calendario (los check-ins ya vienen acotados por API, esto alinea con Desde/Hasta).
   const filteredAttendanceRecords = useMemo(() => {
-    const startDate = new Date(filterStartDate)
+    const startDate = new Date(`${filterStartDate}T00:00:00`)
     startDate.setHours(0, 0, 0, 0)
-    const endDate = new Date(filterEndDate)
+    const endDate = new Date(`${filterEndDate}T00:00:00`)
     endDate.setHours(23, 59, 59, 999)
 
     return attendanceFromCheckins.filter((record) => {
@@ -1502,8 +1494,8 @@ export default function MetricsPage() {
   }, [vacationDaysByEmployee])
 
   const personnelMovements = useMemo(
-    () => buildPersonnelMovementsFromCheckins(shiftFilteredCheckins, employeeRows).slice(0, 40),
-    [shiftFilteredCheckins, employeeRows],
+    () => buildPersonnelMovementsFromEmployees(employeeRows).slice(0, 40),
+    [employeeRows],
   )
 
   const personnelMonthSummary = useMemo(() => {
@@ -1512,7 +1504,7 @@ export default function MetricsPage() {
       const d = new Date(ts)
       return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()
     }
-    const all = buildPersonnelMovementsFromCheckins(shiftFilteredCheckins, employeeRows)
+    const all = buildPersonnelMovementsFromEmployees(employeeRows)
     let ingresos = 0
     let salidas = 0
     for (const m of all) {
@@ -1530,7 +1522,7 @@ export default function MetricsPage() {
       salPct: Math.round((salidas / max) * 100),
       monthLabel: now.toLocaleDateString("es-MX", { month: "long", year: "numeric" }),
     }
-  }, [shiftFilteredCheckins, employeeRows])
+  }, [employeeRows])
 
   const turnoverMetrics = useMemo(
     () => computeMonthlyTurnover(employeeRows),
@@ -3545,16 +3537,16 @@ export default function MetricsPage() {
                 iconColor="text-violet-600"
               />
               <KpiCard
-                title="Ingresos"
+                title="Altas"
                 value={String(personnelMonthSummary.ingresos)}
-                subtitle={`Check-in máquina · ${personnelMonthSummary.monthLabel}`}
+                subtitle={`Nuevos empleados · ${personnelMonthSummary.monthLabel}`}
                 icon={UserPlus}
                 iconColor="text-green-600"
               />
               <KpiCard
-                title="Salidas"
+                title="Bajas"
                 value={String(personnelMonthSummary.salidas)}
-                subtitle={`Fin asignación · ${personnelMonthSummary.monthLabel}`}
+                subtitle={`Empleados dados de baja · ${personnelMonthSummary.monthLabel}`}
                 icon={UserMinus}
                 iconColor="text-red-600"
               />
@@ -3565,7 +3557,7 @@ export default function MetricsPage() {
                     ? `+${personnelMonthSummary.net}`
                     : String(personnelMonthSummary.net)
                 }
-                subtitle="Ingresos − salidas (movimientos NFC)"
+                subtitle="Altas − bajas del mes"
                 icon={RefreshCw}
                 iconColor="text-yellow-600"
               />
@@ -3615,17 +3607,21 @@ export default function MetricsPage() {
               </p>
             </div>
 
-            {/* Historial y Resumen (datos reales: machine_checkins) */}
+            {/* Historial y Resumen (altas/bajas de empleados) */}
             <div className="grid gap-6 lg:grid-cols-3">
               <div className="lg:col-span-2 rounded-xl border border-border bg-card p-6">
                 <h3 className="font-semibold text-foreground mb-2">Movimientos de Personal</h3>
                 <p className="mb-4 text-xs text-muted-foreground">
-                  Derivado de check-in / check-out en máquina (mismo origen que la pestaña Asistencia).
+                  Altas (nuevos empleados) y bajas (terminaciones) registradas en{" "}
+                  <Link href="/empleados" className="text-primary underline">
+                    Gestión de empleados
+                  </Link>
+                  .
                 </p>
                 <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
                   {personnelMovements.length === 0 ? (
                     <p className="text-sm text-muted-foreground py-6 text-center">
-                      Sin movimientos en el rango cargado. Amplía fechas o registra check-ins NFC.
+                      Sin altas ni bajas registradas.
                     </p>
                   ) : (
                     personnelMovements.map((mov) => (
@@ -3660,13 +3656,13 @@ export default function MetricsPage() {
                 <p className="mb-4 text-xs text-muted-foreground">
                   <span className="capitalize">{personnelMonthSummary.monthLabel}</span>
                   <span className="block mt-1 text-[11px]">
-                    Cuenta movimientos del mes dentro del rango Desde/Hasta (si el rango no cubre el mes, verás 0).
+                    Altas y bajas del mes en curso (independiente del rango Desde/Hasta).
                   </span>
                 </p>
                 <div className="space-y-4">
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-muted-foreground">Ingresos</span>
+                      <span className="text-sm text-muted-foreground">Altas</span>
                       <span className="font-bold text-green-600">+{personnelMonthSummary.ingresos}</span>
                     </div>
                     <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
@@ -3678,7 +3674,7 @@ export default function MetricsPage() {
                   </div>
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-muted-foreground">Salidas</span>
+                      <span className="text-sm text-muted-foreground">Bajas</span>
                       <span className="font-bold text-red-600">-{personnelMonthSummary.salidas}</span>
                     </div>
                     <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">

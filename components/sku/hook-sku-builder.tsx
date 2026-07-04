@@ -283,7 +283,7 @@ export function HookSkuBuilder({
             <Alert>
               <Info className="h-4 w-4" />
               <AlertDescription>
-                {result.quantityError} Agrega la combinación en la tabla de piezas por caja.
+                {result.quantityError} Indica piezas por caja abajo antes de guardar.
               </AlertDescription>
             </Alert>
           )}

@@ -614,9 +614,6 @@ export default function MetasPage() {
     const wasActive = isGoalActive(goal)
 
     setGoals((prev) => prev.map((g) => (g.id === goal.id ? { ...g, active } : g)))
-    if (!active) {
-      setActualByGoalId((prev) => ({ ...prev, [goal.id]: 0 }))
-    }
 
     try {
       setError(null)

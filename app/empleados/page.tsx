@@ -9,6 +9,11 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -924,34 +929,49 @@ export default function EmployeesPage() {
         )}
 
         <Tabs value={employeeTab} onValueChange={setEmployeeTab} className="space-y-4">
-          <TabsList className="grid w-full max-w-4xl grid-cols-2 sm:grid-cols-5">
+          <TabsList className="grid h-auto w-full grid-cols-2 gap-1.5 bg-muted/60 p-1.5 sm:grid-cols-3 lg:grid-cols-5">
             {allowedTabs.includes("employees") && (
-            <TabsTrigger value="employees" className="gap-1.5">
-              <Users className="h-4 w-4" />
+            <TabsTrigger
+              value="employees"
+              className="h-auto min-h-12 flex-col gap-1 whitespace-normal py-2 text-center text-xs leading-tight sm:flex-row sm:text-sm"
+            >
+              <Users className="h-4 w-4 shrink-0" />
               Empleados
             </TabsTrigger>
             )}
             {allowedTabs.includes("transport") && (
-            <TabsTrigger value="transport" className="gap-1.5">
-              <Bus className="h-4 w-4" />
+            <TabsTrigger
+              value="transport"
+              className="h-auto min-h-12 flex-col gap-1 whitespace-normal py-2 text-center text-xs leading-tight sm:flex-row sm:text-sm"
+            >
+              <Bus className="h-4 w-4 shrink-0" />
               Transporte
             </TabsTrigger>
             )}
             {allowedTabs.includes("downtime") && (
-            <TabsTrigger value="downtime" className="gap-1.5">
-              <Timer className="h-4 w-4" />
+            <TabsTrigger
+              value="downtime"
+              className="h-auto min-h-12 flex-col gap-1 whitespace-normal py-2 text-center text-xs leading-tight sm:flex-row sm:text-sm"
+            >
+              <Timer className="h-4 w-4 shrink-0" />
               Paros
             </TabsTrigger>
             )}
             {allowedTabs.includes("attendance") && (
-            <TabsTrigger value="attendance" className="gap-1.5">
-              <CalendarDays className="h-4 w-4" />
+            <TabsTrigger
+              value="attendance"
+              className="h-auto min-h-12 flex-col gap-1 whitespace-normal py-2 text-center text-xs leading-tight sm:flex-row sm:text-sm"
+            >
+              <CalendarDays className="h-4 w-4 shrink-0" />
               Vacaciones y asistencia
             </TabsTrigger>
             )}
             {allowedTabs.includes("roles") && (
-            <TabsTrigger value="roles" className="gap-1.5">
-              <Briefcase className="h-4 w-4" />
+            <TabsTrigger
+              value="roles"
+              className="h-auto min-h-12 flex-col gap-1 whitespace-normal py-2 text-center text-xs leading-tight sm:flex-row sm:text-sm"
+            >
+              <Briefcase className="h-4 w-4 shrink-0" />
               Cambio rol secundario
             </TabsTrigger>
             )}
@@ -1086,225 +1106,6 @@ export default function EmployeesPage() {
           </TabsContent>
 
           <TabsContent value="attendance" className="space-y-4">
-            <Card className="border-primary/20 bg-primary/5">
-              <CardContent className="pt-6 space-y-4">
-                <div className="flex items-start gap-3">
-                  <Scale className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                  <div className="space-y-2">
-                    <h2 className="text-lg font-semibold text-foreground">
-                      Vacaciones según la Ley Federal del Trabajo (México)
-                    </h2>
-                    <ul className="list-disc space-y-1.5 pl-5 text-sm text-muted-foreground">
-                      {LFT_VACATION_POLICY_SUMMARY.map((line) => (
-                        <li key={line}>{line}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-                <div className="overflow-x-auto rounded-lg border border-border bg-background">
-                  <table className="w-full min-w-[320px] text-sm">
-                    <thead>
-                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
-                        <th className="px-3 py-2 font-medium">Antigüedad</th>
-                        <th className="px-3 py-2 font-medium text-right">Días mínimos</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {LFT_VACATION_TABLE_ROWS.map((row) => (
-                        <tr key={row.yearsLabel} className="border-b border-border last:border-0">
-                          <td className="px-3 py-2">{row.yearsLabel}</td>
-                          <td className="px-3 py-2 text-right font-medium tabular-nums">
-                            {row.days}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  El periodo para disfrutar los días del ciclo actual es de{" "}
-                  <strong>12 meses</strong> contados desde el aniversario laboral. Registra la fecha
-                  de ingreso en cada empleado para calcular el saldo automáticamente.
-                </p>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="pt-6 space-y-4">
-                <div className="flex items-center gap-2">
-                  <Palmtree className="h-5 w-5 text-green-600" />
-                  <h2 className="text-lg font-semibold">Saldo de vacaciones por empleado</h2>
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Periodo vigente = 12 meses desde el último aniversario.{" "}
-                  <strong>Tomados</strong> = días registrados como vacación en ese periodo.
-                </p>
-                <div className="overflow-x-auto rounded-lg border border-border">
-                  <table className="w-full min-w-[880px] text-sm">
-                    <thead>
-                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
-                        <th className="px-3 py-2.5 font-medium">Empleado</th>
-                        <th className="px-3 py-2.5 font-medium text-right">Antigüedad</th>
-                        <th className="px-3 py-2.5 font-medium text-right">Corresponden</th>
-                        <th className="px-3 py-2.5 font-medium text-right">Tomados</th>
-                        <th className="px-3 py-2.5 font-medium text-right">Pendientes</th>
-                        <th className="px-3 py-2.5 font-medium">Periodo para tomarlas</th>
-                        <th className="px-3 py-2.5 font-medium">Estado</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {vacationBalances.map((row) => (
-                        <tr key={row.employeeId} className="border-b border-border last:border-0">
-                          <td className="px-3 py-2.5 font-medium">
-                            {row.employeeName}
-                            {row.employeeCode ? (
-                              <span className="ml-1 text-xs text-muted-foreground">
-                                ({row.employeeCode})
-                              </span>
-                            ) : null}
-                          </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                            {row.status === "not_yet_vested"
-                              ? row.nextVestingDate
-                                ? `Cumple 1 año el ${row.nextVestingDate}`
-                                : "—"
-                              : row.completedYears > 0
-                                ? `${row.completedYears} año${row.completedYears === 1 ? "" : "s"}`
-                                : "—"}
-                          </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums font-medium">
-                            {row.entitledDays > 0 ? row.entitledDays : "—"}
-                          </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums">
-                            {row.entitledDays > 0 ? row.usedDays : "—"}
-                          </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
-                            {row.entitledDays > 0 ? row.remainingDays : "—"}
-                          </td>
-                          <td className="px-3 py-2.5 text-muted-foreground text-xs">
-                            {row.periodStart && row.periodEnd ? (
-                              <>
-                                {row.periodStart} — {row.periodEnd}
-                                {row.daysUntilPeriodEnd != null && row.remainingDays > 0 ? (
-                                  <span className="block text-foreground">
-                                    Quedan {row.daysUntilPeriodEnd} día
-                                    {row.daysUntilPeriodEnd === 1 ? "" : "s"} del periodo
-                                  </span>
-                                ) : null}
-                              </>
-                            ) : row.nextVestingDate ? (
-                              <>Derecho a partir del {row.nextVestingDate}</>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td className="px-3 py-2.5">
-                            <Badge
-                              variant="outline"
-                              className={cn(
-                                "font-normal whitespace-nowrap",
-                                row.status === "ok" && "border-green-200 text-green-700",
-                                row.status === "expiring_soon" &&
-                                  "border-amber-200 text-amber-800",
-                                (row.status === "exceeded" ||
-                                  row.status === "unused_after_period") &&
-                                  "border-red-200 text-red-700",
-                                row.status === "no_hire_date" && "border-amber-200 text-amber-800",
-                                row.status === "not_yet_vested" &&
-                                  "border-slate-200 text-slate-600",
-                              )}
-                            >
-                              {row.status === "expiring_soon" && (
-                                <AlertTriangle className="mr-1 inline h-3 w-3" />
-                              )}
-                              {VACATION_STATUS_LABELS[row.status]}
-                            </Badge>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="border-emerald-200/60 bg-emerald-50/40">
-              <CardContent className="pt-6 space-y-4">
-                <div className="flex items-start gap-3">
-                  <Gift className="mt-0.5 h-5 w-5 shrink-0 text-emerald-700" />
-                  <div className="space-y-2">
-                    <h2 className="text-lg font-semibold text-foreground">Vales de despensa</h2>
-                    <ul className="list-disc space-y-1.5 pl-5 text-sm text-muted-foreground">
-                      {DESPENSA_POLICY_SUMMARY.map((line) => (
-                        <li key={line}>{line}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-                <div className="overflow-x-auto rounded-lg border border-border bg-background">
-                  <table className="w-full min-w-[320px] text-sm">
-                    <thead>
-                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
-                        <th className="px-3 py-2 font-medium">Antigüedad</th>
-                        <th className="px-3 py-2 font-medium text-right">Vale mensual</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {DESPENSA_VOUCHER_TABLE_ROWS.map((row) => (
-                        <tr key={row.yearsLabel} className="border-b border-border last:border-0">
-                          <td className="px-3 py-2">{row.yearsLabel}</td>
-                          <td className="px-3 py-2 text-right font-medium tabular-nums">
-                            {row.monthlyAmountMxn > 0
-                              ? formatDespensaMxn(row.monthlyAmountMxn)
-                              : "No aplica"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="overflow-x-auto rounded-lg border border-border bg-background">
-                  <table className="w-full min-w-[640px] text-sm">
-                    <thead>
-                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
-                        <th className="px-3 py-2.5 font-medium">Empleado</th>
-                        <th className="px-3 py-2.5 font-medium text-right">Antigüedad</th>
-                        <th className="px-3 py-2.5 font-medium">Rango</th>
-                        <th className="px-3 py-2.5 font-medium text-right">Vale mensual</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {despensaBenefits.map((row) => (
-                        <tr key={row.employeeId} className="border-b border-border last:border-0">
-                          <td className="px-3 py-2.5 font-medium">
-                            {row.employeeName}
-                            {row.employeeCode ? (
-                              <span className="ml-1 text-xs text-muted-foreground">
-                                ({row.employeeCode})
-                              </span>
-                            ) : null}
-                          </td>
-                          <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                            {row.status === "not_yet_vested"
-                              ? "Menos de 1 año"
-                              : row.status === "no_hire_date"
-                                ? "—"
-                                : `${row.completedYears} año${row.completedYears === 1 ? "" : "s"}`}
-                          </td>
-                          <td className="px-3 py-2.5 text-muted-foreground">{row.tierLabel}</td>
-                          <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-emerald-800">
-                            {row.monthlyAmountMxn > 0
-                              ? formatDespensaMxn(row.monthlyAmountMxn)
-                              : "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-
             <Card>
               <CardContent className="pt-6 space-y-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1444,6 +1245,238 @@ export default function EmployeesPage() {
                 )}
               </CardContent>
             </Card>
+
+            <Card>
+              <CardContent className="pt-6 space-y-4">
+                <div className="flex items-center gap-2">
+                  <Palmtree className="h-5 w-5 text-green-600" />
+                  <h2 className="text-lg font-semibold">Saldo de vacaciones por empleado</h2>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Periodo vigente = 12 meses desde el último aniversario.{" "}
+                  <strong>Tomados</strong> = días registrados como vacación en ese periodo.
+                </p>
+                <div className="overflow-x-auto rounded-lg border border-border">
+                  <table className="w-full min-w-[880px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+                        <th className="px-3 py-2.5 font-medium">Empleado</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Antigüedad</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Corresponden</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Tomados</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Pendientes</th>
+                        <th className="px-3 py-2.5 font-medium">Periodo para tomarlas</th>
+                        <th className="px-3 py-2.5 font-medium">Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {vacationBalances.map((row) => (
+                        <tr key={row.employeeId} className="border-b border-border last:border-0">
+                          <td className="px-3 py-2.5 font-medium">
+                            {row.employeeName}
+                            {row.employeeCode ? (
+                              <span className="ml-1 text-xs text-muted-foreground">
+                                ({row.employeeCode})
+                              </span>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
+                            {row.status === "not_yet_vested"
+                              ? row.nextVestingDate
+                                ? `Cumple 1 año el ${row.nextVestingDate}`
+                                : "—"
+                              : row.completedYears > 0
+                                ? `${row.completedYears} año${row.completedYears === 1 ? "" : "s"}`
+                                : "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums font-medium">
+                            {row.entitledDays > 0 ? row.entitledDays : "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">
+                            {row.entitledDays > 0 ? row.usedDays : "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums font-semibold">
+                            {row.entitledDays > 0 ? row.remainingDays : "—"}
+                          </td>
+                          <td className="px-3 py-2.5 text-muted-foreground text-xs">
+                            {row.periodStart && row.periodEnd ? (
+                              <>
+                                {row.periodStart} — {row.periodEnd}
+                                {row.daysUntilPeriodEnd != null && row.remainingDays > 0 ? (
+                                  <span className="block text-foreground">
+                                    Quedan {row.daysUntilPeriodEnd} día
+                                    {row.daysUntilPeriodEnd === 1 ? "" : "s"} del periodo
+                                  </span>
+                                ) : null}
+                              </>
+                            ) : row.nextVestingDate ? (
+                              <>Derecho a partir del {row.nextVestingDate}</>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "font-normal whitespace-nowrap",
+                                row.status === "ok" && "border-green-200 text-green-700",
+                                row.status === "expiring_soon" &&
+                                  "border-amber-200 text-amber-800",
+                                (row.status === "exceeded" ||
+                                  row.status === "unused_after_period") &&
+                                  "border-red-200 text-red-700",
+                                row.status === "no_hire_date" && "border-amber-200 text-amber-800",
+                                row.status === "not_yet_vested" &&
+                                  "border-slate-200 text-slate-600",
+                              )}
+                            >
+                              {row.status === "expiring_soon" && (
+                                <AlertTriangle className="mr-1 inline h-3 w-3" />
+                              )}
+                              {VACATION_STATUS_LABELS[row.status]}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Reglas de referencia (colapsadas por defecto para no ocupar espacio) */}
+            <Collapsible className="rounded-xl border border-primary/20 bg-primary/5">
+              <CollapsibleTrigger className="group flex w-full items-center justify-between gap-3 p-4 text-left">
+                <div className="flex items-center gap-3">
+                  <Scale className="h-5 w-5 shrink-0 text-primary" />
+                  <div>
+                    <h2 className="text-base font-semibold text-foreground">
+                      Vacaciones según la Ley Federal del Trabajo (México)
+                    </h2>
+                    <p className="text-xs text-muted-foreground">
+                      Referencia legal · toca para ver u ocultar
+                    </p>
+                  </div>
+                </div>
+                <ChevronDown className="h-5 w-5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-4 px-4 pb-4">
+                <ul className="list-disc space-y-1.5 pl-5 text-sm text-muted-foreground">
+                  {LFT_VACATION_POLICY_SUMMARY.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+                <div className="overflow-x-auto rounded-lg border border-border bg-background">
+                  <table className="w-full min-w-[320px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+                        <th className="px-3 py-2 font-medium">Antigüedad</th>
+                        <th className="px-3 py-2 font-medium text-right">Días mínimos</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {LFT_VACATION_TABLE_ROWS.map((row) => (
+                        <tr key={row.yearsLabel} className="border-b border-border last:border-0">
+                          <td className="px-3 py-2">{row.yearsLabel}</td>
+                          <td className="px-3 py-2 text-right font-medium tabular-nums">
+                            {row.days}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  El periodo para disfrutar los días del ciclo actual es de{" "}
+                  <strong>12 meses</strong> contados desde el aniversario laboral. Registra la fecha
+                  de ingreso en cada empleado para calcular el saldo automáticamente.
+                </p>
+              </CollapsibleContent>
+            </Collapsible>
+
+            <Collapsible className="rounded-xl border border-emerald-200/60 bg-emerald-50/40">
+              <CollapsibleTrigger className="group flex w-full items-center justify-between gap-3 p-4 text-left">
+                <div className="flex items-center gap-3">
+                  <Gift className="h-5 w-5 shrink-0 text-emerald-700" />
+                  <div>
+                    <h2 className="text-base font-semibold text-foreground">Vales de despensa</h2>
+                    <p className="text-xs text-muted-foreground">
+                      Política y monto por empleado · toca para ver u ocultar
+                    </p>
+                  </div>
+                </div>
+                <ChevronDown className="h-5 w-5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-4 px-4 pb-4">
+                <ul className="list-disc space-y-1.5 pl-5 text-sm text-muted-foreground">
+                  {DESPENSA_POLICY_SUMMARY.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+                <div className="overflow-x-auto rounded-lg border border-border bg-background">
+                  <table className="w-full min-w-[320px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+                        <th className="px-3 py-2 font-medium">Antigüedad</th>
+                        <th className="px-3 py-2 font-medium text-right">Vale mensual</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {DESPENSA_VOUCHER_TABLE_ROWS.map((row) => (
+                        <tr key={row.yearsLabel} className="border-b border-border last:border-0">
+                          <td className="px-3 py-2">{row.yearsLabel}</td>
+                          <td className="px-3 py-2 text-right font-medium tabular-nums">
+                            {row.monthlyAmountMxn > 0
+                              ? formatDespensaMxn(row.monthlyAmountMxn)
+                              : "No aplica"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="overflow-x-auto rounded-lg border border-border bg-background">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+                        <th className="px-3 py-2.5 font-medium">Empleado</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Antigüedad</th>
+                        <th className="px-3 py-2.5 font-medium">Rango</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Vale mensual</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {despensaBenefits.map((row) => (
+                        <tr key={row.employeeId} className="border-b border-border last:border-0">
+                          <td className="px-3 py-2.5 font-medium">
+                            {row.employeeName}
+                            {row.employeeCode ? (
+                              <span className="ml-1 text-xs text-muted-foreground">
+                                ({row.employeeCode})
+                              </span>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
+                            {row.status === "not_yet_vested"
+                              ? "Menos de 1 año"
+                              : row.status === "no_hire_date"
+                                ? "—"
+                                : `${row.completedYears} año${row.completedYears === 1 ? "" : "s"}`}
+                          </td>
+                          <td className="px-3 py-2.5 text-muted-foreground">{row.tierLabel}</td>
+                          <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-emerald-800">
+                            {row.monthlyAmountMxn > 0
+                              ? formatDespensaMxn(row.monthlyAmountMxn)
+                              : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </TabsContent>
 
           <TabsContent value="roles" className="space-y-4">
