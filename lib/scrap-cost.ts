@@ -1,11 +1,11 @@
-import type { ScrapMaterialConfig } from "@shared/scrap/scrap-types"
+import type { ScrapMaterialConfig } from "./shared/scrap/scrap-types"
 import {
   computeScrapGrossCostMxn,
   computeScrapRecoveryMxn,
   computeScrapNetLossMxn,
   getScrapMaterialConfig,
   roundMxn,
-} from "@shared/scrap/scrap-calculations"
+} from "./shared/scrap/scrap-calculations"
 import { SCRAP_MATERIALS } from "@/lib/data-capture-config"
 
 export type { ScrapMaterialConfig }
