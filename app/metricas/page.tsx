@@ -1203,9 +1203,12 @@ export default function MetricsPage() {
 
   // Último día del rango con producción o paro/inactividad.
   const lastDayWithData = useMemo(() => {
+    // Último día con producción REAL (piezas > 0). Se ignoran eventos sin unidades
+    // como BOOT (reconexión) o Parada, que antes hacían que el KPI mostrara 0.
     let best: string | null = null
     for (const r of scopedProductionRows) {
-      if (r.event !== "Producción" && r.event !== "Parada") continue
+      if (r.event !== "Producción") continue
+      if ((Number(r.count) || 0) <= 0) continue
       const ts = new Date(r.timestamp)
       if (Number.isNaN(ts.getTime())) continue
       const dayStr = formatDate(ts)
@@ -1267,11 +1270,13 @@ export default function MetricsPage() {
     const byHour = new Map<string, number>()
     for (const r of scopedProductionRows) {
       if (r.event !== "Producción") continue
+      const units = Number(r.count) || 0
+      if (units <= 0) continue
       const ts = new Date(r.timestamp)
       if (Number.isNaN(ts.getTime())) continue
       if (ts < start || ts > end) continue
       const hour = String(ts.getHours()).padStart(2, "0")
-      byHour.set(hour, (byHour.get(hour) ?? 0) + (Number(r.count) || 0))
+      byHour.set(hour, (byHour.get(hour) ?? 0) + units)
     }
 
     return [...byHour.entries()]
@@ -1847,19 +1852,22 @@ export default function MetricsPage() {
     ? hourlyProductionData.reduce((acc, r) => acc + (Number(r.production) || 0), 0)
     : null
 
-  // Promedio/minuto: unidades en el rango ÷ slots de minuto con producción.
-  const avgPerMinute = useMemo(() => {
+  // Promedio/hora: piezas en el rango ÷ horas con producción real (piezas > 0).
+  const avgPerHour = useMemo(() => {
     let total = 0
-    const minuteSlots = new Set<string>()
+    const hourSlots = new Set<string>()
     for (const r of scopedProductionRows) {
       if (r.event !== "Producción") continue
+      const units = Number(r.count) || 0
+      if (units <= 0) continue
       const ts = new Date(r.timestamp)
       if (Number.isNaN(ts.getTime())) continue
-      total += Number(r.count) || 0
-      minuteSlots.add(ts.toISOString().slice(0, 16))
+      total += units
+      const slot = `${ts.getFullYear()}-${ts.getMonth()}-${ts.getDate()}-${ts.getHours()}`
+      hourSlots.add(slot)
     }
-    if (minuteSlots.size === 0 || total === 0) return null
-    return Math.round((total / minuteSlots.size) * 100) / 100
+    if (hourSlots.size === 0 || total === 0) return null
+    return Math.round((total / hourSlots.size) * 100) / 100
   }, [scopedProductionRows])
 
 
@@ -2247,8 +2255,8 @@ export default function MetricsPage() {
                 iconColor="text-primary"
               />
               <KpiCard
-                title="Promedio/Minuto"
-                value={avgPerMinute == null ? "—" : avgPerMinute.toLocaleString()}
+                title="Promedio/Hora"
+                value={avgPerHour == null ? "—" : avgPerHour.toLocaleString()}
                 subtitle="Unidades"
                 icon={Clock}
                 iconColor="text-primary"
