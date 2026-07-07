@@ -18,7 +18,7 @@ import { toast } from "sonner"
 
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { RequireModule } from "@/components/auth/require-module"
-import { visibleReglasTabs } from "@/lib/permissions"
+import { hasModuleAccess, visibleReglasTabs } from "@/lib/permissions"
 import { BonusConfigPanel } from "@/components/metas/bonus-config-panel"
 import { ScrapMaterialsPanel } from "@/components/reglas/scrap-materials-panel"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -126,30 +126,45 @@ export default function ReglasNegocioPage() {
     if (!token) return
     setLoading(true)
     try {
-      const [catalogRows, customRows, incidentRows, machineRows, thresholdRows] =
-        await Promise.all([
-          getCatalogHolidays(token, year),
-          getCustomBusinessHolidays(token, { year }),
+      const fetches: Promise<unknown>[] = []
+
+      if (hasModuleAccess(user, "reglas_dias_festivos")) {
+        fetches.push(
+          getCatalogHolidays(token, year).then(setCatalog),
+          getCustomBusinessHolidays(token, { year }).then(setCustomHolidays),
+        )
+      } else {
+        setCatalog([])
+        setCustomHolidays([])
+      }
+
+      if (hasModuleAccess(user, "reglas_fallos_electricos")) {
+        fetches.push(
           getProductionIncidents(token, {
             from: `${year}-01-01`,
             to: `${year}-12-31`,
             incidentType: "electrical_failure",
             limit: 500,
-          }),
-          getMachines(token),
-          getBusinessAlertThresholds(token),
-        ])
-      setCatalog(catalogRows)
-      setCustomHolidays(customRows)
-      setIncidents(incidentRows)
-      setMachines(machineRows)
-      setThresholds(thresholdRows)
+          }).then(setIncidents),
+          getMachines(token).then(setMachines),
+        )
+      } else {
+        setIncidents([])
+      }
+
+      if (hasModuleAccess(user, "reglas_umbrales")) {
+        fetches.push(getBusinessAlertThresholds(token).then(setThresholds))
+      } else {
+        setThresholds(DEFAULT_ALERT_THRESHOLDS)
+      }
+
+      await Promise.all(fetches)
     } catch {
       toast.error("No se pudieron cargar las reglas de negocio")
     } finally {
       setLoading(false)
     }
-  }, [getAccessToken, year])
+  }, [getAccessToken, year, user])
 
   useEffect(() => {
     void loadAll()

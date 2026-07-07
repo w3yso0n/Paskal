@@ -113,7 +113,7 @@ const severityRank: Record<AlertType, number> = {
   success: 1,
 }
 
-function mapApiAlertToUi(a: ApiAlert): Alert {
+function mapApiAlertToUi(a: ApiAlert, productionEvents: ApiProductionEvent[] = []): Alert {
   const type: AlertType =
     a.severity === "critical"
       ? "error"
@@ -126,8 +126,11 @@ function mapApiAlertToUi(a: ApiAlert): Alert {
   const category: AlertCategory = a.machineId != null ? "machine" : "system"
 
   const timestamp = new Date(a.createdAt)
-  const isRead = a.status !== "open"
-  const actionRequired = a.status === "open"
+  const orphanPending = a.title.startsWith("Producción sin check-in")
+    ? sumOrphanPendingForAlert(productionEvents, a.id)
+    : 0
+  const isRead = a.status !== "open" && orphanPending === 0
+  const actionRequired = a.status === "open" || orphanPending > 0
 
   return {
     id: a.id,
@@ -226,7 +229,7 @@ export default function AlertasClient() {
         ])
         setProductionEvents(events)
         setApiAlertsById(new Map(apiAlerts.map((a) => [a.id, a])))
-        setAlerts(apiAlerts.map(mapApiAlertToUi))
+        setAlerts(apiAlerts.map((a) => mapApiAlertToUi(a, events)))
       } finally {
         if (showSpinner) setAlertsLoading(false)
       }
@@ -260,7 +263,7 @@ export default function AlertasClient() {
         setSkus(apiSkus)
         setProductionEvents(events)
         setApiAlertsById(new Map(apiAlerts.map((a) => [a.id, a])))
-        setAlerts(apiAlerts.map(mapApiAlertToUi))
+        setAlerts(apiAlerts.map((a) => mapApiAlertToUi(a, events)))
       } finally {
         if (!cancelled) setAlertsLoading(false)
       }
@@ -688,7 +691,7 @@ export default function AlertasClient() {
                                 {alertNote ? "Editar nota" : "Añadir nota"}
                               </Button>
                             )}
-                            {isOrphan && !alert.isRead && (
+                            {isOrphan && orphanUnitsForAlert(alert) > 0 && (
                               <Button
                                 size="sm"
                                 variant="default"

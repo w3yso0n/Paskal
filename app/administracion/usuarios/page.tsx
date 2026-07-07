@@ -34,7 +34,9 @@ import {
   type UserRole,
 } from "@/lib/api"
 import { toast } from "sonner"
-import { UserPlus, Loader2, Trash2, Pencil } from "lucide-react"
+import { UserPlus, Loader2, Trash2, Pencil, Shield } from "lucide-react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { RolePermissionsMatrix } from "@/components/admin/role-permissions-matrix"
 
 const ROLE_OPTIONS: { value: UserRole; label: string }[] = USER_ROLES.map((role) => ({
   value: role,
@@ -69,6 +71,7 @@ export default function GestionUsuariosPage() {
   const canCreateUsers = hasPermission(user, "users.create")
   const canUpdateUsers = hasPermission(user, "users.update")
   const canDeleteUsers = hasPermission(user, "users.delete")
+  const canViewRoleMatrix = user?.role === "droven" || user?.isPlatformAdmin === true
 
   const [users, setUsers] = useState<ApiUser[]>([])
   const [loading, setLoading] = useState(true)
@@ -231,6 +234,19 @@ export default function GestionUsuariosPage() {
             </Button>
           )}
         </div>
+
+        <Tabs defaultValue="usuarios" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="usuarios">Usuarios</TabsTrigger>
+            {canViewRoleMatrix && (
+              <TabsTrigger value="permisos" className="gap-1.5">
+                <Shield className="h-3.5 w-3.5" />
+                Permisos por rol
+              </TabsTrigger>
+            )}
+          </TabsList>
+
+          <TabsContent value="usuarios" className="space-y-6">
 
         {(canCreateUsers || canUpdateUsers) && (
           <Dialog open={dialogOpen} onOpenChange={handleDialogChange}>
@@ -405,6 +421,14 @@ export default function GestionUsuariosPage() {
             )}
           </CardContent>
         </Card>
+          </TabsContent>
+
+          {canViewRoleMatrix && (
+            <TabsContent value="permisos">
+              <RolePermissionsMatrix />
+            </TabsContent>
+          )}
+        </Tabs>
       </div>
       </RequirePermission>
     </DashboardLayout>

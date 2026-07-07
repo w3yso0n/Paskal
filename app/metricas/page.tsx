@@ -922,7 +922,7 @@ export default function MetricsPage() {
           getEmployees(token),
           getMachines(token),
           getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
-          getGoals(token),
+          getGoals(token).catch(() => [] as ApiGoal[]),
           getEmployeeDayRecords(token, {
             from: filterStartDate,
             to: filterEndDate,
@@ -991,14 +991,21 @@ export default function MetricsPage() {
         setProductionBaseRows(mapped)
       } catch (err) {
         if (!cancelled) {
-          setProductionBaseRows([])
-          setMachineCheckinsLoaded([])
-          setEmployeeDayRecordsLoaded([])
-          setMaintenanceSessionsLoaded([])
-          setYtdProductionBaseRows([])
-          setProductSkusRows([])
-          setAlertsLoaded([])
-          setDataError(err instanceof Error ? err.message : "No se pudieron cargar los datos")
+          const message = err instanceof Error ? err.message : "No se pudieron cargar los datos"
+          const permissionDenied =
+            message.toLowerCase().includes("permiso") || message.includes("403")
+          if (!permissionDenied) {
+            setProductionBaseRows([])
+            setMachineCheckinsLoaded([])
+            setEmployeeDayRecordsLoaded([])
+            setMaintenanceSessionsLoaded([])
+            setYtdProductionBaseRows([])
+            setProductSkusRows([])
+            setAlertsLoaded([])
+            setDataError(message)
+          } else {
+            setDataError(null)
+          }
         }
       } finally {
         if (!cancelled) setDataLoading(false)
@@ -1601,7 +1608,7 @@ export default function MetricsPage() {
             to: monthBounds.end,
             limit: 2000,
           }),
-          getGoals(token),
+          getGoals(token).catch(() => [] as ApiGoal[]),
         ])
         reportConfiguredSkus = [
           ...new Set(
