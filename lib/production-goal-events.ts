@@ -66,6 +66,16 @@ export function sumOrphanPendingForAlert(
   return sum
 }
 
+/** Piezas pendientes en alertas de producción sin empacador (mensaje de la alerta). */
+export function parsePendingUnitsFromAlertMessage(
+  message: string | null | undefined,
+): number {
+  if (!message?.trim()) return 0
+  const m = message.match(/(\d+)\s*piezas/i)
+  const n = m ? Number(m[1]) : 0
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
 export function resolveProductionEventSku(
   event: ApiProductionEvent,
   machineSkuById?: Map<string, string>,

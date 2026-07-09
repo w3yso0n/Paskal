@@ -11,7 +11,6 @@ import {
 } from "@/components/ui/tooltip"
 
 interface MachineCardProps {
-  id: string
   name: string
   status: MachineStatus
   code?: string
@@ -44,7 +43,6 @@ const statusBorderColors = {
 }
 
 export function MachineCard({ 
-  id,
   name, 
   status, 
   code,
@@ -119,10 +117,6 @@ export function MachineCard({
               </span>
             </div>
             <div className="text-xs text-muted-foreground space-y-1">
-              <div className="flex justify-between gap-4">
-                <span>ID:</span>
-                <span className="font-medium text-card-foreground">{id}</span>
-              </div>
               {code && (
                 <div className="flex justify-between gap-4">
                   <span>SKU:</span>

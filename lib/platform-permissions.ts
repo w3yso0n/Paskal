@@ -154,8 +154,9 @@ export const METRICAS_TAB_MODULES: Record<string, PlatformModule> = {
   rotacion: "metricas_asistencia_rotacion_bono",
 }
 
-export const EMPLEADOS_TAB_MODULES: Record<string, PlatformModule> = {
-  employees: "empleados_asignar_tarjetas",
+export const EMPLEADOS_TAB_MODULES: Record<string, PlatformModule | readonly PlatformModule[]> = {
+  /** Lista y alta/edición: RH/director o personal de piso con paros/vacaciones/rol. */
+  employees: ["empleados_asignar_tarjetas", "empleados_paros_vacaciones_rol_secundario"],
   transport: "empleados_transporte",
   downtime: "empleados_paros_vacaciones_rol_secundario",
   attendance: "metricas_asistencia_rotacion_bono",

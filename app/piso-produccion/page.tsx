@@ -1,7 +1,6 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import Link from "next/link"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { MachineCard } from "@/components/production/machine-card"
 import type { Machine } from "@/lib/types"
@@ -32,7 +31,7 @@ import { TextAutocomplete, type TextAutocompleteOption } from "@/components/ui/t
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Maximize2, Minimize2, Plus, Settings2, RotateCcw, X, Tags } from "lucide-react"
+import { Check, Maximize2, Minimize2, Plus, RotateCcw, Settings2, X } from "lucide-react"
 import { toast } from "sonner"
 import { filterFloorMachines } from "@/lib/machine-floor"
 import {
@@ -564,34 +563,31 @@ export default function ProductionFloorPage() {
       toast.error(roleError)
       return
     }
-    // Permitir guardar información incompleta. Solo bloquear si hay empleados repetidos.
+    // Solo operadores: únicos en toda la planta. Empacadores pueden repetirse entre máquinas.
     const normalize = (v?: string) => (v ?? "").trim()
-    const usedByEmployee = new Map<string, string>() // employee -> machineName
+    const usedOperatorsByMachine = new Map<string, string>() // operatorName -> machineName
     for (const m of machineData) {
       const machineName = m.name
-      const codes = [
-        normalize(m.operator),
-        normalize(m.operator2),
-        ...(m.packers ?? []).map(normalize),
-      ].filter(Boolean)
+      const operatorNames = [normalize(m.operator), normalize(m.operator2)].filter(Boolean)
+      const packerNames = (m.packers ?? []).map(normalize).filter(Boolean)
+      const allOnMachine = [...operatorNames, ...packerNames]
 
-      // Duplicado dentro de la misma máquina
-      if (new Set(codes).size !== codes.length) {
+      if (new Set(allOnMachine).size !== allOnMachine.length) {
         setError(`El empleado está duplicado dentro de la máquina "${machineName}".`)
         toast.error("No se pudo guardar: empleado duplicado.")
         return
       }
 
-      for (const c of codes) {
-        const prev = usedByEmployee.get(c)
+      for (const c of operatorNames) {
+        const prev = usedOperatorsByMachine.get(c)
         if (prev && prev !== machineName) {
           setError(
-            `El empleado "${c}" ya está asignado en "${prev}". No puede estar en dos máquinas a la vez.`,
+            `El operador "${c}" ya está asignado en "${prev}". Un operador no puede estar en dos máquinas a la vez.`,
           )
-          toast.error("No se pudo guardar: empleado repetido.")
+          toast.error("No se pudo guardar: operador repetido.")
           return
         }
-        usedByEmployee.set(c, machineName)
+        usedOperatorsByMachine.set(c, machineName)
       }
     }
 
@@ -728,31 +724,18 @@ export default function ProductionFloorPage() {
     })()
   }
 
-  const selectedPackers = useMemo(() => {
-    const set = new Set<string>()
-    for (const m of machineData) {
-      for (const p of m.packers ?? []) {
-        if (p) set.add(p)
-      }
-    }
-    return set
-  }, [machineData])
-
-  const selectedEmployeesByMachine = useMemo(() => {
-    const map = new Map<string, string>() // employeeName -> machineId
+  const selectedOperatorsByMachine = useMemo(() => {
+    const map = new Map<string, string>() // operatorName -> machineId
     for (const m of machineData) {
       if (m.operator) map.set(m.operator, m.id)
       if (m.operator2) map.set(m.operator2, m.id)
-      for (const p of m.packers ?? []) {
-        if (p) map.set(p, m.id)
-      }
     }
     return map
   }, [machineData])
 
-  const getAvailablePeople = (all: string[], machineId: string, current?: string) => {
+  const getAvailableOperators = (all: string[], machineId: string, current?: string) => {
     const available = all.filter((name) => {
-      const usedBy = selectedEmployeesByMachine.get(name)
+      const usedBy = selectedOperatorsByMachine.get(name)
       return !usedBy || usedBy === machineId || name === current
     })
     if (current && current.trim() && !available.includes(current)) {
@@ -761,14 +744,18 @@ export default function ProductionFloorPage() {
     return available
   }
 
-  const canAddPacker = (packerName: string, machineId: string) => {
-    if (!packerName) return true
-    if (selectedPackers.has(packerName)) return true
-    const current = machineData.find((m) => m.id === machineId)?.packers ?? []
-    const currentUnique = new Set(current.filter(Boolean))
-    const uniqueTotal = selectedPackers.size
-
-    return uniqueTotal - currentUnique.size + (currentUnique.has(packerName) ? 0 : 1) <= 4
+  const getAvailablePackers = (
+    all: string[],
+    current?: string,
+    otherSlotsOnMachine: string[] = [],
+  ) => {
+    const blocked = new Set(otherSlotsOnMachine.map((n) => n.trim()).filter(Boolean))
+    if (current?.trim()) blocked.delete(current.trim())
+    const available = all.filter((name) => !blocked.has(name) || name === current)
+    if (current && current.trim() && !available.includes(current)) {
+      return [current, ...available]
+    }
+    return available
   }
 
   // Stats
@@ -801,13 +788,11 @@ export default function ProductionFloorPage() {
     )
   }
 
-  const selectMachineRange = () => {
+  const applyRangeFromInputs = useCallback(() => {
     const from = Number(rangeFrom)
     const to = Number(rangeTo)
-    if (!Number.isFinite(from) || !Number.isFinite(to)) {
-      toast.error("Indica números de máquina válidos para el rango.")
-      return
-    }
+    if (!rangeFrom.trim() || !rangeTo.trim()) return
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return
     const min = Math.min(from, to)
     const max = Math.max(from, to)
     const ids = sortedMachines
@@ -817,8 +802,11 @@ export default function ProductionFloorPage() {
       })
       .map((m) => m.id)
     setSelectedMachineIds(new Set(ids))
-    toast.message(`${ids.length} máquina(s) seleccionada(s).`)
-  }
+  }, [rangeFrom, rangeTo, sortedMachines])
+
+  useEffect(() => {
+    applyRangeFromInputs()
+  }, [applyRangeFromInputs])
 
   const applyBulkSku = () => {
     const sku = normalizeSkuCode(bulkSku)
@@ -868,7 +856,6 @@ export default function ProductionFloorPage() {
                 return (
                   <MachineCard
                     key={machine.id}
-                    id={machine.id}
                     name={machine.name}
                     status={machine.status}
                     code={machine.sku}
@@ -923,7 +910,7 @@ export default function ProductionFloorPage() {
         )}
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
           <div className="rounded-lg border border-border bg-card p-4">
             <p className="text-xs font-medium uppercase text-muted-foreground">Total Máquinas</p>
             <p className="text-2xl font-bold text-card-foreground">{machineData.length}</p>
@@ -939,6 +926,10 @@ export default function ProductionFloorPage() {
           <div className="rounded-lg border border-red-200 bg-red-50 p-4">
             <p className="text-xs font-medium uppercase text-red-600">Inactivas</p>
             <p className="text-2xl font-bold text-red-700">{inactiveCount}</p>
+          </div>
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+            <p className="text-xs font-medium uppercase text-blue-600">Mantenimiento</p>
+            <p className="text-2xl font-bold text-blue-700">{maintenanceCount}</p>
           </div>
         </div>
 
@@ -993,107 +984,92 @@ export default function ProductionFloorPage() {
           </div>
         </div>
 
-        {/* Instructions */}
-        <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
-          <p className="text-sm text-primary">
-            <strong>Tip:</strong> Pasa el cursor sobre cada máquina para ver su información detallada.
-            Haz click en una máquina para asignarle SKU, operador y empacador.
-          </p>
-        </div>
-
         {/* Quick Assignment */}
-        <div className="rounded-xl border border-border bg-card p-6">
-          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-card-foreground">Asignación rápida</h2>
-              <p className="text-sm text-muted-foreground">
-                Captura SKU por máquina. Presiona Enter para ir a la siguiente.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button variant="outline" size="sm" asChild>
-                <Link href="/administracion/gestion-skus">
-                  <Tags className="mr-2 h-4 w-4" />
-                  Gestión SKUs
-                </Link>
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => setCreateSkuOpen(true)}>
-                <Plus className="mr-2 h-4 w-4" />
-                Nuevo SKU
-              </Button>
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-3 flex flex-wrap items-center gap-3 px-2 sm:px-4">
+            <div className="flex items-center gap-2">
               <Button
-                onClick={applyAndSaveAssignments}
-                disabled={!hasUnsavedChanges}
+                size="icon"
+                className="h-9 w-9 bg-sky-600 text-white hover:bg-sky-700"
+                onClick={() => setCreateSkuOpen(true)}
+                aria-label="Nuevo SKU"
               >
-                {hasUnsavedChanges ? "Guardar" : "Guardado"}
-              </Button>
-              <Button variant="outline" onClick={handleReset}>
-                <RotateCcw className="mr-2 h-4 w-4" />
-                Reset
-              </Button>
-            </div>
-          </div>
-
-          <div className="mb-4 rounded-lg border border-dashed border-border bg-muted/20 p-4 space-y-3">
-            <p className="text-sm font-medium text-foreground">Cambio masivo de SKU</p>
-            <p className="text-xs text-muted-foreground">
-              Marca máquinas en la tabla, define un rango numérico o selecciona todas, luego aplica un SKU.
-            </p>
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="space-y-1">
-                <Label className="text-xs">Desde máq.</Label>
-                <Input
-                  className="w-24"
-                  type="number"
-                  min={1}
-                  value={rangeFrom}
-                  onChange={(e) => setRangeFrom(e.target.value)}
-                  placeholder="1"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs">Hasta máq.</Label>
-                <Input
-                  className="w-24"
-                  type="number"
-                  min={1}
-                  value={rangeTo}
-                  onChange={(e) => setRangeTo(e.target.value)}
-                  placeholder="20"
-                />
-              </div>
-              <Button type="button" variant="secondary" size="sm" onClick={selectMachineRange}>
-                Seleccionar rango
+                <Plus className="h-4 w-4" />
               </Button>
               <Button
-                type="button"
+                size="icon"
                 variant="outline"
-                size="sm"
-                onClick={() => toggleAllMachinesSelected(true)}
+                className="h-9 w-9 border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+                onClick={handleReset}
+                aria-label="Reset"
               >
-                Todas
+                <RotateCcw className="h-4 w-4" />
               </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => toggleAllMachinesSelected(false)}
-              >
-                Limpiar
-              </Button>
-              <div className="min-w-[200px] flex-1 space-y-1">
-                <Label className="text-xs">SKU a aplicar</Label>
-                <SkuCodeInput
-                  value={bulkSku}
-                  onValueChange={setBulkSku}
-                  catalog={skuCatalog}
-                  placeholder="Código SKU"
-                />
-              </div>
-              <Button type="button" onClick={applyBulkSku} disabled={selectedMachineIds.size === 0}>
-                Aplicar a {selectedMachineIds.size || "…"}
-              </Button>
+              {hasUnsavedChanges ? (
+                <Button size="sm" className="h-9" onClick={applyAndSaveAssignments}>
+                  Guardar
+                </Button>
+              ) : null}
             </div>
+            <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-muted/25 px-3 py-1">
+              <Input
+                className="h-9 w-20 text-center tabular-nums"
+                type="number"
+                min={1}
+                value={rangeFrom}
+                onChange={(e) => setRangeFrom(e.target.value)}
+                placeholder="1"
+                aria-label="Desde"
+              />
+              <span className="text-muted-foreground select-none px-0.5">—</span>
+              <Input
+                className="h-9 w-20 text-center tabular-nums"
+                type="number"
+                min={1}
+                value={rangeTo}
+                onChange={(e) => setRangeTo(e.target.value)}
+                placeholder="20"
+                aria-label="Hasta"
+              />
+            </div>
+            <SkuCodeInput
+              value={bulkSku}
+              onValueChange={setBulkSku}
+              catalog={skuCatalog}
+              placeholder="SKU"
+              className="h-9 min-w-40 flex-1 sm:max-w-xs"
+            />
+            <Button
+              type="button"
+              size="sm"
+              className="h-9 bg-emerald-600 text-white hover:bg-emerald-700"
+              onClick={applyBulkSku}
+              disabled={selectedMachineIds.size === 0 || !bulkSku.trim()}
+            >
+              Aplicar
+              {selectedMachineIds.size > 0 ? (
+                <span className="ml-1 rounded-full bg-white/25 px-1.5 text-xs font-semibold">
+                  {selectedMachineIds.size}
+                </span>
+              ) : null}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-9 bg-green-600 text-white hover:bg-green-700"
+              onClick={() => toggleAllMachinesSelected(true)}
+            >
+              Todas
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-9 border-red-300 text-red-700 hover:bg-red-50"
+              onClick={() => toggleAllMachinesSelected(false)}
+            >
+              Limpiar
+            </Button>
           </div>
 
           <Table>
@@ -1109,12 +1085,14 @@ export default function ProductionFloorPage() {
                     aria-label="Seleccionar todas"
                   />
                 </TableHead>
-                <TableHead>Máquina</TableHead>
+                <TableHead>Máq.</TableHead>
                 <TableHead>SKU</TableHead>
-                <TableHead>Operador 1</TableHead>
-                <TableHead>Empacador 1</TableHead>
-                <TableHead className="min-w-44">Más personal</TableHead>
-                <TableHead>Validación</TableHead>
+                <TableHead>Op.</TableHead>
+                <TableHead>Emp.</TableHead>
+                <TableHead className="w-16">+</TableHead>
+                <TableHead className="w-10" aria-label="Listo">
+                  <Check className="mx-auto h-4 w-4 text-muted-foreground" />
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1140,7 +1118,7 @@ export default function ProductionFloorPage() {
                         value={m.sku ?? ""}
                         onValueChange={(sku) => handleQuickUpdate(m.id, { sku })}
                         catalog={skuCatalog}
-                        placeholder="sku-001"
+                        placeholder="SKU"
                         className="w-44"
                       />
                     </TableCell>
@@ -1154,10 +1132,10 @@ export default function ProductionFloorPage() {
                             handleQuickUpdate(m.id, patch)
                           }}
                           options={personAutocompleteOptions(
-                            getAvailablePeople(operators, m.id, m.operator),
+                            getAvailableOperators(operators, m.id, m.operator),
                             employeeRows,
                           )}
-                          placeholder="Escribe operador…"
+                          placeholder="Op."
                           className="w-52 min-w-0"
                           inputClassName="h-9"
                         />
@@ -1183,10 +1161,6 @@ export default function ProductionFloorPage() {
                         <TextAutocomplete
                           value={m.packers?.[0] ?? ""}
                           onValueChange={(v) => {
-                            if (v && !canAddPacker(v, m.id)) {
-                              setError("Máximo 4 empacadores únicos en toda la planta.")
-                              return
-                            }
                             setError(null)
                             if (!v) {
                               handleQuickUpdate(m.id, { packers: undefined })
@@ -1200,10 +1174,14 @@ export default function ProductionFloorPage() {
                             handleQuickUpdate(m.id, { packers: next })
                           }}
                           options={personAutocompleteOptions(
-                            getAvailablePeople(packers, m.id, m.packers?.[0]),
+                            getAvailablePackers(
+                              packers,
+                              m.packers?.[0],
+                              (m.packers ?? []).filter((_, i) => i !== 0),
+                            ),
                             employeeRows,
                           )}
-                          placeholder="Escribe empacador…"
+                          placeholder="Emp."
                           className="w-52 min-w-0"
                           inputClassName="h-9"
                         />
@@ -1231,7 +1209,7 @@ export default function ProductionFloorPage() {
                       {quickAssignmentExpanded.has(m.id) ? (
                         <div className="flex min-w-52 flex-col gap-3 py-1">
                           <div className="space-y-1.5">
-                            <p className="text-xs font-medium text-muted-foreground">Operador 2</p>
+                            <p className="sr-only">Operador 2</p>
                             <div className="flex items-center gap-2">
                               <TextAutocomplete
                                 value={m.operator2 ?? ""}
@@ -1244,12 +1222,12 @@ export default function ProductionFloorPage() {
                                   handleQuickUpdate(m.id, { operator2: v || undefined })
                                 }}
                                 options={personAutocompleteOptions(
-                                  getAvailablePeople(operators, m.id, m.operator2).filter(
+                                  getAvailableOperators(operators, m.id, m.operator2).filter(
                                     (name) => name !== m.operator,
                                   ),
                                   employeeRows,
                                 )}
-                                placeholder="Escribe operador 2…"
+                                placeholder="Op.2"
                                 className="w-full min-w-0"
                                 inputClassName="h-9"
                               />
@@ -1268,7 +1246,7 @@ export default function ProductionFloorPage() {
                             </div>
                           </div>
                           <div className="space-y-1.5">
-                            <p className="text-xs font-medium text-muted-foreground">Empacador 2</p>
+                            <p className="sr-only">Empacador 2</p>
                             <div className="flex items-center gap-2">
                               <TextAutocomplete
                                 value={m.packers?.[1] ?? ""}
@@ -1276,10 +1254,6 @@ export default function ProductionFloorPage() {
                                   const first = m.packers?.[0]
                                   if (!first) {
                                     setError("Primero asigna el empacador 1.")
-                                    return
-                                  }
-                                  if (v && !canAddPacker(v, m.id)) {
-                                    setError("Máximo 4 empacadores únicos en toda la planta.")
                                     return
                                   }
                                   if (v && v === first) {
@@ -1299,10 +1273,14 @@ export default function ProductionFloorPage() {
                                   handleQuickUpdate(m.id, { packers: next })
                                 }}
                                 options={personAutocompleteOptions(
-                                  getAvailablePeople(packers, m.id, m.packers?.[1]),
+                                  getAvailablePackers(
+                                    packers,
+                                    m.packers?.[1],
+                                    (m.packers ?? []).filter((_, i) => i !== 1),
+                                  ),
                                   employeeRows,
                                 )}
-                                placeholder="Escribe empacador 2…"
+                                placeholder="Emp.2"
                                 className="w-full min-w-0"
                                 inputClassName="h-9"
                               />
@@ -1325,7 +1303,7 @@ export default function ProductionFloorPage() {
                             </div>
                           </div>
                           <div className="space-y-1.5">
-                            <p className="text-xs font-medium text-muted-foreground">Empacador 3</p>
+                            <p className="sr-only">Empacador 3</p>
                             <div className="flex items-center gap-2">
                               <TextAutocomplete
                                 value={m.packers?.[2] ?? ""}
@@ -1340,10 +1318,6 @@ export default function ProductionFloorPage() {
                                     setError("Debe ser distinto a los empacadores anteriores.")
                                     return
                                   }
-                                  if (v && !canAddPacker(v, m.id)) {
-                                    setError("Máximo 4 empacadores únicos en toda la planta.")
-                                    return
-                                  }
                                   setError(null)
                                   if (!v) {
                                     handleQuickUpdate(m.id, {
@@ -1355,10 +1329,14 @@ export default function ProductionFloorPage() {
                                   handleQuickUpdate(m.id, { packers: next })
                                 }}
                                 options={personAutocompleteOptions(
-                                  getAvailablePeople(packers, m.id, m.packers?.[2]),
+                                  getAvailablePackers(
+                                    packers,
+                                    m.packers?.[2],
+                                    (m.packers ?? []).filter((_, i) => i !== 2),
+                                  ),
                                   employeeRows,
                                 )}
-                                placeholder="Escribe empacador 3…"
+                                placeholder="Emp.3"
                                 className="w-full min-w-0"
                                 inputClassName="h-9"
                               />
@@ -1383,7 +1361,7 @@ export default function ProductionFloorPage() {
                             </div>
                           </div>
                           <div className="space-y-1.5">
-                            <p className="text-xs font-medium text-muted-foreground">Empacador 4</p>
+                            <p className="sr-only">Empacador 4</p>
                             <div className="flex items-center gap-2">
                               <TextAutocomplete
                                 value={m.packers?.[3] ?? ""}
@@ -1399,10 +1377,6 @@ export default function ProductionFloorPage() {
                                     setError("Debe ser distinto a los empacadores anteriores.")
                                     return
                                   }
-                                  if (v && !canAddPacker(v, m.id)) {
-                                    setError("Máximo 4 empacadores únicos en toda la planta.")
-                                    return
-                                  }
                                   setError(null)
                                   if (!v) {
                                     handleQuickUpdate(m.id, {
@@ -1413,10 +1387,14 @@ export default function ProductionFloorPage() {
                                   handleQuickUpdate(m.id, { packers: [a!, b!, c!, v] })
                                 }}
                                 options={personAutocompleteOptions(
-                                  getAvailablePeople(packers, m.id, m.packers?.[3]),
+                                  getAvailablePackers(
+                                    packers,
+                                    m.packers?.[3],
+                                    (m.packers ?? []).filter((_, i) => i !== 3),
+                                  ),
                                   employeeRows,
                                 )}
-                                placeholder="Escribe empacador 4…"
+                                placeholder="Emp.4"
                                 className="w-full min-w-0"
                                 inputClassName="h-9"
                               />
@@ -1444,40 +1422,46 @@ export default function ProductionFloorPage() {
                           <Button
                             type="button"
                             variant="ghost"
-                            size="sm"
-                            className="self-start text-muted-foreground"
+                            size="icon"
+                            className="h-8 w-8 self-start text-muted-foreground"
                             onClick={() => toggleQuickAssignmentExpanded(m.id)}
+                            aria-label="Ocultar"
                           >
-                            Ocultar
+                            <X className="h-4 w-4" />
                           </Button>
                         </div>
                       ) : (
                         <Button
                           type="button"
                           variant="outline"
-                          size="sm"
-                          className="gap-2"
+                          size="icon"
+                          className="relative h-8 w-8"
                           onClick={(e) => {
                             e.stopPropagation()
                             toggleQuickAssignmentExpanded(m.id)
                           }}
+                          aria-label="Más personal"
                         >
                           <Plus className="h-4 w-4" />
-                          Más
                           {quickAssignmentExtraCount(m) > 0 ? (
-                            <Badge variant="secondary" className="ml-1 font-normal">
+                            <Badge
+                              variant="secondary"
+                              className="absolute -right-1 -top-1 h-4 min-w-4 px-0 text-[10px]"
+                            >
                               {quickAssignmentExtraCount(m)}
                             </Badge>
                           ) : null}
                         </Button>
                       )}
                     </TableCell>
-                    <TableCell>
-                      {ok ? (
-                        <Badge variant="secondary">OK</Badge>
-                      ) : (
-                        <Badge variant="destructive">Faltan datos</Badge>
-                      )}
+                    <TableCell className="text-center">
+                      <span
+                        className={cn(
+                          "inline-block h-2.5 w-2.5 rounded-full",
+                          ok ? "bg-green-500" : "bg-amber-500",
+                        )}
+                        aria-label={ok ? "Listo" : "Incompleto"}
+                      />
                     </TableCell>
                   </TableRow>
                 )
@@ -1580,7 +1564,7 @@ export default function ProductionFloorPage() {
                 }}
                 options={personAutocompleteOptions(
                   selectedMachine
-                    ? getAvailablePeople(operators, selectedMachine.id, operatorInput)
+                    ? getAvailableOperators(operators, selectedMachine.id, operatorInput)
                     : operators,
                   employeeRows,
                 )}
@@ -1595,10 +1579,6 @@ export default function ProductionFloorPage() {
                 id="packer1"
                 value={packer1Input}
                 onValueChange={(v) => {
-                  if (v && !canAddPacker(v, selectedMachine?.id ?? "")) {
-                    setError("Máximo 4 empacadores únicos en toda la planta.")
-                    return
-                  }
                   setError(null)
                   setPacker1Input(v)
                   if (packer2Input && v && packer2Input === v) setPacker2Input("")
@@ -1606,9 +1586,11 @@ export default function ProductionFloorPage() {
                   if (packer4Input && v && packer4Input === v) setPacker4Input("")
                 }}
                 options={personAutocompleteOptions(
-                  selectedMachine
-                    ? getAvailablePeople(packers, selectedMachine.id, packer1Input)
-                    : packers,
+                  getAvailablePackers(packers, packer1Input, [
+                    packer2Input,
+                    packer3Input,
+                    packer4Input,
+                  ]),
                   employeeRows,
                 )}
                 placeholder="Escribe nombre del empacador…"
@@ -1650,7 +1632,7 @@ export default function ProductionFloorPage() {
                   onValueChange={setOperator2Input}
                   options={personAutocompleteOptions(
                     (selectedMachine
-                      ? getAvailablePeople(operators, selectedMachine.id, operator2Input).filter(
+                      ? getAvailableOperators(operators, selectedMachine.id, operator2Input).filter(
                           (op) => op !== operatorInput,
                         )
                       : operators.filter((op) => op !== operatorInput)
@@ -1677,16 +1659,19 @@ export default function ProductionFloorPage() {
                       setError("Debe ser distinto al empacador 1.")
                       return
                     }
-                    if (v && !canAddPacker(v, selectedMachine?.id ?? "")) {
-                      setError("Máximo 4 empacadores únicos en toda la planta.")
-                      return
-                    }
                     setError(null)
                     setPacker2Input(v)
                     if (packer3Input && v && packer3Input === v) setPacker3Input("")
                     if (packer4Input && v && packer4Input === v) setPacker4Input("")
                   }}
-                  options={personAutocompleteOptions(packers, employeeRows)}
+                  options={personAutocompleteOptions(
+                    getAvailablePackers(packers, packer2Input, [
+                      packer1Input,
+                      packer3Input,
+                      packer4Input,
+                    ]),
+                    employeeRows,
+                  )}
                   placeholder="Escribe empacador 2…"
                 />
               </div>
@@ -1706,15 +1691,18 @@ export default function ProductionFloorPage() {
                       setError("Debe ser distinto a los empacadores anteriores.")
                       return
                     }
-                    if (v && !canAddPacker(v, selectedMachine?.id ?? "")) {
-                      setError("Máximo 4 empacadores únicos en toda la planta.")
-                      return
-                    }
                     setError(null)
                     setPacker3Input(v)
                     if (packer4Input && v && packer4Input === v) setPacker4Input("")
                   }}
-                  options={personAutocompleteOptions(packers, employeeRows)}
+                  options={personAutocompleteOptions(
+                    getAvailablePackers(packers, packer3Input, [
+                      packer1Input,
+                      packer2Input,
+                      packer4Input,
+                    ]),
+                    employeeRows,
+                  )}
                   placeholder="Escribe empacador 3…"
                 />
               </div>
@@ -1734,14 +1722,17 @@ export default function ProductionFloorPage() {
                       setError("Debe ser distinto a los empacadores anteriores.")
                       return
                     }
-                    if (v && !canAddPacker(v, selectedMachine?.id ?? "")) {
-                      setError("Máximo 4 empacadores únicos en toda la planta.")
-                      return
-                    }
                     setError(null)
                     setPacker4Input(v)
                   }}
-                  options={personAutocompleteOptions(packers, employeeRows)}
+                  options={personAutocompleteOptions(
+                    getAvailablePackers(packers, packer4Input, [
+                      packer1Input,
+                      packer2Input,
+                      packer3Input,
+                    ]),
+                    employeeRows,
+                  )}
                   placeholder="Escribe empacador 4…"
                 />
               </div>

@@ -1,7 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import Link from "next/link"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { KpiCard } from "@/components/dashboard/kpi-card"
 import { AttendanceTable } from "@/components/attendance/attendance-table"
@@ -30,7 +29,6 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -63,7 +61,6 @@ import {
   Palmtree,
   Wrench,
   Timer,
-  Scale,
   Percent,
 } from "lucide-react"
 import {
@@ -104,10 +101,8 @@ import {
   getGoals,
   getAlerts,
   getMaintenanceSessions,
-  getProductSkus,
   type ApiGoal,
   type ApiMaintenanceSession,
-  type ApiProductSku,
   type ApiEmployee,
   type ApiMachine,
   type ApiMachineCheckin,
@@ -149,18 +144,15 @@ import {
 } from "@/lib/employee-production-role"
 import { productionShiftFromMeasuredAt } from "@/lib/tablero-operator-goal"
 import {
-  fetchActualByGoalId,
+  computeActualByGoalId,
   summarizeMonthlyGoalProgress,
 } from "@/lib/goal-actual-progress"
+import { buildGoalsForProgressTracking } from "@/lib/bonus-goals-bridge"
 import {
   buildMaintenanceAnalytics,
   formatMaintenanceDuration,
   MAINTENANCE_VISIT_TYPE_LABELS,
 } from "@/lib/maintenance-metrics"
-import {
-  aggregateRaffiaYearConsumption,
-  formatRaffiaKg,
-} from "@/lib/raffia-consumption"
 import {
   buildDailyInactivitySeries,
   buildMachineActivitySummary,
@@ -170,8 +162,8 @@ import { buildAlertRoleCounts } from "@/lib/alert-role-metrics"
 import {
   buildShiftIncidentsAnalytics,
   type ShiftIncidentRow,
+  type ShiftIncidentsAnalytics,
 } from "@/lib/shift-incidents-analytics"
-import { SHIFT_SCHEDULE, timeLabel } from "@/lib/shift-schedule"
 import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
 import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
 
@@ -183,10 +175,37 @@ type ProductionEventType =
 type ShiftType = "matutino" | "vespertino"
 type ShiftFilter = "all" | ShiftType
 
-const SHIFT_FILTER_LABELS: Record<ShiftFilter, string> = {
-  all: "Todos los turnos",
-  matutino: "Matutino (07:00–16:00)",
-  vespertino: "Vespertino (16:00–23:30)",
+const EMPTY_SHIFT_INCIDENTS: ShiftIncidentsAnalytics = {
+  incidents: [],
+  summary: {
+    overtimeCount: 0,
+    earlyLeaveCount: 0,
+    postCleaningCount: 0,
+    cleaningProductionCount: 0,
+    total: 0,
+  },
+  scheduleNotes: [],
+}
+
+const EMPTY_PRODUCTION_ANALYTICS = {
+  produced14d: 0,
+  changeovers14d: 0,
+  changeoversPer1k: 0,
+  dailySeries: [] as { date: string; produced: number; downtime: number }[],
+  topOperators: [] as { name: string; units: number; downtime: number }[],
+  operatorDistributionPie: [] as { name: string; units: number; downtime: number }[],
+  topPackers: [] as { name: string; units: number; jobs: number }[],
+  topSkus: [] as { sku: string; units: number }[],
+  skuDistribution: [] as { sku: string; units: number }[],
+  personRoleComparison: [] as {
+    name: string
+    units: number
+    operatorUnits: number
+    packerUnits: number
+    role: string
+    sharePct: number
+  }[],
+  machineScatter: [] as { machine: string; produced: number; downtimeEvents: number }[],
 }
 
 function matchesShiftFilter(ts: string | Date, filter: ShiftFilter): boolean {
@@ -331,22 +350,38 @@ function isMetricasDebugEnabled(): boolean {
   }
 }
 
+/** Índice check-ins por máquina (evita O(eventos × check-ins) al mapear producción). */
+function buildCheckinsByMachineId(
+  checkins: ApiMachineCheckin[],
+): Map<string, ApiMachineCheckin[]> {
+  const map = new Map<string, ApiMachineCheckin[]>()
+  for (const ch of checkins) {
+    const id = ch.machineId?.trim()
+    if (!id) continue
+    const list = map.get(id)
+    if (list) list.push(ch)
+    else map.set(id, [ch])
+  }
+  for (const list of map.values()) {
+    list.sort((a, b) => new Date(b.checkedInAt).getTime() - new Date(a.checkedInAt).getTime())
+  }
+  return map
+}
+
 /** Check-in NFC más plausible para una máquina y un instante (ventana o activo). */
 function findBestCheckinForMachineAndTime(
   machineId: string | null | undefined,
   occurredAtMs: number,
-  checkins: ApiMachineCheckin[],
+  checkinsByMachine: Map<string, ApiMachineCheckin[]>,
 ): ApiMachineCheckin | null {
   const id = machineId?.trim()
   if (!id) return null
+  const byMachine = checkinsByMachine.get(id) ?? []
   const inWindow = (ch: ApiMachineCheckin) => {
     const start = new Date(ch.checkedInAt).getTime()
     const end = ch.checkedOutAt ? new Date(ch.checkedOutAt).getTime() : Number.POSITIVE_INFINITY
     return occurredAtMs >= start && occurredAtMs <= end
   }
-  const byMachine = checkins
-    .filter((ch) => ch.machineId === id)
-    .sort((a, b) => new Date(b.checkedInAt).getTime() - new Date(a.checkedInAt).getTime())
   return byMachine.find(inWindow) ?? byMachine.find((c) => c.isActive) ?? null
 }
 
@@ -354,10 +389,10 @@ function findBestCheckinForMachineAndTime(
 function primaryOperatorLabelFromCheckin(
   machineId: string | null | undefined,
   occurredAtMs: number,
-  checkins: ApiMachineCheckin[],
+  checkinsByMachine: Map<string, ApiMachineCheckin[]>,
   resolvePerson: (raw: string | undefined) => string,
 ): string | null {
-  const ch = findBestCheckinForMachineAndTime(machineId, occurredAtMs, checkins)
+  const ch = findBestCheckinForMachineAndTime(machineId, occurredAtMs, checkinsByMachine)
   if (!ch) return null
   const oc = ch.operatorCode?.trim()
   if (!oc) return null
@@ -402,10 +437,10 @@ function collectPackerCodesFromPayload(payload: Record<string, unknown>): string
 function packerDisplayNamesFromCheckin(
   machineId: string | null | undefined,
   occurredAtMs: number,
-  checkins: ApiMachineCheckin[],
+  checkinsByMachine: Map<string, ApiMachineCheckin[]>,
   resolvePerson: (raw: string | undefined) => string,
 ): string[] {
-  const ch = findBestCheckinForMachineAndTime(machineId, occurredAtMs, checkins)
+  const ch = findBestCheckinForMachineAndTime(machineId, occurredAtMs, checkinsByMachine)
   if (!ch) return []
 
   const raw = [ch.packager1Code, ch.packager2Code, ch.packager3Code, ch.packager4Code]
@@ -433,7 +468,8 @@ function mapEventsToProductionBaseRows(
   const machineSkuById = new Map<string, string>()
   const machineUpbById = new Map<string, number>()
   for (const m of filterFloorMachines(apiMachines)) {
-    const label = (m.code ?? m.name).trim() || m.name
+    if (!m.id) continue
+    const label = (m.code ?? m.name ?? "").trim() || "—"
     machineLabelById.set(m.id, label)
     const curSku = m.currentSku?.trim()
     if (curSku) machineSkuById.set(m.id, curSku)
@@ -447,6 +483,8 @@ function mapEventsToProductionBaseRows(
     if (!code || code === "—") return "—"
     return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
   }
+
+  const checkinsByMachine = buildCheckinsByMachineId(checkins)
 
   return events
     .filter((e) => !(e.payload as Record<string, unknown>)?.excludedMaintenance)
@@ -507,7 +545,7 @@ function mapEventsToProductionBaseRows(
       const fromChk = primaryOperatorLabelFromCheckin(
         e.machineId,
         new Date(ts).getTime(),
-        checkins,
+        checkinsByMachine,
         resolvePerson,
       )
       if (fromChk) operatorLabel = fromChk
@@ -519,7 +557,7 @@ function mapEventsToProductionBaseRows(
       nthStringFromArrayLoose(payload, "operators", 1)
     let operator2Label = resolvePerson(operator2CodeRaw)
     if (operator2Label === "—" && e.machineId?.trim()) {
-      const ch = findBestCheckinForMachineAndTime(e.machineId, new Date(ts).getTime(), checkins)
+      const ch = findBestCheckinForMachineAndTime(e.machineId, new Date(ts).getTime(), checkinsByMachine)
       const oc2 = ch?.operator2Code?.trim()
       if (oc2) operator2Label = resolvePerson(oc2)
     }
@@ -558,7 +596,7 @@ function mapEventsToProductionBaseRows(
       packersAttributed = packerDisplayNamesFromCheckin(
         e.machineId,
         new Date(ts).getTime(),
-        checkins,
+        checkinsByMachine,
         resolvePerson,
       )
     }
@@ -829,8 +867,6 @@ export default function MetricsPage() {
   const [maintenanceSessionsLoaded, setMaintenanceSessionsLoaded] = useState<ApiMaintenanceSession[]>(
     [],
   )
-  const [ytdProductionBaseRows, setYtdProductionBaseRows] = useState<ProductionBaseRow[]>([])
-  const [productSkusRows, setProductSkusRows] = useState<ApiProductSku[]>([])
   const [alertsLoaded, setAlertsLoaded] = useState<ApiAlert[]>([])
   const [bonusConfigData, setBonusConfigData] = useState<BonusProductionConfigData>(
     DEFAULT_BONUS_PRODUCTION_CONFIG,
@@ -886,7 +922,7 @@ export default function MetricsPage() {
 
   useEffect(() => {
     let cancelled = false
-    const load = async () => {
+    const load = async (silent = false) => {
       const token = await getAccessToken()
       if (!token) {
         if (!cancelled) {
@@ -895,8 +931,6 @@ export default function MetricsPage() {
           setMachineCheckinsLoaded([])
           setEmployeeDayRecordsLoaded([])
           setMaintenanceSessionsLoaded([])
-          setYtdProductionBaseRows([])
-          setProductSkusRows([])
           setAlertsLoaded([])
           setDataLoading(false)
           setDataError(null)
@@ -904,7 +938,7 @@ export default function MetricsPage() {
         return
       }
 
-      if (!cancelled) {
+      if (!cancelled && !silent) {
         setDataLoading(true)
         setDataError(null)
       }
@@ -912,13 +946,11 @@ export default function MetricsPage() {
       try {
         const fromIso = new Date(`${filterStartDate}T00:00:00`).toISOString()
         const toIso = new Date(`${filterEndDate}T23:59:59.999`).toISOString()
-        const ytdYear = new Date().getFullYear()
-        const ytdFromIso = new Date(`${ytdYear}-01-01T00:00:00`).toISOString()
-        const ytdToIso = new Date().toISOString()
+        const bonusMonth = filterStartDate.slice(0, 7)
 
-        const [events, employees, apiMachines, checkins, goals, dayRecords, maintenanceSessions, ytdEvents, productSkus, alerts, bonusCfg] =
+        const [events, employees, apiMachines, checkins, goals, dayRecords, maintenanceSessions, alerts, bonusCfg] =
           await Promise.all([
-          getProductionEvents(token, { from: fromIso, to: toIso, limit: 120_000 }),
+          getProductionEvents(token, { from: fromIso, to: toIso, limit: 50_000 }),
           getEmployees(token),
           getMachines(token),
           getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
@@ -929,33 +961,36 @@ export default function MetricsPage() {
             limit: 5000,
           }).catch(() => [] as ApiEmployeeDayRecord[]),
           getMaintenanceSessions(token, { from: fromIso, to: toIso, limit: 5000 }),
-          getProductionEvents(token, { from: ytdFromIso, to: ytdToIso, limit: 120_000 }),
-          getProductSkus(token),
           getAlerts(token).catch(() => [] as ApiAlert[]),
-          getBonusProductionConfigForMonth(token, filterStartDate.slice(0, 7)).catch(() => null),
+          getBonusProductionConfigForMonth(token, bonusMonth).catch(() => null),
         ])
         if (cancelled) return
 
+        const bonusConfig = bonusCfg
+          ? normalizeBonusProductionConfig(bonusCfg.config)
+          : DEFAULT_BONUS_PRODUCTION_CONFIG
+        const goalsForActual = buildGoalsForProgressTracking(goals, bonusConfig, bonusMonth)
+        const floorMachines = filterFloorMachines(apiMachines)
+
         setEmployeeRows(employees)
-        setGoalsRows(goals)
+        setGoalsRows(goalsForActual)
         setMachineCheckinsLoaded(checkins)
         setEmployeeDayRecordsLoaded(dayRecords)
         setMaintenanceSessionsLoaded(maintenanceSessions)
-        setProductSkusRows(productSkus)
         setAlertsLoaded(alerts)
-        setBonusConfigData(
-          bonusCfg ? normalizeBonusProductionConfig(bonusCfg.config) : DEFAULT_BONUS_PRODUCTION_CONFIG,
-        )
-        setMachinesLoaded(filterFloorMachines(apiMachines))
+        setBonusConfigData(bonusConfig)
+        setMachinesLoaded(floorMachines)
 
-        const actualByGoalId = await fetchActualByGoalId(token, goals, apiMachines)
+        const actualByGoalId = computeActualByGoalId({
+          goals: goalsForActual,
+          machines: apiMachines,
+          productionEvents: events,
+        })
         if (cancelled) return
         setGoalActualByGoalId(actualByGoalId)
 
         const mapped = mapEventsToProductionBaseRows(events, checkins, employees, apiMachines)
-        const ytdMapped = mapEventsToProductionBaseRows(ytdEvents, checkins, employees, apiMachines)
         if (cancelled) return
-        setYtdProductionBaseRows(ytdMapped)
 
         if (isMetricasDebugEnabled()) {
           const prodRows = mapped.filter((r) => r.event === "Producción")
@@ -969,7 +1004,7 @@ export default function MetricsPage() {
           console.info("[Métricas] METRICAS_DEBUG=1 — producción / operadores", {
             rango: { desde: filterStartDate, hasta: filterEndDate },
             registrosApi: events.length,
-            posibleCortePorLimiteApi: events.length >= 119_000,
+            posibleCortePorLimiteApi: events.length >= 49_000,
             filasMapeadas: mapped.length,
             filasProduccion: prodRows.length,
             produccionSinOperadorResuelto: sinOp,
@@ -999,8 +1034,6 @@ export default function MetricsPage() {
             setMachineCheckinsLoaded([])
             setEmployeeDayRecordsLoaded([])
             setMaintenanceSessionsLoaded([])
-            setYtdProductionBaseRows([])
-            setProductSkusRows([])
             setAlertsLoaded([])
             setDataError(message)
           } else {
@@ -1008,12 +1041,15 @@ export default function MetricsPage() {
           }
         }
       } finally {
-        if (!cancelled) setDataLoading(false)
+        if (!cancelled && !silent) setDataLoading(false)
       }
     }
 
-    load()
-    const intervalId = window.setInterval(load, 30_000)
+    load(false)
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return
+      load(true)
+    }, 300_000)
     return () => {
       cancelled = true
       window.clearInterval(intervalId)
@@ -1060,6 +1096,9 @@ export default function MetricsPage() {
   ]
 
   const analytics = useMemo(() => {
+    if (activeTab !== "produccion" && activeTab !== "operadores") {
+      return EMPTY_PRODUCTION_ANALYTICS
+    }
     const rows14d = scopedProductionRows
 
     const produced14d = rows14d
@@ -1206,7 +1245,7 @@ export default function MetricsPage() {
       personRoleComparison,
       machineScatter,
     }
-  }, [scopedProductionRows, employeeRows])
+  }, [activeTab, scopedProductionRows, employeeRows])
 
   // Último día del rango con producción o paro/inactividad.
   const lastDayWithData = useMemo(() => {
@@ -1345,6 +1384,9 @@ export default function MetricsPage() {
   }, [goalsRows, goalActualByGoalId, shiftFilter])
 
   const maintenanceMetrics = useMemo(() => {
+    if (activeTab !== "mantenimiento") {
+      return buildMaintenanceAnalytics([], [])
+    }
     const startDate = new Date(`${filterStartDate}T00:00:00`)
     startDate.setHours(0, 0, 0, 0)
     const endDate = new Date(`${filterEndDate}T00:00:00`)
@@ -1360,6 +1402,7 @@ export default function MetricsPage() {
 
     return buildMaintenanceAnalytics(sessionsInRange, productionForClassification)
   }, [
+    activeTab,
     maintenanceSessionsLoaded,
     productionBaseRows,
     filterStartDate,
@@ -1397,6 +1440,9 @@ export default function MetricsPage() {
   }, [maintenanceMetrics.byTechnician, employeeRows])
 
   const shiftIncidentsAnalytics = useMemo(() => {
+    if (activeTab !== "incidencias") {
+      return EMPTY_SHIFT_INCIDENTS
+    }
     const built = buildShiftIncidentsAnalytics({
       productionRows: productionRowsForIncidents,
       checkins: checkinsForIncidents,
@@ -1422,6 +1468,7 @@ export default function MetricsPage() {
       },
     }
   }, [
+    activeTab,
     productionRowsForIncidents,
     checkinsForIncidents,
     machinesLoaded,
@@ -1441,27 +1488,6 @@ export default function MetricsPage() {
     if (row.severity === "warning") return "bg-amber-50"
     return ""
   }
-
-  const ytdScopedProductionRows = useMemo(() => {
-    return ytdProductionBaseRows.filter((r) => matchesShiftFilter(r.timestamp, shiftFilter))
-  }, [ytdProductionBaseRows, shiftFilter])
-
-  const raffiaYearSummary = useMemo(() => {
-    const year = new Date().getFullYear()
-    return aggregateRaffiaYearConsumption(
-      ytdScopedProductionRows.map((r) => ({
-        sku: r.sku,
-        timestamp: r.timestamp,
-        event: r.event,
-        count: r.count,
-        unitsPerBox: r.unitsPerBox,
-      })),
-      {
-        year,
-        catalog: productSkusRows.map((s) => ({ code: s.code, unitsPerBox: s.unitsPerBox })),
-      },
-    )
-  }, [ytdScopedProductionRows, productSkusRows])
 
   const attendanceFromCheckins = useMemo(
     () =>
@@ -1906,9 +1932,6 @@ export default function MetricsPage() {
         {/* Header */}
         <div>
           <h1 className="text-2xl font-bold text-foreground">Centro de Métricas</h1>
-          <p className="text-muted-foreground">
-            Monitoreo integral de producción, operadores, asistencia y rotación de personal
-          </p>
           {dataError ? (
             <Alert variant="destructive" className="mt-4">
               <AlertTriangle className="h-4 w-4" />
@@ -1958,18 +1981,6 @@ export default function MetricsPage() {
             </Button>
           </div>
 
-          <p className="mt-2 text-xs text-muted-foreground">
-            Mostrando del{" "}
-            <span className="font-medium">{filterStartDate}</span> al{" "}
-            <span className="font-medium">{filterEndDate}</span>
-            {shiftFilter !== "all" ? (
-              <>
-                {" "}
-                · <span className="font-medium">{SHIFT_FILTER_LABELS[shiftFilter]}</span>
-              </>
-            ) : null}
-          </p>
-
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
             <span className="text-xs font-medium text-muted-foreground">Turno global:</span>
             <ToggleGroup
@@ -2001,9 +2012,6 @@ export default function MetricsPage() {
                 <CalendarDays className="h-5 w-5 text-primary" />
                 Elegir rango de fechas
               </DialogTitle>
-              <DialogDescription>
-                Selecciona un día o un rango. Si eliges el mismo día en ambos campos verás solo ese día.
-              </DialogDescription>
             </DialogHeader>
 
             <div className="grid gap-4 py-2">
@@ -2076,24 +2084,12 @@ export default function MetricsPage() {
           <DialogContent className="sm:max-w-lg">
             <DialogHeader>
               <DialogTitle>Acumulado de Bono Mensual</DialogTitle>
-              <DialogDescription>
-                Elige el mes del reporte y el rango de fechas con producción a incluir. Las metas,
-                bonos y reglas se toman de{" "}
-                <Link href="/reglas-negocio?tab=bono" className="text-primary underline">
-                  Reglas de negocio → Configuración de bono
-                </Link>
-                ; vacaciones e incidencias de Gestión de empleados; bending/roller de Captura de
-                datos.
-              </DialogDescription>
             </DialogHeader>
 
             <div className="grid gap-4">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">Mes del reporte</label>
                 <MonthPicker value={bonusReportDate} onChange={handleBonusMonthChange} />
-                <p className="text-xs text-muted-foreground">
-                  Define la estructura mensual del Excel (semanas y columnas del mes seleccionado).
-                </p>
               </div>
 
               <div className="space-y-2">
@@ -2128,11 +2124,6 @@ export default function MetricsPage() {
                     />
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Solo se incluyen eventos de producción entre estas fechas. Al generar, los datos
-                  se cargan directamente del mes elegido (no dependen del filtro superior de
-                  Métricas).
-                </p>
               </div>
 
               {bonusReportError ? (
@@ -2194,9 +2185,6 @@ export default function MetricsPage() {
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-foreground">Mes del reporte</label>
                     <MonthPicker value={reportDate} onChange={setReportDate} />
-                    <p className="text-xs text-muted-foreground">
-                      Se generan hojas del 01 al último día del mes seleccionado.
-                    </p>
                   </div>
 
                   <div className="space-y-2">
@@ -2209,17 +2197,12 @@ export default function MetricsPage() {
                     />
                   </div>
 
-                  <div className="flex items-start gap-3">
+                  <div className="flex items-center gap-3">
                     <Checkbox
                       checked={reportBothShifts}
                       onCheckedChange={(v) => setReportBothShifts(Boolean(v))}
                     />
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium text-foreground">Descargar ambos turnos</p>
-                      <p className="text-sm text-muted-foreground">
-                        Genera dos archivos (Turno 1 y Turno 2) para la misma fecha
-                      </p>
-                    </div>
+                    <p className="text-sm font-medium text-foreground">Descargar ambos turnos</p>
                   </div>
 
                   {!reportBothShifts && (
@@ -2253,18 +2236,16 @@ export default function MetricsPage() {
             </Dialog>
 
             {/* KPI Cards */}
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <KpiCard
                 title={productionDayLabel}
                 value={productionToday == null ? "—" : productionToday.toLocaleString()}
-                subtitle="Unidades"
                 icon={CheckCircle}
                 iconColor="text-primary"
               />
               <KpiCard
                 title="Promedio/Hora"
                 value={avgPerHour == null ? "—" : avgPerHour.toLocaleString()}
-                subtitle="Unidades"
                 icon={Clock}
                 iconColor="text-primary"
               />
@@ -2283,159 +2264,6 @@ export default function MetricsPage() {
                 icon={Target}
                 iconColor="text-teal-600"
               />
-              <KpiCard
-                title={`Rafia acumulada ${raffiaYearSummary.year}`}
-                value={formatRaffiaKg(raffiaYearSummary.totalKg)}
-                subtitle={`${raffiaYearSummary.totalMeters.toLocaleString("es-MX", { maximumFractionDigits: 0 })} m totales`}
-                icon={Scale}
-                iconColor="text-violet-600"
-              />
-              <KpiCard
-                title="SKUs con rafia"
-                value={raffiaYearSummary.bySku.length.toLocaleString()}
-                subtitle={
-                  raffiaYearSummary.unrecognizedSkuCount > 0
-                    ? `${raffiaYearSummary.unrecognizedSkuCount} prod. sin SKU hook válido`
-                    : "Referencias parseadas del año"
-                }
-                icon={Package}
-                iconColor="text-violet-600"
-              />
-            </div>
-
-            {/* Raffia consumption */}
-            <div className="rounded-xl border border-border bg-card p-6 space-y-6">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h3 className="font-semibold text-foreground">Consumo de rafia acumulado ({raffiaYearSummary.year})</h3>
-                  <p className="mt-1 text-sm text-muted-foreground max-w-3xl">
-                    Calculado desde producción del año y el formato de SKU (
-                    <span className="font-mono text-xs">[gancho][embobinado][metros][color][rafia]</span>
-                    ). Metros = vuelta principal + caída libre; kg = metros ÷ calibre (1000, 1200 o 1500 m/kg).
-                    Con varios colores, cada color suma los metros completos por pieza.
-                  </p>
-                </div>
-                <Button variant="outline" size="sm" asChild>
-                  <Link href="/administracion/gestion-skus">Catálogo de SKUs</Link>
-                </Button>
-              </div>
-
-              {raffiaYearSummary.totalKg <= 0 ? (
-                <p className="py-8 text-center text-sm text-muted-foreground">
-                  Sin consumo de rafia calculable en {raffiaYearSummary.year}. Verifica que los eventos
-                  PROD incluyan SKU hook (ej. 522pk18+4l-10).
-                </p>
-              ) : (
-                <div className="grid gap-6 lg:grid-cols-2">
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <h4 className="text-sm font-semibold text-foreground mb-3">Kilos por color de rafia</h4>
-                    <ChartContainer
-                      className="h-[min(320px,40vh)] w-full aspect-auto"
-                      config={{ kg: { label: "Kilos", color: "#8b5cf6" } }}
-                    >
-                      <BarChart
-                        layout="vertical"
-                        data={raffiaYearSummary.byColor}
-                        margin={{ left: 8, right: 16, top: 8, bottom: 8 }}
-                      >
-                        <CartesianGrid horizontal={false} />
-                        <XAxis type="number" tick={{ fontSize: 12 }} />
-                        <YAxis
-                          type="category"
-                          dataKey="colorLabel"
-                          width={72}
-                          tick={{ fontSize: 12 }}
-                        />
-                        <ChartTooltip
-                          content={
-                            <ChartTooltipContent
-                              formatter={(value, _name, item) => {
-                                const row = item?.payload as { meters?: number }
-                                const kg = typeof value === "number" ? value : Number(value)
-                                return (
-                                  <span>
-                                    {formatRaffiaKg(kg)}
-                                    {row?.meters != null
-                                      ? ` · ${row.meters.toLocaleString("es-MX", { maximumFractionDigits: 0 })} m`
-                                      : ""}
-                                  </span>
-                                )
-                              }}
-                            />
-                          }
-                        />
-                        <Bar dataKey="kg" fill="var(--color-kg)" radius={[0, 4, 4, 0]} />
-                      </BarChart>
-                    </ChartContainer>
-                  </div>
-
-                  <div className="rounded-xl border border-border bg-background p-4">
-                    <h4 className="text-sm font-semibold text-foreground mb-3">Metros y kilos por color</h4>
-                    <div className="overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Color</TableHead>
-                            <TableHead className="text-right">Metros</TableHead>
-                            <TableHead className="text-right">Kilos</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {raffiaYearSummary.byColor.map((row) => (
-                            <TableRow key={row.colorCode}>
-                              <TableCell className="font-medium">{row.colorLabel}</TableCell>
-                              <TableCell className="text-right tabular-nums">
-                                {row.meters.toLocaleString("es-MX", { maximumFractionDigits: 0 })}
-                              </TableCell>
-                              <TableCell className="text-right tabular-nums">
-                                {formatRaffiaKg(row.kg)}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {raffiaYearSummary.bySku.length > 0 && (
-                <div className="rounded-xl border border-border bg-background p-4">
-                  <h4 className="text-sm font-semibold text-foreground mb-3">Detalle por SKU</h4>
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>SKU</TableHead>
-                          <TableHead>Colores</TableHead>
-                          <TableHead className="text-right">m/pieza</TableHead>
-                          <TableHead className="text-right">Calibre</TableHead>
-                          <TableHead className="text-right">Piezas</TableHead>
-                          <TableHead className="text-right">Metros</TableHead>
-                          <TableHead className="text-right">Kilos</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {raffiaYearSummary.bySku.slice(0, 20).map((row) => (
-                          <TableRow key={row.sku}>
-                            <TableCell className="font-mono text-xs">{row.sku}</TableCell>
-                            <TableCell className="text-sm">{row.colors.join(", ")}</TableCell>
-                            <TableCell className="text-right tabular-nums">{row.totalMetersPerPiece}</TableCell>
-                            <TableCell className="text-right tabular-nums">{row.rafiaMKg} m/kg</TableCell>
-                            <TableCell className="text-right tabular-nums">
-                              {row.pieces.toLocaleString()}
-                            </TableCell>
-                            <TableCell className="text-right tabular-nums">
-                              {row.meters.toLocaleString("es-MX", { maximumFractionDigits: 0 })}
-                            </TableCell>
-                            <TableCell className="text-right tabular-nums">{formatRaffiaKg(row.kg)}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Production Charts */}
@@ -2500,8 +2328,7 @@ export default function MetricsPage() {
 
               {/* SKUs — solo gráfica de barras (top 10) */}
               <div className="rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-1">SKUs más producidos</h3>
-                <p className="text-xs text-muted-foreground mb-4">Top 10 en el rango seleccionado</p>
+                <h3 className="font-semibold text-foreground mb-4">SKUs más producidos</h3>
                 {analytics.skuDistribution.length === 0 ? (
                   <p className="text-sm text-muted-foreground py-12 text-center">
                     Sin producción por SKU en este rango.
@@ -2548,7 +2375,7 @@ export default function MetricsPage() {
                     subtitle={
                       machineActivity.refDay
                         ? `Día ${new Date(`${machineActivity.refDay}T12:00:00`).toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}`
-                        : "Sin paros en el rango"
+                        : undefined
                     }
                     icon={Clock}
                     iconColor="text-amber-600"
@@ -2556,14 +2383,12 @@ export default function MetricsPage() {
                   <KpiCard
                     title="Horas con producción"
                     value={String(machineActivity.totalActiveHours)}
-                    subtitle="Horas del día con al menos un evento PROD"
                     icon={CheckCircle}
                     iconColor="text-green-600"
                   />
                   <KpiCard
                     title="Tiempo activo"
                     value={`${machineActivity.activePct}%`}
-                    subtitle="Producción vs inactividad (día de referencia)"
                     icon={Clock}
                     iconColor="text-teal-600"
                   />
@@ -2573,27 +2398,21 @@ export default function MetricsPage() {
                   <KpiCard
                     title="Alertas de operador"
                     value={String(alertRoleCounts.operator)}
-                    subtitle="Sin check-in, contador no en 0, ALERT_NO_CHECKIN"
                     icon={Users}
                     iconColor="text-blue-600"
                   />
                   <KpiCard
                     title="Alertas de empacador"
                     value={String(alertRoleCounts.packager)}
-                    subtitle="Producción en verde sin empacador en roster"
                     icon={Package}
                     iconColor="text-violet-600"
                   />
                 </div>
 
                 <div className="rounded-xl border border-border bg-background p-4">
-                  <h3 className="text-sm font-semibold text-foreground mb-1">
+                  <h3 className="text-sm font-semibold text-foreground mb-3">
                     Actividad por hora
                   </h3>
-                  <p className="text-xs text-muted-foreground mb-3">
-                    Verde: minutos con producción · Naranja: tiempo inactivo (ALERT_15 = 15 min,
-                    ALERT_45 = 45 min)
-                  </p>
                   {machineActivity.hourlyTimeline.length === 0 ? (
                     <p className="py-12 text-center text-sm text-muted-foreground">
                       Sin datos de actividad en el día seleccionado.
@@ -2773,57 +2592,34 @@ export default function MetricsPage() {
           {/* ========== INCIDENCIAS TAB ========== */}
           <TabsContent value="incidencias" className="space-y-6">
             <div className="rounded-xl border border-border bg-card p-6 space-y-6">
-              <div>
-                <h3 className="font-semibold text-foreground">Incidencias de turno</h3>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Detecta producción fuera de horario, salidas anticipadas sin cumplir la cuota
-                  diaria y excesos después de la ventana de limpieza nocturna.
-                </p>
-                <ul className="mt-3 space-y-1 text-xs text-muted-foreground list-disc pl-5">
-                  {shiftIncidentsAnalytics.scheduleNotes.map((line) => (
-                    <li key={line}>{line}</li>
-                  ))}
-                </ul>
-              </div>
+              <h3 className="font-semibold text-foreground">Incidencias de turno</h3>
 
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <KpiCard
                   title="Total incidencias"
                   value={String(shiftIncidentsAnalytics.summary.total)}
-                  subtitle="En el rango seleccionado"
                   icon={AlertTriangle}
                   iconColor="text-red-600"
                 />
                 <KpiCard
                   title="Después del turno"
                   value={String(shiftIncidentsAnalytics.summary.overtimeCount)}
-                  subtitle={`Matutino &gt; ${timeLabel(SHIFT_SCHEDULE.matutino.productionEnd.hour)} · Noche &gt; ${timeLabel(23, 0)}`}
                   icon={Clock}
                   iconColor="text-orange-600"
                 />
                 <KpiCard
                   title="Salida sin meta"
                   value={String(shiftIncidentsAnalytics.summary.earlyLeaveCount)}
-                  subtitle="Check-out anticipado sin cuota diaria cumplida"
                   icon={Users}
                   iconColor="text-amber-600"
                 />
                 <KpiCard
                   title="Post-limpieza"
                   value={String(shiftIncidentsAnalytics.summary.postCleaningCount)}
-                  subtitle={`Producción después de ${timeLabel(23, 30)}`}
                   icon={AlertTriangle}
                   iconColor="text-red-700"
                 />
               </div>
-
-              {shiftIncidentsAnalytics.summary.cleaningProductionCount > 0 ? (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  {shiftIncidentsAnalytics.summary.cleaningProductionCount} evento(s) con producción
-                  durante la limpieza ({timeLabel(23, 0)}–{timeLabel(23, 30)}). No es incidencia
-                  formal, pero conviene revisar.
-                </div>
-              ) : null}
 
               <div className="overflow-x-auto rounded-lg border border-border">
                 <Table>
@@ -2902,20 +2698,12 @@ export default function MetricsPage() {
           {/* ========== MANTENIMIENTO TAB ========== */}
           <TabsContent value="mantenimiento" className="space-y-6">
             <div className="rounded-xl border border-border bg-card p-6 space-y-6">
-              <div>
-                <h3 className="font-semibold text-foreground">Mantenimiento</h3>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Sesiones NFC de técnicos de mantenimiento. Preventivo: sin producción previa ese día.
-                  Correctivo: la máquina ya había producido antes del check-in. Las unidades excluidas son
-                  piezas del PLC registradas durante la ventana de mantenimiento.
-                </p>
-              </div>
+              <h3 className="font-semibold text-foreground">Mantenimiento</h3>
 
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <KpiCard
                   title="Check-ins"
                   value={maintenanceMetrics.total.toLocaleString()}
-                  subtitle="Entradas NFC en el período"
                   icon={Wrench}
                   iconColor="text-blue-600"
                 />
@@ -2936,7 +2724,6 @@ export default function MetricsPage() {
                 <KpiCard
                   title="Sesiones activas"
                   value={maintenanceMetrics.activeNow.toLocaleString()}
-                  subtitle="Máquinas en mantenimiento ahora"
                   icon={Timer}
                   iconColor="text-slate-600"
                 />
@@ -2946,7 +2733,6 @@ export default function MetricsPage() {
                 <KpiCard
                   title="Tiempo en mantenimiento"
                   value={formatMaintenanceDuration(maintenanceMetrics.totalDurationMinutes)}
-                  subtitle="Suma de duración de sesiones"
                   icon={Timer}
                   iconColor="text-indigo-600"
                 />
@@ -2957,21 +2743,18 @@ export default function MetricsPage() {
                       ? "—"
                       : formatMaintenanceDuration(maintenanceMetrics.avgDurationMinutes)
                   }
-                  subtitle="Sesiones cerradas"
                   icon={Clock}
                   iconColor="text-indigo-600"
                 />
                 <KpiCard
                   title="Unidades excluidas"
                   value={maintenanceMetrics.totalExcludedUnits.toLocaleString()}
-                  subtitle="Producción PLC no contabilizada"
                   icon={Package}
                   iconColor="text-orange-600"
                 />
                 <KpiCard
                   title="Máquinas / técnicos"
                   value={`${maintenanceMetrics.uniqueMachines} / ${maintenanceMetrics.uniqueTechnicians}`}
-                  subtitle="Atendidas · técnicos distintos"
                   icon={Users}
                   iconColor="text-primary"
                 />
@@ -3226,12 +3009,7 @@ export default function MetricsPage() {
           <TabsContent value="operadores" className="space-y-6">
             {/* Comparativa por persona y rol */}
             <div className="rounded-xl border border-border bg-card p-6">
-              <h3 className="font-semibold text-foreground mb-1">Comparativa por persona y rol</h3>
-              <p className="mb-4 text-xs text-muted-foreground">
-                Unidades atribuidas en el período seleccionado. El reparto sigue el roster del evento
-                (÷ operadores activos y ÷ empacadores activos). El rol muestra el maestro de empleados
-                o la atribución dominante en producción.
-              </p>
+              <h3 className="font-semibold text-foreground mb-4">Comparativa por persona y rol</h3>
               {analytics.personRoleComparison.length === 0 ? (
                 <div className="flex min-h-[200px] items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
                   Sin unidades atribuidas a personas en este rango.
@@ -3406,7 +3184,7 @@ export default function MetricsPage() {
 
               {/* Empacadores Detalle */}
               <div className="rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-4">Empacadores - Detalle (Atribución 50/50)</h3>
+                <h3 className="font-semibold text-foreground mb-4">Empacadores - Detalle</h3>
                 <div className="h-[320px] overflow-y-auto">
                   <Table>
                     <TableHeader>
@@ -3437,42 +3215,25 @@ export default function MetricsPage() {
               <KpiCard
                 title="Empleados en vacaciones"
                 value={String(vacationSummary.employeesWithVacation)}
-                subtitle={`Con al menos 1 día en el rango`}
                 icon={Palmtree}
                 iconColor="text-green-600"
               />
               <KpiCard
                 title="Días de vacación"
                 value={String(vacationSummary.totalVacationDays)}
-                subtitle="Total en el período seleccionado"
                 icon={CalendarDays}
                 iconColor="text-emerald-600"
               />
               <KpiCard
                 title="De vacaciones hoy"
                 value={String(vacationSummary.onVacationToday)}
-                subtitle="Registro activo para la fecha actual"
                 icon={UserMinus}
                 iconColor="text-amber-600"
               />
             </div>
 
             <div className="rounded-xl border border-border bg-card p-6">
-              <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="font-semibold text-foreground">Días de vacaciones por empleado</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Registros de{" "}
-                    <Link href="/empleados" className="text-primary underline">
-                      Gestión de empleados
-                    </Link>{" "}
-                    (tipo vacación). Cada día calendario cuenta una vez aunque cubra ambos turnos.
-                  </p>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {filterStartDate} — {filterEndDate}
-                </p>
-              </div>
+              <h3 className="font-semibold text-foreground mb-4">Días de vacaciones por empleado</h3>
               {vacationDaysByEmployee.length === 0 ? (
                 <p className="py-8 text-center text-sm text-muted-foreground">
                   Sin vacaciones registradas en este período.
@@ -3521,14 +3282,6 @@ export default function MetricsPage() {
 
             <div className="rounded-xl border border-border bg-card p-6">
               <h3 className="font-semibold text-foreground mb-4">Registros de asistencias</h3>
-              <p className="mb-4 text-sm text-muted-foreground">
-                Combina <strong>check-in en máquina</strong> con registros de día en{" "}
-                <Link href="/empleados" className="text-primary underline">
-                  Gestión de empleados
-                </Link>{" "}
-                (vacaciones, incapacidad, faltas justificadas, PSG, TXT). El registro de día prevalece
-                sobre el estado del check-in para la misma persona y fecha.
-              </p>
               <AttendanceTable records={filteredAttendanceRecords} onDelete={() => {}} />
             </div>
           </TabsContent>
@@ -3540,28 +3293,24 @@ export default function MetricsPage() {
               <KpiCard
                 title="Personal Activo"
                 value={employeeRows.filter((e) => e.status === "active").length.toString()}
-                subtitle="Colaboradores activos"
                 icon={Users}
                 iconColor="text-primary"
               />
               <KpiCard
                 title="Turnover"
                 value={formatTurnoverPercent(turnoverMetrics.turnoverPercent)}
-                subtitle={`Bajas / (plantilla mes ant. + altas) · ${turnoverMetrics.monthLabel}`}
                 icon={Percent}
                 iconColor="text-violet-600"
               />
               <KpiCard
                 title="Altas"
                 value={String(personnelMonthSummary.ingresos)}
-                subtitle={`Nuevos empleados · ${personnelMonthSummary.monthLabel}`}
                 icon={UserPlus}
                 iconColor="text-green-600"
               />
               <KpiCard
                 title="Bajas"
                 value={String(personnelMonthSummary.salidas)}
-                subtitle={`Empleados dados de baja · ${personnelMonthSummary.monthLabel}`}
                 icon={UserMinus}
                 iconColor="text-red-600"
               />
@@ -3572,19 +3321,13 @@ export default function MetricsPage() {
                     ? `+${personnelMonthSummary.net}`
                     : String(personnelMonthSummary.net)
                 }
-                subtitle="Altas − bajas del mes"
                 icon={RefreshCw}
                 iconColor="text-yellow-600"
               />
             </div>
 
             <div className="rounded-xl border border-border bg-card p-6">
-              <h3 className="font-semibold text-foreground mb-1">Turnover de personal</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                <span className="capitalize">{turnoverMetrics.monthLabel}</span>
-                {" · "}
-                (Bajas del mes ÷ (empleados al cierre del mes anterior + altas del mes)) × 100
-              </p>
+              <h3 className="font-semibold text-foreground mb-4">Turnover de personal</h3>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 text-sm">
                 <div className="rounded-lg border border-border bg-muted/30 px-4 py-3">
                   <p className="text-xs text-muted-foreground uppercase tracking-wide">Bajas del mes</p>
@@ -3611,28 +3354,14 @@ export default function MetricsPage() {
                   <p className="text-2xl font-bold tabular-nums text-violet-800">
                     {formatTurnoverPercent(turnoverMetrics.turnoverPercent)}
                   </p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Denominador: {turnoverMetrics.denominator}
-                  </p>
                 </div>
               </div>
-              <p className="mt-4 text-xs text-muted-foreground">
-                Bajas: empleados con estado <strong>baja</strong> cuya última actualización cae en el mes.
-                Altas: fecha de ingreso en el mes. Plantilla anterior: activos al último día del mes previo.
-              </p>
             </div>
 
             {/* Historial y Resumen (altas/bajas de empleados) */}
             <div className="grid gap-6 lg:grid-cols-3">
               <div className="lg:col-span-2 rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-2">Movimientos de Personal</h3>
-                <p className="mb-4 text-xs text-muted-foreground">
-                  Altas (nuevos empleados) y bajas (terminaciones) registradas en{" "}
-                  <Link href="/empleados" className="text-primary underline">
-                    Gestión de empleados
-                  </Link>
-                  .
-                </p>
+                <h3 className="font-semibold text-foreground mb-4">Movimientos de Personal</h3>
                 <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
                   {personnelMovements.length === 0 ? (
                     <p className="text-sm text-muted-foreground py-6 text-center">
@@ -3667,13 +3396,7 @@ export default function MetricsPage() {
               </div>
 
               <div className="rounded-xl border border-border bg-card p-6">
-                <h3 className="font-semibold text-foreground mb-1">Resumen del Mes</h3>
-                <p className="mb-4 text-xs text-muted-foreground">
-                  <span className="capitalize">{personnelMonthSummary.monthLabel}</span>
-                  <span className="block mt-1 text-[11px]">
-                    Altas y bajas del mes en curso (independiente del rango Desde/Hasta).
-                  </span>
-                </p>
+                <h3 className="font-semibold text-foreground mb-4">Resumen del Mes</h3>
                 <div className="space-y-4">
                   <div>
                     <div className="flex items-center justify-between mb-2">

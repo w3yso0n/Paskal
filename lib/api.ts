@@ -380,6 +380,10 @@ export async function attributeOrphanProduction(
     alertId: string
     operatorCode?: string | null
     operator2Code?: string | null
+    packager1Code?: string | null
+    packager2Code?: string | null
+    packager3Code?: string | null
+    packager4Code?: string | null
     sku?: string | null
   },
 ): Promise<AttributeOrphanResult> {

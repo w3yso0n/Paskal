@@ -5,7 +5,7 @@ import {
   resolveBusinessGoalForDisplay,
 } from "@/lib/bonus-goals-bridge"
 import { goalComplianceDateRange, isGoalActive } from "@/lib/goal-compliance-range"
-import { getPartsInTimeZone } from "@/lib/shift-timezone"
+import { getPartsInTimeZone, makeZonedDate } from "@/lib/shift-timezone"
 import {
   countsAsOperatorProduction,
   normalizeSku,
@@ -35,6 +35,164 @@ export function productionShiftFromMeasuredAt(iso: string): ApiGoalShift | null 
   if (mins >= 7 * 60 && mins < 16 * 60) return "matutino"
   if (mins >= 16 * 60 && mins < 23 * 60 + 30) return "vespertino"
   return null
+}
+
+const T1_START_MINS = 7 * 60
+const T2_START_MINS = 16 * 60
+const T2_END_MINS = 23 * 60 + 30
+
+/**
+ * Turno cuya meta diaria muestra el tablero según el reloj de planta.
+ * Tras la salida de T2 (23:30) o antes de la entrada de T1 (07:00) → matutino (siguiente turno).
+ */
+export function tableroDisplayGoalShiftFromClock(iso: string): ApiGoalShift {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return "matutino"
+  const { hour, minute } = getPartsInTimeZone(d, PLANT_TIMEZONE)
+  const mins = hour * 60 + minute
+  if (mins >= T1_START_MINS && mins < T2_START_MINS) return "matutino"
+  if (mins >= T2_START_MINS && mins < T2_END_MINS) return "vespertino"
+  return "matutino"
+}
+
+function addDaysToDateKey(dayKey: string, days: number, timeZone = PLANT_TIMEZONE): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey.trim())
+  if (!m) return dayKey
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return dayKey
+  const anchor = makeZonedDate(year, month, day, 12, 0, timeZone)
+  const shifted = new Date(anchor.getTime() + days * 24 * 60 * 60 * 1000)
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(shifted)
+}
+
+/** Día calendario al que pertenece la producción contada para la meta en curso. */
+export function resolveTableroGoalProductionDayKey(
+  dayKey: string,
+  goalShift: ApiGoalShift,
+  referenceIso: string,
+): string {
+  if (goalShift !== "matutino") return dayKey
+  const d = new Date(referenceIso)
+  if (Number.isNaN(d.getTime())) return dayKey
+  const { hour, minute } = getPartsInTimeZone(d, PLANT_TIMEZONE)
+  const mins = hour * 60 + minute
+  if (mins >= T2_END_MINS) return addDaysToDateKey(dayKey, 1)
+  return dayKey
+}
+
+export function shiftBoundsOnDateKey(
+  dayKey: string,
+  shift: ApiGoalShift,
+  timeZone = PLANT_TIMEZONE,
+): { start: Date; end: Date } {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey.trim())
+  if (!m) {
+    const now = new Date()
+    return { start: now, end: now }
+  }
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (shift === "matutino") {
+    return {
+      start: makeZonedDate(year, month, day, 7, 0, timeZone),
+      end: makeZonedDate(year, month, day, 16, 0, timeZone),
+    }
+  }
+  return {
+    start: makeZonedDate(year, month, day, 16, 0, timeZone),
+    end: makeZonedDate(year, month, day, 23, 30, timeZone),
+  }
+}
+
+export function filterEventsForTableroGoalShift(
+  events: ApiProductionEvent[],
+  dayKey: string,
+  shift: ApiGoalShift,
+  referenceIso: string,
+  isLiveView: boolean,
+): ApiProductionEvent[] {
+  const prodDayKey = isLiveView
+    ? resolveTableroGoalProductionDayKey(dayKey, shift, referenceIso)
+    : dayKey
+  const { start, end } = shiftBoundsOnDateKey(prodDayKey, shift)
+  const startMs = start.getTime()
+  const endMs = end.getTime()
+  return events.filter((e) => {
+    const t = new Date(e.occurredAt).getTime()
+    return t >= startMs && t < endMs
+  })
+}
+
+/** Producción dentro de T1 o T2 en un día calendario (sin lógica de “siguiente turno”). */
+export function filterEventsForCalendarDayShift(
+  events: ApiProductionEvent[],
+  dayKey: string,
+  shift: ApiGoalShift,
+): ApiProductionEvent[] {
+  return filterEventsForTableroGoalShift(events, dayKey, shift, dayKey, false)
+}
+
+/** Producción atribuible a un turno en un rango (mes/semestre). */
+export function filterEventsForShiftInPeriod(
+  events: ApiProductionEvent[],
+  shift: ApiGoalShift,
+): ApiProductionEvent[] {
+  return events.filter((e) => productionShiftFromMeasuredAt(e.occurredAt) === shift)
+}
+
+/** Mediodía del día calendario (YYYY-MM-DD) en zona de planta — referencia para días históricos. */
+export function noonIsoForDateKey(dateKey: string, timeZone = PLANT_TIMEZONE): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey.trim())
+  if (!m) return new Date().toISOString()
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return new Date().toISOString()
+  }
+  return makeZonedDate(year, month, day, 12, 0, timeZone).toISOString()
+}
+
+/**
+ * Turno para meta diaria en tablero.
+ * En vivo: solo reloj (al terminar T2 ya muestra meta T1, con 0 hasta que arranque).
+ * Histórico: turno con más eventos del día, o reloj del mediodía.
+ */
+export function resolveTableroProductionShift(options: {
+  nowIso?: string
+  dayEvents: ApiProductionEvent[]
+  dayReferenceIso?: string
+}): ApiGoalShift {
+  if (options.nowIso?.trim()) {
+    return tableroDisplayGoalShiftFromClock(options.nowIso)
+  }
+
+  if (options.dayEvents.length > 0) {
+    let matutino = 0
+    let vespertino = 0
+    for (const e of options.dayEvents) {
+      const s = productionShiftFromMeasuredAt(e.occurredAt)
+      if (s === "matutino") matutino += 1
+      else if (s === "vespertino") vespertino += 1
+    }
+    if (vespertino > matutino) return "vespertino"
+    if (matutino > 0) return "matutino"
+    const last = productionShiftFromMeasuredAt(
+      options.dayEvents[options.dayEvents.length - 1].occurredAt,
+    )
+    if (last) return last
+  }
+
+  const ref = options.dayReferenceIso ?? new Date().toISOString()
+  return tableroDisplayGoalShiftFromClock(ref)
 }
 
 export function todayDateKeyInTimeZone(timeZone: string): string {
@@ -209,15 +367,14 @@ export function resolveTableroWindingDailyGoalProgress(
   definitions: BonusGoalDefinition[],
   todayEvents: ApiProductionEvent[],
   operatorCode: string,
-  shift: ApiGoalShift | null,
+  shift: ApiGoalShift,
   today: string,
+  referenceIso: string,
+  isLiveView: boolean,
   skuById: Map<string, string>,
   upbById: Map<string, number>,
   resolveOperatorCode: (e: ApiProductionEvent) => string,
 ): OperatorDailyGoalResult {
-  if (!shift) {
-    return { percentage: 0, goalRemaining: null, goalTarget: null }
-  }
   const sourceKey = shift === "matutino" ? "winding-t1-daily" : "winding-t2-daily"
   const def = definitions.find((d) => d.sourceKey === sourceKey)
   if (!def) {
@@ -231,14 +388,59 @@ export function resolveTableroWindingDailyGoalProgress(
     return { percentage: 0, goalRemaining: null, goalTarget: null }
   }
 
-  const actual = aggregateOperatorDailyProduction(
+  const goalEvents = filterEventsForTableroGoalShift(
     todayEvents,
+    today,
+    shift,
+    referenceIso,
+    isLiveView,
+  )
+  const actual = aggregateOperatorDailyProduction(
+    goalEvents,
     operatorCode,
     false,
     skuById,
     upbById,
     resolveOperatorCode,
   )
+  const { percentage, remaining } = computeDailyGoalProgress(actual, target)
+  return { percentage, goalRemaining: remaining, goalTarget: target }
+}
+
+/** Meses incluidos en la ventana de semestre del tablero (6 meses calendario). */
+export const TABLERO_SEMESTER_MONTHS = 6
+
+export function tableroWindingMonthlyTarget(
+  definitions: BonusGoalDefinition[],
+  shift: ApiGoalShift,
+): number | null {
+  const sourceKey = shift === "matutino" ? "winding-t1-monthly" : "winding-t2-monthly"
+  const def = definitions.find((d) => d.sourceKey === sourceKey)
+  if (!def) return null
+  const target = Number(def.targetValue)
+  return Number.isFinite(target) && target > 0 ? target : null
+}
+
+export function tableroWindingPeriodTarget(
+  definitions: BonusGoalDefinition[],
+  shift: ApiGoalShift,
+  period: "month" | "semester",
+): number | null {
+  const monthly = tableroWindingMonthlyTarget(definitions, shift)
+  if (monthly == null) return null
+  return period === "semester" ? monthly * TABLERO_SEMESTER_MONTHS : monthly
+}
+
+export function resolveTableroWindingPeriodGoalProgress(
+  actual: number,
+  shift: ApiGoalShift,
+  period: "month" | "semester",
+  definitions: BonusGoalDefinition[],
+): OperatorDailyGoalResult {
+  const target = tableroWindingPeriodTarget(definitions, shift, period)
+  if (target == null) {
+    return { percentage: 0, goalRemaining: null, goalTarget: null }
+  }
   const { percentage, remaining } = computeDailyGoalProgress(actual, target)
   return { percentage, goalRemaining: remaining, goalTarget: target }
 }

@@ -190,7 +190,10 @@ export function visibleMetricasTabs(user: RequestUser | null | undefined): strin
 
 export function visibleEmpleadosTabs(user: RequestUser | null | undefined): string[] {
   return Object.entries(EMPLEADOS_TAB_MODULES)
-    .filter(([, module]) => hasModuleAccess(user, module))
+    .filter(([, moduleOrModules]) => {
+      const modules = Array.isArray(moduleOrModules) ? moduleOrModules : [moduleOrModules]
+      return hasAnyModuleAccess(user, modules)
+    })
     .map(([tab]) => tab)
 }
 

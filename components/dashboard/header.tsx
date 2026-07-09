@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useCallback } from "react"
 import Link from "next/link"
 import { ChevronDown, Menu, LogOut, Settings } from "lucide-react"
 import {
@@ -10,9 +10,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { AlertsDropdown } from "@/components/notifications/alerts-dropdown"
-import { alerts as initialAlerts } from "@/lib/mock-data"
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/contexts/auth-context"
+import { hasModuleAccess, hasPermission } from "@/lib/permissions"
+import { useAlertsNotifications } from "@/hooks/use-alerts-notifications"
 
 interface HeaderProps {
   breadcrumbs?: { label: string; href?: string }[]
@@ -21,19 +22,34 @@ interface HeaderProps {
 
 export function Header({ breadcrumbs, onOpenMobileMenu }: HeaderProps) {
   const { user, logout } = useAuth()
-  const [alerts, setAlerts] = useState(initialAlerts)
+  const canAccessAlerts = hasModuleAccess(user, "alertas")
+  const canDismissAlerts = hasPermission(user, "alerts.dismiss")
+  const {
+    alerts,
+    loading,
+    pulse,
+    markAsRead,
+    markAllAsRead,
+    dismiss,
+  } = useAlertsNotifications()
 
-  const handleMarkAsRead = useCallback((id: string) => {
-    setAlerts((prev) => prev.map((alert) => (alert.id === id ? { ...alert, isRead: true } : alert)))
-  }, [])
+  const handleMarkAsRead = useCallback(
+    (id: string) => {
+      void markAsRead(id)
+    },
+    [markAsRead],
+  )
 
-  const handleDismiss = useCallback((id: string) => {
-    setAlerts((prev) => prev.filter((alert) => alert.id !== id))
-  }, [])
+  const handleDismiss = useCallback(
+    (id: string) => {
+      void dismiss(id)
+    },
+    [dismiss],
+  )
 
   const handleMarkAllAsRead = useCallback(() => {
-    setAlerts((prev) => prev.map((alert) => ({ ...alert, isRead: true })))
-  }, [])
+    void markAllAsRead()
+  }, [markAllAsRead])
 
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background px-4 sm:px-6">
@@ -70,12 +86,17 @@ export function Header({ breadcrumbs, onOpenMobileMenu }: HeaderProps) {
         )}
       </div>
       <div className="flex items-center gap-3">
-        <AlertsDropdown
-          alerts={alerts}
-          onMarkAsRead={handleMarkAsRead}
-          onDismiss={handleDismiss}
-          onMarkAllAsRead={handleMarkAllAsRead}
-        />
+        {canAccessAlerts && (
+          <AlertsDropdown
+            alerts={alerts}
+            loading={loading}
+            pulse={pulse}
+            canDismiss={canDismissAlerts}
+            onMarkAsRead={handleMarkAsRead}
+            onDismiss={handleDismiss}
+            onMarkAllAsRead={handleMarkAllAsRead}
+          />
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
             {user?.email ?? "Usuario"}

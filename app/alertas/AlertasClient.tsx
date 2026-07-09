@@ -68,13 +68,20 @@ import {
   type ApiProductSku,
 } from "@/lib/api"
 import { toast } from "sonner"
-import { sumOrphanPendingForAlert } from "@/lib/production-goal-events"
+import {
+  parsePendingUnitsFromAlertMessage,
+  sumOrphanPendingForAlert,
+} from "@/lib/production-goal-events"
+import { mapApiAlertToUi, severityRank, ALERTS_POLL_MS } from "@/lib/alert-ui"
+import {
+  isFloorOperatorCandidate,
+  isFloorPackerCandidate,
+} from "@/lib/employee-production-role"
 import {
   buildDowntimeNoteContextFromAlert,
   isDowntimeParoAlert,
 } from "@/lib/employee-downtime-analytics"
 
-const ALERTS_POLL_MS = 30_000
 
 // --- Constants ---
 
@@ -106,45 +113,6 @@ const categoryLabels: Record<AlertCategory, string> = {
   system: "Sistema",
 }
 
-const severityRank: Record<AlertType, number> = {
-  error: 4,
-  warning: 3,
-  info: 2,
-  success: 1,
-}
-
-function mapApiAlertToUi(a: ApiAlert, productionEvents: ApiProductionEvent[] = []): Alert {
-  const type: AlertType =
-    a.severity === "critical"
-      ? "error"
-      : a.severity === "high"
-        ? "warning"
-        : a.severity === "low"
-          ? "info"
-          : "warning"
-
-  const category: AlertCategory = a.machineId != null ? "machine" : "system"
-
-  const timestamp = new Date(a.createdAt)
-  const orphanPending = a.title.startsWith("Producción sin check-in")
-    ? sumOrphanPendingForAlert(productionEvents, a.id)
-    : 0
-  const isRead = a.status !== "open" && orphanPending === 0
-  const actionRequired = a.status === "open" || orphanPending > 0
-
-  return {
-    id: a.id,
-    type,
-    category,
-    title: a.title,
-    message: a.message ?? "",
-    timestamp: Number.isNaN(timestamp.getTime()) ? new Date() : timestamp,
-    isRead,
-    machineId: a.machineId ?? undefined,
-    actionRequired,
-  }
-}
-
 // --- Helpers ---
 
 function formatTimeAgo(date: Date): string {
@@ -165,8 +133,16 @@ function formatDateTime(date: Date): string {
   })
 }
 
-function isOrphanProductionAlert(a: Alert): boolean {
+function isOperatorOrphanProductionAlert(a: Alert): boolean {
   return a.title.startsWith("Producción sin check-in")
+}
+
+function isPackagerOrphanProductionAlert(a: Alert): boolean {
+  return a.title.startsWith("Producción sin empacador")
+}
+
+function isAttributableOrphanAlert(a: Alert): boolean {
+  return isOperatorOrphanProductionAlert(a) || isPackagerOrphanProductionAlert(a)
 }
 
 // --- Component ---
@@ -191,6 +167,7 @@ export default function AlertasClient() {
   const [skus, setSkus] = useState<ApiProductSku[]>([])
   const [assignAlert, setAssignAlert] = useState<Alert | null>(null)
   const [assignOperator, setAssignOperator] = useState<string>("")
+  const [assignPackager, setAssignPackager] = useState<string>("")
   const [assignSku, setAssignSku] = useState<string>("")
   const [assigning, setAssigning] = useState(false)
   const [noteAlertId, setNoteAlertId] = useState<string | null>(null)
@@ -367,10 +344,31 @@ export default function AlertasClient() {
     await updateAlert(token, id, { status: "closed", closedAt: new Date().toISOString() })
   }
 
+  const assignTargetsPackager = assignAlert
+    ? isPackagerOrphanProductionAlert(assignAlert)
+    : false
+
+  const operatorCandidates = useMemo(
+    () => employees.filter((e) => e.employeeCode && isFloorOperatorCandidate(e)),
+    [employees],
+  )
+
+  const packagerCandidates = useMemo(
+    () => employees.filter((e) => e.employeeCode && isFloorPackerCandidate(e)),
+    [employees],
+  )
+
   const orphanUnitsForAlert = (alert: Alert | null): number => {
     if (!alert) return 0
-    const fromEvents = sumOrphanPendingForAlert(productionEvents, alert.id)
-    if (fromEvents > 0) return fromEvents
+    if (isOperatorOrphanProductionAlert(alert)) {
+      const fromEvents = sumOrphanPendingForAlert(productionEvents, alert.id)
+      if (fromEvents > 0) return fromEvents
+    }
+    if (isPackagerOrphanProductionAlert(alert)) {
+      const api = apiAlertsById.get(alert.id)
+      const fromMessage = parsePendingUnitsFromAlertMessage(api?.message ?? alert.message)
+      if (fromMessage > 0) return fromMessage
+    }
     const api = apiAlertsById.get(alert.id)
     const msg = api?.message ?? alert.message ?? ""
     const m = msg.match(/(\d+)\s*piezas/i)
@@ -379,6 +377,7 @@ export default function AlertasClient() {
 
   const openAssign = (alert: Alert) => {
     setAssignOperator("")
+    setAssignPackager("")
     setAssignSku("")
     setAssignAlert(alert)
   }
@@ -420,7 +419,12 @@ export default function AlertasClient() {
   }
 
   const submitAssign = async () => {
-    if (!assignAlert?.machineId || !assignOperator) return
+    if (!assignAlert?.machineId) return
+    if (assignTargetsPackager) {
+      if (!assignPackager) return
+    } else if (!assignOperator) {
+      return
+    }
     setAssigning(true)
     try {
       const token = await getAccessToken()
@@ -428,20 +432,23 @@ export default function AlertasClient() {
         toast.error("Sesión no válida o expirada.")
         return
       }
+      const personCode = assignTargetsPackager ? assignPackager : assignOperator
       const res = await attributeOrphanProduction(token, assignAlert.machineId, {
         alertId: assignAlert.id,
-        operatorCode: assignOperator,
+        operatorCode: assignTargetsPackager ? null : assignOperator,
+        packager1Code: assignTargetsPackager ? assignPackager : null,
         sku: assignSku || null,
       })
+      const roleLabel = assignTargetsPackager ? "empacador" : "operador"
       if (res.assigned) {
         toast.success(
-          `Se atribuyeron ${res.attributed} piezas a ${assignOperator} y quedó asignado a la máquina.`,
+          `Se atribuyeron ${res.attributed} piezas a ${personCode} y quedó asignado a la máquina.`,
         )
       } else {
         toast.warning(
           res.assignError
-            ? `Se atribuyeron ${res.attributed} piezas, pero no se pudo asignar el operador: ${res.assignError}`
-            : `Se atribuyeron ${res.attributed} piezas a ${assignOperator}.`,
+            ? `Se atribuyeron ${res.attributed} piezas, pero no se pudo asignar el ${roleLabel}: ${res.assignError}`
+            : `Se atribuyeron ${res.attributed} piezas a ${personCode}.`,
         )
       }
       setMachineRows((prev) => prev.map((m) => (m.id === res.machine.id ? res.machine : m)))
@@ -604,7 +611,7 @@ export default function AlertasClient() {
                   const noteCtx = apiAlert ? buildDowntimeNoteContextFromAlert(apiAlert) : null
                   const alertNote = noteCtx ? notesBySourceKey.get(noteCtx.sourceKey) : undefined
                   const canAddNote = apiAlert ? isDowntimeParoAlert(apiAlert.title) : false
-                  const isOrphan = isOrphanProductionAlert(alert)
+                  const isOrphan = isAttributableOrphanAlert(alert)
                   const updatedAt = apiAlert?.updatedAt
                     ? new Date(apiAlert.updatedAt)
                     : alert.timestamp
@@ -761,46 +768,60 @@ export default function AlertasClient() {
               <span className="font-medium text-foreground">
                 {orphanUnitsForAlert(assignAlert)} piezas
               </span>{" "}
-              producidas sin estar en verde. Elige el operador y SKU a quien se le acreditarán.
+              producidas sin{" "}
+              {assignTargetsPackager ? "empacador asignado" : "estar en verde"}. Elige el{" "}
+              {assignTargetsPackager ? "empacador" : "operador"} y SKU a quien se le acreditarán.
             </p>
             <div className="space-y-1.5">
-              <Label>Operador</Label>
-              <Select value={assignOperator} onValueChange={setAssignOperator}>
+              <Label>{assignTargetsPackager ? "Empacador" : "Operador"}</Label>
+              <Select
+                value={assignTargetsPackager ? assignPackager : assignOperator}
+                onValueChange={assignTargetsPackager ? setAssignPackager : setAssignOperator}
+              >
                 <SelectTrigger>
-                  <SelectValue placeholder="Selecciona operador" />
+                  <SelectValue
+                    placeholder={
+                      assignTargetsPackager ? "Selecciona empacador" : "Selecciona operador"
+                    }
+                  />
                 </SelectTrigger>
                 <SelectContent>
-                  {employees
-                    .filter((e) => e.employeeCode)
-                    .map((e) => (
-                      <SelectItem key={e.id} value={e.employeeCode as string}>
-                        {e.fullName}
-                        {e.nfcCardUid ? ` (NFC: ${e.nfcCardUid})` : ""}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label>SKU (opcional — si no, el actual de la máquina)</Label>
-              <Select value={assignSku} onValueChange={setAssignSku}>
-                <SelectTrigger>
-                  <SelectValue placeholder="SKU" />
-                </SelectTrigger>
-                <SelectContent>
-                  {skus.map((s) => (
-                    <SelectItem key={s.id} value={s.code}>
-                      {s.code}
+                  {(assignTargetsPackager ? packagerCandidates : operatorCandidates).map((e) => (
+                    <SelectItem key={e.id} value={e.employeeCode as string}>
+                      {e.fullName}
+                      {e.nfcCardUid ? ` (NFC: ${e.nfcCardUid})` : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
+            {!assignTargetsPackager && (
+              <div className="space-y-1.5">
+                <Label>SKU (opcional — si no, el actual de la máquina)</Label>
+                <Select value={assignSku} onValueChange={setAssignSku}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="SKU" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {skus.map((s) => (
+                      <SelectItem key={s.id} value={s.code}>
+                        {s.code}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setAssignAlert(null)} disabled={assigning}>
                 Cancelar
               </Button>
-              <Button onClick={submitAssign} disabled={assigning || !assignOperator}>
+              <Button
+                onClick={submitAssign}
+                disabled={
+                  assigning || (assignTargetsPackager ? !assignPackager : !assignOperator)
+                }
+              >
                 {assigning && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
                 Atribuir
               </Button>

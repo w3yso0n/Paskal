@@ -113,14 +113,17 @@ export function buildRoleAccessMatrix(): AccessMatrixRow[] {
     )
   }
 
-  for (const [tab, module] of Object.entries(EMPLEADOS_TAB_MODULES)) {
-    rows.push(
-      rowForModule(
-        "Empleados — pestañas",
-        module,
-        `Empleados → ${EMPLEADOS_TAB_LABELS[tab] ?? tab}`,
-      ),
-    )
+  for (const [tab, moduleOrModules] of Object.entries(EMPLEADOS_TAB_MODULES)) {
+    const modules = Array.isArray(moduleOrModules) ? moduleOrModules : [moduleOrModules]
+    for (const module of modules) {
+      rows.push(
+        rowForModule(
+          "Empleados — pestañas",
+          module,
+          `Empleados → ${EMPLEADOS_TAB_LABELS[tab] ?? tab}`,
+        ),
+      )
+    }
   }
 
   for (const [tab, module] of Object.entries(REGLAS_TAB_MODULES)) {

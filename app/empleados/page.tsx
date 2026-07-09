@@ -57,7 +57,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
 import { RequireModule } from "@/components/auth/require-module"
-import { visibleEmpleadosTabs } from "@/lib/permissions"
+import { hasModuleAccess, hasPermission, visibleEmpleadosTabs } from "@/lib/permissions"
 import {
   createEmployee,
   createEmployeeDayRecord,
@@ -115,6 +115,7 @@ import {
   validateIncapacityRecordDate,
   incapacityDateBlockedMessage,
 } from "@/lib/incapacity-policy"
+import { toast } from "sonner"
 
 const RECORD_TYPE_LABELS: Record<ApiEmployeeDayRecordType, string> = {
   vacation: "Vacaciones (V)",
@@ -228,10 +229,12 @@ function EmployeeFormFields({
   form,
   onChange,
   idPrefix,
+  canEditNfc = true,
 }: {
   form: EmployeeFormState
   onChange: (next: EmployeeFormState) => void
   idPrefix: string
+  canEditNfc?: boolean
 }) {
   return (
     <div className="grid gap-4 sm:grid-cols-2">
@@ -251,7 +254,13 @@ function EmployeeFormFields({
           value={form.nfcCardUid}
           onChange={(e) => onChange({ ...form, nfcCardUid: e.target.value })}
           placeholder="Ej: 03110694"
+          disabled={!canEditNfc}
         />
+        {!canEditNfc ? (
+          <p className="text-xs text-muted-foreground">
+            Solo Recursos Humanos o Director pueden asignar o cambiar tarjetas NFC.
+          </p>
+        ) : null}
         {form.primaryRole === "maintenance" ? (
           <p className="text-xs text-muted-foreground">
             Con rol Mantenimiento, el tap en la máquina abre/cierra una sesión azul: la producción de
@@ -377,11 +386,14 @@ function EmployeeFormFields({
 export default function EmployeesPage() {
   const { user, getAccessToken } = useAuth()
   const allowedTabs = useMemo(() => visibleEmpleadosTabs(user), [user])
+  const canManageEmployees = hasPermission(user, "employees.manage")
+  const canAssignNfcCards = hasModuleAccess(user, "empleados_asignar_tarjetas")
   const [employeeTab, setEmployeeTab] = useState("employees")
 
   useEffect(() => {
-    if (allowedTabs.length > 0 && !allowedTabs.includes(employeeTab)) {
-      setEmployeeTab(allowedTabs[0]!)
+    if (allowedTabs.length === 0) return
+    if (!allowedTabs.includes(employeeTab)) {
+      setEmployeeTab(allowedTabs.includes("employees") ? "employees" : allowedTabs[0]!)
     }
   }, [allowedTabs, employeeTab])
   const [employees, setEmployees] = useState<ApiEmployee[]>([])
@@ -600,6 +612,10 @@ export default function EmployeesPage() {
   }, [employees, searchQuery])
 
   const openCreateEmployee = () => {
+    if (!canManageEmployees) {
+      toast.error("No tienes permiso para agregar empleados.")
+      return
+    }
     setEditingEmployee(null)
     setEmployeeForm(EMPTY_EMPLOYEE_FORM)
     setIsEmployeeDialogOpen(true)
@@ -614,6 +630,10 @@ export default function EmployeesPage() {
   const handleSaveEmployee = async () => {
     const fullName = employeeForm.fullName.trim()
     if (!fullName || !user) return
+    if (!canManageEmployees) {
+      toast.error("No tienes permiso para crear o editar empleados.")
+      return
+    }
 
     const token = await getAccessToken()
     if (!token) return
@@ -622,7 +642,9 @@ export default function EmployeesPage() {
     try {
       const payload = {
         fullName,
-        nfcCardUid: employeeForm.nfcCardUid.trim() || null,
+        nfcCardUid: canAssignNfcCards
+          ? employeeForm.nfcCardUid.trim() || null
+          : editingEmployee?.nfcCardUid?.trim() || null,
         rfc: employeeForm.rfc.trim() || null,
         imss: employeeForm.imss.trim() || null,
         primaryRole: employeeForm.primaryRole,
@@ -636,29 +658,40 @@ export default function EmployeesPage() {
 
       if (editingEmployee) {
         await updateEmployee(token, editingEmployee.id, payload)
+        toast.success("Empleado actualizado")
       } else {
         await createEmployee(token, payload)
+        toast.success("Empleado agregado")
       }
-      // Re-fetch de la lista: refleja la normalización del backend (NFC, employee_code interno
-      // auto-derivado, etc.) y evita que las tarjetas queden con datos stale tras editar.
       const fresh = await getEmployees(token)
       setEmployees(fresh)
 
       setIsEmployeeDialogOpen(false)
       setEditingEmployee(null)
       setEmployeeForm(EMPTY_EMPLOYEE_FORM)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo guardar el empleado")
     } finally {
       setSavingEmployee(false)
     }
   }
 
   const handleDeleteEmployee = async (employee: ApiEmployee) => {
+    if (!canManageEmployees) {
+      toast.error("No tienes permiso para eliminar empleados.")
+      return
+    }
     const ok = window.confirm(`¿Eliminar a ${employee.fullName}? Esta acción no se puede deshacer.`)
     if (!ok) return
     const token = await getAccessToken()
     if (!token) return
-    await deleteEmployee(token, employee.id)
-    setEmployees((prev) => prev.filter((e) => e.id !== employee.id))
+    try {
+      await deleteEmployee(token, employee.id)
+      setEmployees((prev) => prev.filter((e) => e.id !== employee.id))
+      toast.success("Empleado eliminado")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo eliminar el empleado")
+    }
   }
 
   const openDayRecordDialog = (recordType: ApiEmployeeDayRecordType) => {
@@ -895,7 +928,11 @@ export default function EmployeesPage() {
               </p>
             </div>
           </div>
-          <Button className="gap-2 shrink-0" onClick={openCreateEmployee}>
+          <Button
+            className="gap-2 shrink-0"
+            onClick={openCreateEmployee}
+            disabled={!canManageEmployees}
+          >
             <Plus className="h-4 w-4" />
             Agregar empleado
           </Button>
@@ -1068,6 +1105,7 @@ export default function EmployeesPage() {
                             </Badge>
                           ) : null}
                         </div>
+                        {canManageEmployees ? (
                         <div className="flex border-t border-border">
                           <Button
                             variant="ghost"
@@ -1086,6 +1124,7 @@ export default function EmployeesPage() {
                             Eliminar
                           </Button>
                         </div>
+                        ) : null}
                       </CardContent>
                     </Card>
                   )
@@ -1604,6 +1643,7 @@ export default function EmployeesPage() {
             form={employeeForm}
             onChange={setEmployeeForm}
             idPrefix={editingEmployee ? "edit" : "new"}
+            canEditNfc={canAssignNfcCards}
           />
           <DialogFooter className="gap-2 sm:gap-0">
             <Button variant="outline" onClick={() => setIsEmployeeDialogOpen(false)}>

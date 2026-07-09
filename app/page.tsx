@@ -25,10 +25,17 @@ import {
   getMachines,
   getProductionEvents,
   getGoals,
+  getBonusProductionConfigForMonth,
   type ApiEmployee,
+  type ApiGoal,
   type ApiMachine,
   type ApiProductionEvent,
 } from "@/lib/api"
+import { buildGoalsForProgressTracking } from "@/lib/bonus-goals-bridge"
+import {
+  DEFAULT_BONUS_PRODUCTION_CONFIG,
+  normalizeBonusProductionConfig,
+} from "@/lib/bonus-production-config"
 import { filterFloorMachines } from "@/lib/machine-floor"
 import {
   fetchActualByGoalId,
@@ -297,7 +304,11 @@ export default function HomePage() {
           DASHBOARD_TIMEZONE,
         )
 
-        const [apiMachines, apiEmployees, dayEvents, monthEvents, goals] = await Promise.all([
+        const monthParts = getPartsInTimeZone(now, DASHBOARD_TIMEZONE)
+        const bonusMonth = `${monthParts.year}-${String(monthParts.month).padStart(2, "0")}`
+
+        const [apiMachines, apiEmployees, dayEvents, monthEvents, goalsResult, bonusCfg] =
+          await Promise.all([
           getMachines(token),
           getEmployees(token),
           getProductionEvents(token, {
@@ -310,9 +321,15 @@ export default function HomePage() {
             to: endOfMonthTz.toISOString(),
             limit: 5000,
           }),
-          getGoals(token),
+          getGoals(token).catch(() => [] as ApiGoal[]),
+          getBonusProductionConfigForMonth(token, bonusMonth).catch(() => null),
         ])
         if (cancelled) return
+        const goals = goalsResult
+        const bonusConfig = bonusCfg
+          ? normalizeBonusProductionConfig(bonusCfg.config)
+          : DEFAULT_BONUS_PRODUCTION_CONFIG
+        const goalsForActual = buildGoalsForProgressTracking(goals, bonusConfig, bonusMonth)
         const floorMachines = filterFloorMachines(apiMachines)
         setMachines(floorMachines)
         setEmployees(apiEmployees)
@@ -441,9 +458,12 @@ export default function HomePage() {
         setTotalProduced(monthTotal)
         setProducedOnSelectedDay(dayTotal)
 
-        const actualByGoalId = await fetchActualByGoalId(token, goals, floorMachines)
+        const actualByGoalId = await fetchActualByGoalId(token, goalsForActual, floorMachines)
         if (cancelled) return
-        const monthlySummary = summarizeMonthlyGoalProgress(goals, actualByGoalId)
+        const shiftFilter = selectedShift === "shift1" ? "matutino" : "vespertino"
+        const monthlySummary = summarizeMonthlyGoalProgress(goalsForActual, actualByGoalId, {
+          shiftFilter,
+        })
         setMonthlyGoal(
           monthlySummary
             ? {
@@ -526,20 +546,17 @@ export default function HomePage() {
       return {
         month: totalProduced,
         day: producedOnSelectedDay,
-        shift: null as number | null,
         operatorLabel: null as string | null,
       }
     }
 
     let month = 0
     let day = 0
-    let shift = 0
     for (const op of selectedOperators) {
       const stats = operatorStats[op]
       if (!stats) continue
       month += stats.month
       day += stats.day
-      shift += stats.shift
     }
 
     const operatorLabel =
@@ -547,7 +564,7 @@ export default function HomePage() {
         ? selectedOperators[0]
         : `${selectedOperators.length} operadores seleccionados`
 
-    return { month, day, shift, operatorLabel }
+    return { month, day, operatorLabel }
   }, [
     operatorFilterActive,
     selectedOperators,
@@ -565,7 +582,18 @@ export default function HomePage() {
     }
   }, [monthlyGoal, operatorFilterActive, displayKpis.month])
 
-  const machinesActive = machines.filter((m) => m.status === "green").length
+  const machineStatusCounts = useMemo(() => {
+    let activas = 0
+    let esperando = 0
+    let inactivas = 0
+    for (const m of machines) {
+      if (m.status === "green") activas++
+      else if (m.status === "yellow") esperando++
+      else inactivas++
+    }
+    return { activas, esperando, inactivas, total: machines.length }
+  }, [machines])
+
   const shiftLabel = selectedShift === "shift1" ? "Turno 1" : "Turno 2"
   return (
     <DashboardLayout breadcrumbs={[{ label: "Inicio" }]}>
@@ -606,24 +634,33 @@ export default function HomePage() {
             iconColor="text-cyan-600"
           />
           <KpiCard
-            title={
-              operatorFilterActive
-                ? `Producción en ${shiftLabel}`
-                : "Máquinas Activas"
-            }
-            value={
+            title="Estado de máquinas"
+            value={loading ? "—" : machineStatusCounts.total}
+            breakdown={
               loading
-                ? "—"
-                : operatorFilterActive
-                  ? (displayKpis.shift ?? 0).toLocaleString()
-                  : String(machinesActive)
+                ? undefined
+                : [
+                    {
+                      label: "Activas",
+                      value: machineStatusCounts.activas,
+                      dotClass: "bg-green-500",
+                      valueClass: "text-green-700",
+                    },
+                    {
+                      label: "Esperando",
+                      value: machineStatusCounts.esperando,
+                      dotClass: "bg-yellow-500",
+                      valueClass: "text-yellow-700",
+                    },
+                    {
+                      label: "Inactivas",
+                      value: machineStatusCounts.inactivas,
+                      dotClass: "bg-red-500",
+                      valueClass: "text-red-700",
+                    },
+                  ]
             }
-            subtitle={
-              operatorFilterActive
-                ? displayKpis.operatorLabel ?? undefined
-                : undefined
-            }
-            icon={operatorFilterActive ? Clock : Server}
+            icon={Server}
             iconColor="text-primary"
           />
           <KpiCard
