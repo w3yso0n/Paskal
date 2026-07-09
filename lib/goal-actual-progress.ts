@@ -118,13 +118,16 @@ export function computeActualByGoalId(input: {
   machines: ApiMachine[]
   productionEvents: ApiProductionEvent[]
   scrapCaptures?: ApiManualDataCapture[]
+  /** Día de referencia para metas diarias (historial). */
+  ref?: Date
 }): Record<string, number> {
-  const { goals, machines, productionEvents, scrapCaptures = [] } = input
+  const { goals, machines, productionEvents, scrapCaptures = [], ref } = input
+  const complianceRef = ref ?? new Date()
   const { skuById, upbById } = buildMachineMaps(machines)
   const actual: Record<string, number> = {}
 
   for (const g of goals) {
-    const range = goalComplianceDateRange(g)
+    const range = goalComplianceDateRange(g, complianceRef)
     const { from, to } = toDateTimeRange(range.startDate, range.endDate)
     const shift = g.shift ?? null
     const goalSku = normalizeSku(g.sku)
@@ -157,13 +160,15 @@ export async function fetchActualByGoalId(
   accessToken: string,
   goals: ApiGoal[],
   machines: ApiMachine[],
+  options?: { ref?: Date },
 ): Promise<Record<string, number>> {
   if (goals.length === 0) return {}
 
+  const complianceRef = options?.ref ?? new Date()
   const needsProductionEvents = goals.some((g) => g.metricKind === "production")
   const needsScrapCaptures = goals.some((g) => g.metricKind === "scrap")
 
-  const complianceRanges = goals.map((g) => goalComplianceDateRange(g))
+  const complianceRanges = goals.map((g) => goalComplianceDateRange(g, complianceRef))
   const minStart = complianceRanges.reduce(
     (min, r) => (r.startDate < min ? r.startDate : min),
     complianceRanges[0].startDate,
@@ -193,13 +198,14 @@ export async function fetchActualByGoalId(
     machines,
     productionEvents,
     scrapCaptures,
+    ref: complianceRef,
   })
 }
 
 export function summarizeMonthlyGoalProgress(
   goals: ApiGoal[],
   actualByGoalId: Record<string, number>,
-  options?: { shiftFilter?: "all" | ApiGoalShift },
+  options?: { shiftFilter?: "all" | ApiGoalShift; ref?: Date },
 ): { actual: number; target: number; pct: number; goalCount: number } | null {
   const monthly = selectMonthlyProductionGoals(goals, options)
   if (monthly.length === 0) return null

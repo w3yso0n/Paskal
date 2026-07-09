@@ -5,6 +5,54 @@ import {
   monthlyMeta100FromDaily,
 } from "@/lib/bonus-production-config"
 
+/** Operadores winding por turno cuando no hay maestro cargado (meta individual × este número = meta del turno). */
+export const DEFAULT_WINDING_OPERATORS_PER_SHIFT = 20
+
+export type WindingShiftHeadcount = {
+  matutino: number
+  vespertino: number
+}
+
+type EmployeeHeadcountRow = {
+  status?: string | null
+  shift?: number | null
+  primaryRole?: string | null
+}
+
+export function resolveWindingShiftHeadcount(
+  employees?: EmployeeHeadcountRow[],
+): WindingShiftHeadcount {
+  const countShift = (shiftNum: 1 | 2): number => {
+    if (!employees?.length) return DEFAULT_WINDING_OPERATORS_PER_SHIFT
+    const n = employees.filter((e) => {
+      if (e.status && e.status !== "active") return false
+      if (e.shift !== shiftNum) return false
+      return e.primaryRole === "operator"
+    }).length
+    return n > 0 ? n : DEFAULT_WINDING_OPERATORS_PER_SHIFT
+  }
+  return { matutino: countShift(1), vespertino: countShift(2) }
+}
+
+export function windingHeadcountForShift(
+  headcount: WindingShiftHeadcount,
+  shift: ApiGoalShift | null | undefined,
+): number {
+  if (shift === "matutino") return headcount.matutino
+  if (shift === "vespertino") return headcount.vespertino
+  return DEFAULT_WINDING_OPERATORS_PER_SHIFT
+}
+
+/** Meta por operador (reglas de negocio) → meta agregada del turno en pantallas de cumplimiento grupal. */
+export function aggregateWindingMetasGoalTarget(
+  def: BonusGoalDefinition,
+  operatorsPerShift: number,
+): number {
+  if (!isMetasBusinessGoalSourceKey(def.sourceKey)) return def.targetValue
+  const n = Math.max(1, operatorsPerShift)
+  return Math.round(def.targetValue * n)
+}
+
 export type BonusGoalDefinition = {
   sourceKey: string
   label: string
@@ -240,12 +288,20 @@ export function resolveBusinessGoalForDisplay(
   dbGoals: ApiGoal[],
   def: BonusGoalDefinition,
   monthBounds: { startDate: string; endDate: string },
+  options?: {
+    /** Meta del turno = meta individual × operadores (solo metas Winding en Metas). */
+    operatorsPerShift?: number
+  },
 ): ApiGoal {
+  const targetValue = aggregateWindingMetasGoalTarget(
+    def,
+    options?.operatorsPerShift ?? DEFAULT_WINDING_OPERATORS_PER_SHIFT,
+  )
   const synced = dbGoals.find((g) => goalMatchesBonusDefinition(g, def, monthBounds))
   if (synced) {
-    return { ...synced, targetValue: def.targetValue }
+    return { ...synced, targetValue }
   }
-  return syntheticGoalFromDefinition(def, monthBounds)
+  return { ...syntheticGoalFromDefinition(def, monthBounds), targetValue }
 }
 
 export function getBonusDefinitionForGoal(
@@ -274,12 +330,16 @@ export function buildGoalsForProgressTracking(
   dbGoals: ApiGoal[],
   config: BonusProductionConfigData,
   effectiveMonth: string,
+  options?: { headcount?: WindingShiftHeadcount },
 ): ApiGoal[] {
   const allDefinitions = bonusConfigToGoalDefinitions(config)
   const metasBusinessDefinitions = bonusConfigToMetasBusinessGoalDefinitions(config)
   const bounds = monthDateBounds(effectiveMonth)
+  const headcount = options?.headcount ?? resolveWindingShiftHeadcount()
   const business = metasBusinessDefinitions.map((def) =>
-    resolveBusinessGoalForDisplay(dbGoals, def, bounds),
+    resolveBusinessGoalForDisplay(dbGoals, def, bounds, {
+      operatorsPerShift: windingHeadcountForShift(headcount, def.shift),
+    }),
   )
   const custom = dbGoals.filter((g) => !isBusinessManagedGoal(g, allDefinitions, bounds))
   return [...business, ...custom]

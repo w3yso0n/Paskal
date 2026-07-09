@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { KpiCard } from "@/components/dashboard/kpi-card"
 import { AttendanceTable } from "@/components/attendance/attendance-table"
@@ -147,7 +147,7 @@ import {
   computeActualByGoalId,
   summarizeMonthlyGoalProgress,
 } from "@/lib/goal-actual-progress"
-import { buildGoalsForProgressTracking } from "@/lib/bonus-goals-bridge"
+import { buildGoalsForProgressTracking, resolveWindingShiftHeadcount } from "@/lib/bonus-goals-bridge"
 import {
   buildMaintenanceAnalytics,
   formatMaintenanceDuration,
@@ -764,6 +764,7 @@ export default function MetricsPage() {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
   })
   const [shiftFilter, setShiftFilter] = useState<ShiftFilter>("all")
+  const [activityMachineFilter, setActivityMachineFilter] = useState<string>("all")
 
   // Custom date-range dialog
   const [customRangeOpen, setCustomRangeOpen] = useState(false)
@@ -853,7 +854,9 @@ export default function MetricsPage() {
   const [goalActualByGoalId, setGoalActualByGoalId] = useState<Record<string, number>>({})
   const [dataLoading, setDataLoading] = useState(true)
   const [dataError, setDataError] = useState<string | null>(null)
-  const [reloadNonce, setReloadNonce] = useState(0)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const loadGenerationRef = useRef(0)
+  const isInitialLoadRef = useRef(true)
   const [machineCheckinsLoaded, setMachineCheckinsLoaded] = useState<ApiMachineCheckin[]>([])
 
   useEffect(() => {
@@ -921,26 +924,36 @@ export default function MetricsPage() {
   }, [machineCheckinsLoaded, filterStartDate, filterEndDate])
 
   useEffect(() => {
-    let cancelled = false
-    const load = async (silent = false) => {
+    isInitialLoadRef.current = true
+  }, [filterStartDate, filterEndDate])
+
+  const loadMetricsData = useCallback(
+    async (options?: { silent?: boolean }) => {
+      const silent = options?.silent ?? false
+      const generation = ++loadGenerationRef.current
+
       const token = await getAccessToken()
+      if (generation !== loadGenerationRef.current) return
+
       if (!token) {
-        if (!cancelled) {
-          setProductionBaseRows([])
-          setEmployeeRows([])
-          setMachineCheckinsLoaded([])
-          setEmployeeDayRecordsLoaded([])
-          setMaintenanceSessionsLoaded([])
-          setAlertsLoaded([])
-          setDataLoading(false)
-          setDataError(null)
-        }
+        setProductionBaseRows([])
+        setEmployeeRows([])
+        setMachineCheckinsLoaded([])
+        setEmployeeDayRecordsLoaded([])
+        setMaintenanceSessionsLoaded([])
+        setAlertsLoaded([])
+        setDataLoading(false)
+        setIsRefreshing(false)
+        setDataError(null)
         return
       }
 
-      if (!cancelled && !silent) {
-        setDataLoading(true)
+      if (!silent) {
+        setIsRefreshing(true)
         setDataError(null)
+        if (isInitialLoadRef.current) {
+          setDataLoading(true)
+        }
       }
 
       try {
@@ -950,26 +963,29 @@ export default function MetricsPage() {
 
         const [events, employees, apiMachines, checkins, goals, dayRecords, maintenanceSessions, alerts, bonusCfg] =
           await Promise.all([
-          getProductionEvents(token, { from: fromIso, to: toIso, limit: 50_000 }),
-          getEmployees(token),
-          getMachines(token),
-          getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
-          getGoals(token).catch(() => [] as ApiGoal[]),
-          getEmployeeDayRecords(token, {
-            from: filterStartDate,
-            to: filterEndDate,
-            limit: 5000,
-          }).catch(() => [] as ApiEmployeeDayRecord[]),
-          getMaintenanceSessions(token, { from: fromIso, to: toIso, limit: 5000 }),
-          getAlerts(token).catch(() => [] as ApiAlert[]),
-          getBonusProductionConfigForMonth(token, bonusMonth).catch(() => null),
-        ])
-        if (cancelled) return
+            getProductionEvents(token, { from: fromIso, to: toIso, limit: 50_000 }),
+            getEmployees(token),
+            getMachines(token),
+            getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
+            getGoals(token).catch(() => [] as ApiGoal[]),
+            getEmployeeDayRecords(token, {
+              from: filterStartDate,
+              to: filterEndDate,
+              limit: 5000,
+            }).catch(() => [] as ApiEmployeeDayRecord[]),
+            getMaintenanceSessions(token, { from: fromIso, to: toIso, limit: 5000 }),
+            getAlerts(token).catch(() => [] as ApiAlert[]),
+            getBonusProductionConfigForMonth(token, bonusMonth).catch(() => null),
+          ])
+        if (generation !== loadGenerationRef.current) return
 
         const bonusConfig = bonusCfg
           ? normalizeBonusProductionConfig(bonusCfg.config)
           : DEFAULT_BONUS_PRODUCTION_CONFIG
-        const goalsForActual = buildGoalsForProgressTracking(goals, bonusConfig, bonusMonth)
+        const headcount = resolveWindingShiftHeadcount(employees)
+        const goalsForActual = buildGoalsForProgressTracking(goals, bonusConfig, bonusMonth, {
+          headcount,
+        })
         const floorMachines = filterFloorMachines(apiMachines)
 
         setEmployeeRows(employees)
@@ -985,12 +1001,13 @@ export default function MetricsPage() {
           goals: goalsForActual,
           machines: apiMachines,
           productionEvents: events,
+          ref: new Date(`${filterEndDate}T12:00:00`),
         })
-        if (cancelled) return
+        if (generation !== loadGenerationRef.current) return
         setGoalActualByGoalId(actualByGoalId)
 
         const mapped = mapEventsToProductionBaseRows(events, checkins, employees, apiMachines)
-        if (cancelled) return
+        if (generation !== loadGenerationRef.current) return
 
         if (isMetricasDebugEnabled()) {
           const prodRows = mapped.filter((r) => r.event === "Producción")
@@ -1025,36 +1042,42 @@ export default function MetricsPage() {
 
         setProductionBaseRows(mapped)
       } catch (err) {
-        if (!cancelled) {
-          const message = err instanceof Error ? err.message : "No se pudieron cargar los datos"
-          const permissionDenied =
-            message.toLowerCase().includes("permiso") || message.includes("403")
-          if (!permissionDenied) {
-            setProductionBaseRows([])
-            setMachineCheckinsLoaded([])
-            setEmployeeDayRecordsLoaded([])
-            setMaintenanceSessionsLoaded([])
-            setAlertsLoaded([])
-            setDataError(message)
-          } else {
-            setDataError(null)
-          }
+        if (generation !== loadGenerationRef.current) return
+        const message = err instanceof Error ? err.message : "No se pudieron cargar los datos"
+        const permissionDenied =
+          message.toLowerCase().includes("permiso") || message.includes("403")
+        if (!permissionDenied) {
+          setProductionBaseRows([])
+          setMachineCheckinsLoaded([])
+          setEmployeeDayRecordsLoaded([])
+          setMaintenanceSessionsLoaded([])
+          setAlertsLoaded([])
+          setDataError(message)
+        } else {
+          setDataError(null)
         }
       } finally {
-        if (!cancelled && !silent) setDataLoading(false)
+        if (generation === loadGenerationRef.current && !silent) {
+          setDataLoading(false)
+          setIsRefreshing(false)
+          isInitialLoadRef.current = false
+        }
       }
-    }
+    },
+    [getAccessToken, filterStartDate, filterEndDate],
+  )
 
-    load(false)
+  useEffect(() => {
+    void loadMetricsData({ silent: false })
     const intervalId = window.setInterval(() => {
       if (document.visibilityState !== "visible") return
-      load(true)
+      void loadMetricsData({ silent: true })
     }, 300_000)
     return () => {
-      cancelled = true
+      loadGenerationRef.current += 1
       window.clearInterval(intervalId)
     }
-  }, [getAccessToken, filterStartDate, filterEndDate, reloadNonce])
+  }, [loadMetricsData])
 
   const [isReportDialogOpen, setIsReportDialogOpen] = useState(false)
   const [reportDate, setReportDate] = useState(() => formatDate(new Date()))
@@ -1284,6 +1307,64 @@ export default function MetricsPage() {
     [activityRows, lastDayWithData, filterEndDate],
   )
 
+  const activityRowsForMachine = useMemo(() => {
+    if (activityMachineFilter === "all") return activityRows
+    return activityRows.filter((r) => r.machine_id === activityMachineFilter)
+  }, [activityRows, activityMachineFilter])
+
+  const scopedMachineActivity = useMemo(
+    () =>
+      buildMachineActivitySummary(activityRowsForMachine, {
+        refDay: lastDayWithData ?? filterEndDate,
+      }),
+    [activityRowsForMachine, lastDayWithData, filterEndDate],
+  )
+
+  const dominantOperatorByMachine = useMemo(() => {
+    const units = new Map<string, Map<string, number>>()
+    for (const r of scopedProductionRows) {
+      if (r.event !== "Producción") continue
+      const op = r.operator?.trim()
+      if (!op || op === "—") continue
+      const inner = units.get(r.machine_id) ?? new Map<string, number>()
+      inner.set(op, (inner.get(op) ?? 0) + (Number(r.count) || 0))
+      units.set(r.machine_id, inner)
+    }
+    const result = new Map<string, string>()
+    for (const [machine, ops] of units) {
+      let best = "—"
+      let bestUnits = -1
+      for (const [name, count] of ops) {
+        if (count > bestUnits) {
+          bestUnits = count
+          best = name
+        }
+      }
+      result.set(machine, best)
+    }
+    return result
+  }, [scopedProductionRows])
+
+  const activityScopeLabel =
+    activityMachineFilter === "all"
+      ? `Todas las máquinas (${machineActivity.byMachine.length})`
+      : activityMachineFilter
+
+  const activityRefDayLabel = scopedMachineActivity.refDay
+    ? new Date(`${scopedMachineActivity.refDay}T12:00:00`).toLocaleDateString("es-MX", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      })
+    : null
+
+  useEffect(() => {
+    if (activityMachineFilter === "all") return
+    if (!machineActivity.byMachine.some((m) => m.machine === activityMachineFilter)) {
+      setActivityMachineFilter("all")
+    }
+  }, [machineActivity.byMachine, activityMachineFilter])
+
   const inactivityDailySeries = useMemo(
     () => buildDailyInactivitySeries(activityRows),
     [activityRows],
@@ -1380,8 +1461,9 @@ export default function MetricsPage() {
   const monthlyGoalSummary = useMemo(() => {
     return summarizeMonthlyGoalProgress(goalsRows, goalActualByGoalId, {
       shiftFilter,
+      ref: new Date(`${filterEndDate}T12:00:00`),
     })
-  }, [goalsRows, goalActualByGoalId, shiftFilter])
+  }, [goalsRows, goalActualByGoalId, shiftFilter, filterEndDate])
 
   const maintenanceMetrics = useMemo(() => {
     if (activeTab !== "mantenimiento") {
@@ -1939,6 +2021,8 @@ export default function MetricsPage() {
             </Alert>
           ) : dataLoading ? (
             <p className="mt-3 text-sm text-muted-foreground">Cargando datos de producción y empleados…</p>
+          ) : isRefreshing ? (
+            <p className="mt-3 text-sm text-muted-foreground">Actualizando datos…</p>
           ) : null}
         </div>
 
@@ -1972,12 +2056,16 @@ export default function MetricsPage() {
             </Button>
 
             <Button
+              type="button"
               size="sm"
               variant="ghost"
               className="gap-1.5 text-muted-foreground"
-              onClick={() => setReloadNonce((n) => n + 1)}
+              onClick={() => void loadMetricsData({ silent: false })}
+              disabled={isRefreshing}
+              aria-label="Actualizar datos"
+              title="Actualizar datos"
             >
-              <RefreshCw className="h-4 w-4" />
+              <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
             </Button>
           </div>
 
@@ -2371,24 +2459,26 @@ export default function MetricsPage() {
                 <div className="grid gap-4 sm:grid-cols-3">
                   <KpiCard
                     title="Tiempo inactivo"
-                    value={formatDurationMinutes(machineActivity.totalInactiveMinutes)}
+                    value={formatDurationMinutes(scopedMachineActivity.totalInactiveMinutes)}
                     subtitle={
-                      machineActivity.refDay
-                        ? `Día ${new Date(`${machineActivity.refDay}T12:00:00`).toLocaleDateString("es-MX", { day: "2-digit", month: "short" })}`
-                        : undefined
+                      activityRefDayLabel
+                        ? `${activityScopeLabel} · ${activityRefDayLabel}`
+                        : activityScopeLabel
                     }
                     icon={Clock}
                     iconColor="text-amber-600"
                   />
                   <KpiCard
                     title="Horas con producción"
-                    value={String(machineActivity.totalActiveHours)}
+                    value={String(scopedMachineActivity.totalActiveHours)}
+                    subtitle={activityRefDayLabel ?? undefined}
                     icon={CheckCircle}
                     iconColor="text-green-600"
                   />
                   <KpiCard
                     title="Tiempo activo"
-                    value={`${machineActivity.activePct}%`}
+                    value={`${scopedMachineActivity.activePct}%`}
+                    subtitle={activityScopeLabel}
                     icon={Clock}
                     iconColor="text-teal-600"
                   />
@@ -2410,10 +2500,36 @@ export default function MetricsPage() {
                 </div>
 
                 <div className="rounded-xl border border-border bg-background p-4">
-                  <h3 className="text-sm font-semibold text-foreground mb-3">
-                    Actividad por hora
-                  </h3>
-                  {machineActivity.hourlyTimeline.length === 0 ? (
+                  <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <h3 className="text-sm font-semibold text-foreground">Actividad por hora</h3>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {activityScopeLabel}
+                        {activityRefDayLabel ? ` · ${activityRefDayLabel}` : ""}
+                      </p>
+                    </div>
+                    <div className="w-full sm:w-56">
+                      <Select
+                        value={activityMachineFilter}
+                        onValueChange={setActivityMachineFilter}
+                      >
+                        <SelectTrigger aria-label="Máquina">
+                          <SelectValue placeholder="Máquina" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Todas las máquinas</SelectItem>
+                          {machineActivity.byMachine.map((row) => (
+                            <SelectItem key={row.machine} value={row.machine}>
+                              {row.machine}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  {scopedMachineActivity.hourlyTimeline.every(
+                    (b) => b.activeMinutes === 0 && b.inactiveMinutes === 0,
+                  ) ? (
                     <p className="py-12 text-center text-sm text-muted-foreground">
                       Sin datos de actividad en el día seleccionado.
                     </p>
@@ -2425,7 +2541,7 @@ export default function MetricsPage() {
                         inactiveMinutes: { label: "Inactivo (min)", color: "#f97316" },
                       }}
                     >
-                      <BarChart data={machineActivity.hourlyTimeline} margin={{ left: 8, right: 8 }}>
+                      <BarChart data={scopedMachineActivity.hourlyTimeline} margin={{ left: 8, right: 8 }}>
                         <CartesianGrid vertical={false} />
                         <XAxis dataKey="hour" tick={{ fontSize: 11 }} />
                         <YAxis tick={{ fontSize: 12 }} domain={[0, 60]} unit=" min" />
@@ -2508,6 +2624,7 @@ export default function MetricsPage() {
                         <TableHeader>
                           <TableRow>
                             <TableHead>Máquina</TableHead>
+                            <TableHead>Operador</TableHead>
                             <TableHead className="text-right">Hrs activas</TableHead>
                             <TableHead className="text-right">Inactivo</TableHead>
                             <TableHead className="text-right">Paros</TableHead>
@@ -2516,7 +2633,7 @@ export default function MetricsPage() {
                         <TableBody>
                           {machineActivity.byMachine.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={4} className="text-center text-muted-foreground">
+                              <TableCell colSpan={5} className="text-center text-muted-foreground">
                                 Sin actividad registrada.
                               </TableCell>
                             </TableRow>
@@ -2524,6 +2641,9 @@ export default function MetricsPage() {
                             machineActivity.byMachine.map((row) => (
                               <TableRow key={row.machine}>
                                 <TableCell className="font-medium">{row.machine}</TableCell>
+                                <TableCell>
+                                  {dominantOperatorByMachine.get(row.machine) ?? "—"}
+                                </TableCell>
                                 <TableCell className="text-right tabular-nums">
                                   {row.activeHours}h
                                 </TableCell>
@@ -2542,10 +2662,11 @@ export default function MetricsPage() {
                   </div>
                 </div>
 
-                {machineActivity.episodes.length > 0 && (
+                {scopedMachineActivity.episodes.length > 0 && (
                   <div className="rounded-xl border border-border bg-background p-4">
                     <h3 className="text-sm font-semibold text-foreground mb-3">
                       Detalle de paros / inactividad
+                      {activityMachineFilter !== "all" ? ` — ${activityMachineFilter}` : ""}
                     </h3>
                     <div className="overflow-x-auto">
                       <Table>
@@ -2559,7 +2680,7 @@ export default function MetricsPage() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {machineActivity.episodes.slice(0, 20).map((ep, idx) => (
+                          {scopedMachineActivity.episodes.slice(0, 20).map((ep, idx) => (
                             <TableRow key={`${ep.machine}-${ep.endedAt}-${idx}`}>
                               <TableCell className="font-medium">{ep.machine}</TableCell>
                               <TableCell className="whitespace-nowrap text-sm">

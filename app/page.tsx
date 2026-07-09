@@ -31,7 +31,7 @@ import {
   type ApiMachine,
   type ApiProductionEvent,
 } from "@/lib/api"
-import { buildGoalsForProgressTracking } from "@/lib/bonus-goals-bridge"
+import { buildGoalsForProgressTracking, resolveWindingShiftHeadcount } from "@/lib/bonus-goals-bridge"
 import {
   DEFAULT_BONUS_PRODUCTION_CONFIG,
   normalizeBonusProductionConfig,
@@ -329,7 +329,9 @@ export default function HomePage() {
         const bonusConfig = bonusCfg
           ? normalizeBonusProductionConfig(bonusCfg.config)
           : DEFAULT_BONUS_PRODUCTION_CONFIG
-        const goalsForActual = buildGoalsForProgressTracking(goals, bonusConfig, bonusMonth)
+        const goalsForActual = buildGoalsForProgressTracking(goals, bonusConfig, bonusMonth, {
+          headcount: resolveWindingShiftHeadcount(apiEmployees),
+        })
         const floorMachines = filterFloorMachines(apiMachines)
         setMachines(floorMachines)
         setEmployees(apiEmployees)

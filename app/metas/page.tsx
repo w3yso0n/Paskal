@@ -34,6 +34,7 @@ import {
   createGoal,
   deleteGoal,
   getBonusProductionConfigForMonth,
+  getEmployees,
   getGoals,
   getMachines,
   updateGoal,
@@ -41,6 +42,7 @@ import {
   type ApiGoalMetricKind,
   type ApiGoalPeriod,
   type ApiGoalShift,
+  type ApiEmployee,
   type ApiMachine,
 } from "@/lib/api"
 import {
@@ -51,6 +53,8 @@ import {
   isVirtualBusinessGoalId,
   monthDateBounds,
   resolveBusinessGoalForDisplay,
+  resolveWindingShiftHeadcount,
+  windingHeadcountForShift,
 } from "@/lib/bonus-goals-bridge"
 import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
 import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
@@ -166,6 +170,8 @@ function GoalCard({
   fromBonusConfig,
   businessLabel,
   machineLabel,
+  progressDayLabel,
+  shiftOperatorCount,
 }: {
   goal: ApiGoal
   actual: number
@@ -175,6 +181,8 @@ function GoalCard({
   fromBonusConfig?: boolean
   businessLabel?: string | null
   machineLabel?: string | null
+  progressDayLabel?: string | null
+  shiftOperatorCount?: number | null
 }) {
   const target = Number(goal.targetValue)
   const pct = target > 0 ? Math.min(100, (actual / target) * 100) : 0
@@ -231,9 +239,12 @@ function GoalCard({
               {businessLabel ?? metric.label}
             </h3>
             <p className="text-sm text-muted-foreground">
-              {fromBonusConfig
-                ? "Definida en Reglas de negocio → Configuración de bono (solo lectura aquí)"
+              {fromBonusConfig && goal.period === "daily" && progressDayLabel
+                ? progressDayLabel
                 : `Periodo: ${periodLabels[goal.period]}`}
+              {fromBonusConfig && shiftOperatorCount != null
+                ? ` · ${shiftOperatorCount} operadores`
+                : ""}
               {!fromBonusConfig && machineLabel ? ` · ${machineLabel}` : ""}
             </p>
           </div>
@@ -346,6 +357,8 @@ export default function MetasPage() {
 
   const [goals, setGoals] = useState<ApiGoal[]>([])
   const [machines, setMachines] = useState<ApiMachine[]>([])
+  const [employees, setEmployees] = useState<ApiEmployee[]>([])
+  const [dailyProgressDate, setDailyProgressDate] = useState(() => todayYmd())
   const [actualByGoalId, setActualByGoalId] = useState<Record<string, number>>({})
   const [filterPeriod, setFilterPeriod] = useState<ApiGoalPeriod | "all">("all")
   const [filterShift, setFilterShift] = useState<ApiGoalShift | "all">("all")
@@ -371,6 +384,21 @@ export default function MetasPage() {
 
   const machineMaps = useMemo(() => buildMachineMaps(machines), [machines])
 
+  const shiftHeadcount = useMemo(
+    () => resolveWindingShiftHeadcount(employees),
+    [employees],
+  )
+
+  const dailyProgressDayLabel = useMemo(() => {
+    const d = new Date(`${dailyProgressDate}T12:00:00`)
+    if (Number.isNaN(d.getTime())) return dailyProgressDate
+    return d.toLocaleDateString("es-MX", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    })
+  }, [dailyProgressDate])
+
   const bonusMonthBounds = useMemo(
     () => monthDateBounds(bonusConfigMonth),
     [bonusConfigMonth],
@@ -390,9 +418,11 @@ export default function MetasPage() {
     () =>
       metasBusinessDefinitions.map((def) => ({
         def,
-        goal: resolveBusinessGoalForDisplay(goals, def, bonusMonthBounds),
+        goal: resolveBusinessGoalForDisplay(goals, def, bonusMonthBounds, {
+          operatorsPerShift: windingHeadcountForShift(shiftHeadcount, def.shift),
+        }),
       })),
-    [metasBusinessDefinitions, goals, bonusMonthBounds],
+    [metasBusinessDefinitions, goals, bonusMonthBounds, shiftHeadcount],
   )
 
   const customGoals = useMemo(
@@ -433,6 +463,11 @@ export default function MetasPage() {
       displayGoals.map(({ goal, fromBonusConfig, businessLabel }) => {
         const actual = Number(actualByGoalId[goal.id] ?? 0)
         const target = Number(goal.targetValue)
+        const shiftOperatorCount = fromBonusConfig
+          ? windingHeadcountForShift(shiftHeadcount, goal.shift)
+          : null
+        const progressDayLabel =
+          fromBonusConfig && goal.period === "daily" ? dailyProgressDayLabel : null
         return {
           goal,
           actual,
@@ -440,9 +475,11 @@ export default function MetasPage() {
           status: calcStatus(actual, target),
           fromBonusConfig,
           businessLabel,
+          progressDayLabel,
+          shiftOperatorCount,
         }
       }),
-    [displayGoals, actualByGoalId],
+    [displayGoals, actualByGoalId, shiftHeadcount, dailyProgressDayLabel],
   )
 
   const filtered = useMemo(() => {
@@ -492,12 +529,14 @@ export default function MetasPage() {
         return
       }
 
-      const [goalsData, machinesData] = await Promise.all([
+      const [goalsData, machinesData, employeesData] = await Promise.all([
         getGoals(token),
         getMachines(token),
+        getEmployees(token),
       ])
       setGoals(goalsData)
       setMachines(machinesData)
+      setEmployees(employeesData)
 
       let cfgNormalized = DEFAULT_BONUS_PRODUCTION_CONFIG
       try {
@@ -508,10 +547,12 @@ export default function MetasPage() {
         setBonusConfig(DEFAULT_BONUS_PRODUCTION_CONFIG)
       }
 
+      const headcount = resolveWindingShiftHeadcount(employeesData)
       const goalsForActual = buildGoalsForProgressTracking(
         goalsData,
         cfgNormalized,
         bonusConfigMonth,
+        { headcount },
       )
 
       if (goalsForActual.length === 0) {
@@ -519,7 +560,10 @@ export default function MetasPage() {
         return
       }
 
-      const actual = await fetchActualByGoalId(token, goalsForActual, machinesData)
+      const progressRef = new Date(`${dailyProgressDate}T12:00:00`)
+      const actual = await fetchActualByGoalId(token, goalsForActual, machinesData, {
+        ref: progressRef,
+      })
       setActualByGoalId(actual)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Error al cargar metas")
@@ -538,7 +582,7 @@ export default function MetasPage() {
     return () => {
       cancelled = true
     }
-  }, [getAccessToken, bonusConfigMonth])
+  }, [getAccessToken, bonusConfigMonth, dailyProgressDate])
 
   const openCreate = () => {
     setEditingGoal(null)
@@ -821,20 +865,6 @@ export default function MetasPage() {
           </Dialog>
         </div>
 
-        <Card className="border-primary/20 bg-primary/5">
-          <CardContent className="pt-6 text-sm text-muted-foreground">
-            Las <strong className="text-foreground">metas del negocio</strong> (Winding, Bending, Roller)
-            se definen en{" "}
-            <Link href="/reglas-negocio?tab=bono" className="font-medium text-primary underline">
-              Reglas de negocio → Configuración de bono
-            </Link>
-            {" "}(mes vigente: {bonusConfigMonth}). La meta diaria de Winding al 100% es la misma que
-            usa el tablero operativo. Aquí solo se muestran; para cambiarlas edita en reglas de negocio
-            y pulsa «Guardar y sincronizar metas». Las metas personalizadas (por SKU, máquina, etc.)
-            las creas tú en esta página.
-          </CardContent>
-        </Card>
-
         <BonusVacationAdjustmentsPanel
           bonusConfigMonth={bonusConfigMonth}
           bonusConfig={bonusConfig}
@@ -977,6 +1007,20 @@ export default function MetasPage() {
                   </Button>
                 </div>
               </div>
+              <div>
+                <p className="mb-2 text-sm font-medium text-foreground">Día (metas diarias)</p>
+                <Input
+                  id="metas-daily-progress-date"
+                  type="date"
+                  value={dailyProgressDate}
+                  max={todayYmd()}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    if (v) setDailyProgressDate(v)
+                  }}
+                  className="w-44"
+                />
+              </div>
             </div>
 
             <Tabs defaultValue="all" className="space-y-4">
@@ -1007,7 +1051,15 @@ export default function MetasPage() {
                     </Card>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
-                      {filtered.map(({ goal, actual, fromBonusConfig, businessLabel }) => (
+                      {filtered.map(
+                        ({
+                          goal,
+                          actual,
+                          fromBonusConfig,
+                          businessLabel,
+                          progressDayLabel,
+                          shiftOperatorCount,
+                        }) => (
                         <GoalCard
                           key={goal.id}
                           goal={goal}
@@ -1018,12 +1070,15 @@ export default function MetasPage() {
                               : null
                           }
                           businessLabel={businessLabel}
+                          progressDayLabel={progressDayLabel}
+                          shiftOperatorCount={shiftOperatorCount}
                           onEdit={fromBonusConfig ? openBonusConfig : openEdit}
                           onDelete={onDelete}
                           onToggleActive={fromBonusConfig ? undefined : onToggleGoalActive}
                           fromBonusConfig={fromBonusConfig}
                         />
-                      ))}
+                      ),
+                      )}
                     </div>
                   )}
                 </TabsContent>
