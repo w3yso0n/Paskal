@@ -2,7 +2,7 @@
 
 import { useMemo } from "react"
 import { Check, X } from "lucide-react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 import {
   buildRoleAccessMatrix,
@@ -80,21 +80,9 @@ export function RolePermissionsMatrix() {
     <Card>
       <CardHeader>
         <CardTitle>Qué puede ver cada rol</CardTitle>
-        <CardDescription>
-          Referencia derivada de <code className="text-xs">lib/platform-permissions.ts</code> (misma
-          fuente que el menú lateral y las pestañas). El rol <strong>droven</strong> y los admins de
-          plataforma tienen bypass total en runtime aunque aquí solo se marquen los módulos
-          explícitos del mapa.
-        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <MatrixTable rows={rows} />
-        <p className="text-xs text-muted-foreground">
-          Acciones extra (crear usuarios, descartar alertas, editar umbrales, etc.) se derivan en{" "}
-          <code className="text-xs">lib/permissions.ts</code> a partir de estos módulos. Si cambias
-          permisos, edita <code className="text-xs">MODULE_ACCESS</code> y esta tabla se actualiza
-          sola.
-        </p>
       </CardContent>
     </Card>
   )

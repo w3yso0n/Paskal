@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -219,10 +219,6 @@ export function ScrapCaptureSection() {
         <Card>
           <CardHeader>
             <CardTitle>Registro mensual de scrap</CardTitle>
-            <CardDescription>
-              Merma acumulada por mes y material (kg). El costo se calcula con la
-              configuración de costos de scrap por material.
-            </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
@@ -379,18 +375,16 @@ export function ScrapCaptureSection() {
           <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-4">
             <div>
               <CardTitle>Resumen de scrap</CardTitle>
-              <CardDescription>
-                Año {filterYear}
-                {totals ? (
-                  <>
-                    {" "}
-                    · Pérdida neta total:{" "}
-                    <span className="font-semibold text-destructive">
-                      {formatScrapCostMxn(totals.netLossMxn)}
-                    </span>
-                  </>
-                ) : null}
-              </CardDescription>
+              {totals ? (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Año {filterYear} · Pérdida neta:{" "}
+                  <span className="font-semibold text-destructive">
+                    {formatScrapCostMxn(totals.netLossMxn)}
+                  </span>
+                </p>
+              ) : (
+                <p className="mt-1 text-sm text-muted-foreground">Año {filterYear}</p>
+              )}
             </div>
             <Select value={filterYear} onValueChange={setFilterYear}>
               <SelectTrigger className="w-[120px]">

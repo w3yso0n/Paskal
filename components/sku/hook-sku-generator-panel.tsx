@@ -91,11 +91,6 @@ export function HookSkuGeneratorPanel({
             onChange={(e) => setUnitsOverride(e.target.value)}
             placeholder={result?.quantityPerBox != null ? String(result.quantityPerBox) : "240"}
           />
-          {result?.quantityPerBox == null && result && (
-            <p className="text-xs text-muted-foreground">
-              Sin regla automática para esta combinación: ingresa la cantidad manualmente.
-            </p>
-          )}
         </div>
 
         <Button

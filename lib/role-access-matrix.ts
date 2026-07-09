@@ -43,6 +43,7 @@ const MODULE_LABELS: Record<PlatformModule, string> = {
 const METRICAS_TAB_LABELS: Record<string, string> = {
   produccion: "Producción",
   operadores: "Operadores",
+  paros: "Paros",
   incidencias: "Incidencias",
   mantenimiento: "Mantenimiento",
   asistencia: "Asistencia",
@@ -52,7 +53,6 @@ const METRICAS_TAB_LABELS: Record<string, string> = {
 const EMPLEADOS_TAB_LABELS: Record<string, string> = {
   employees: "Empleados",
   transport: "Transporte",
-  downtime: "Paros",
   attendance: "Asistencia",
   roles: "Roles del día",
 }

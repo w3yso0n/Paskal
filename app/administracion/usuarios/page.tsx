@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -16,7 +16,6 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -223,9 +222,6 @@ export default function GestionUsuariosPage() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-bold text-foreground">Gestión de usuarios</h1>
-            <p className="text-sm text-muted-foreground">
-              Crea y edita usuarios de la plataforma.
-            </p>
           </div>
           {canCreateUsers && (
             <Button className="gap-2" onClick={openCreateDialog}>
@@ -255,11 +251,6 @@ export default function GestionUsuariosPage() {
                 <DialogTitle>
                   {editingUser ? "Editar usuario" : "Nuevo usuario"}
                 </DialogTitle>
-                <DialogDescription>
-                  {editingUser
-                    ? "Actualiza los datos del usuario. Deja la contraseña vacía para no cambiarla."
-                    : "Crea un nuevo usuario para la plataforma."}
-                </DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">
                 <div className="grid gap-2">
@@ -354,9 +345,6 @@ export default function GestionUsuariosPage() {
         <Card>
           <CardHeader>
             <CardTitle>Usuarios</CardTitle>
-            <CardDescription>
-              Listado de usuarios.
-            </CardDescription>
           </CardHeader>
           <CardContent>
             {loading ? (

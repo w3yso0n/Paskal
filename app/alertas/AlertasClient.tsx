@@ -72,7 +72,15 @@ import {
   parsePendingUnitsFromAlertMessage,
   sumOrphanPendingForAlert,
 } from "@/lib/production-goal-events"
-import { mapApiAlertToUi, severityRank, ALERTS_POLL_MS } from "@/lib/alert-ui"
+import {
+  mapApiAlertToUi,
+  severityRank,
+  ALERTS_POLL_MS,
+  ALERT_KIND_LABELS,
+  ALERT_KIND_FILTER_ORDER,
+  isOperatorOrphanAlertKind,
+  isPackagerOrphanAlertKind,
+} from "@/lib/alert-ui"
 import {
   isFloorOperatorCandidate,
   isFloorPackerCandidate,
@@ -134,11 +142,11 @@ function formatDateTime(date: Date): string {
 }
 
 function isOperatorOrphanProductionAlert(a: Alert): boolean {
-  return a.title.startsWith("Producción sin check-in")
+  return isOperatorOrphanAlertKind(a.kind)
 }
 
 function isPackagerOrphanProductionAlert(a: Alert): boolean {
-  return a.title.startsWith("Producción sin empacador")
+  return isPackagerOrphanAlertKind(a.kind)
 }
 
 function isAttributableOrphanAlert(a: Alert): boolean {
@@ -152,7 +160,7 @@ export default function AlertasClient() {
 
   const canDismissAlerts = hasPermission(user, "alerts.dismiss")
 
-  const [filterType, setFilterType] = useState("all")
+  const [filterKind, setFilterKind] = useState("all")
   const [filterCategory, setFilterCategory] = useState("all")
   const [searchQuery, setSearchQuery] = useState("")
   const [activeTab, setActiveTab] = useState("all")
@@ -269,21 +277,23 @@ export default function AlertasClient() {
 
   const unreadCount = alerts.filter((a) => !a.isRead).length
   const actionRequiredCount = alerts.filter((a) => a.actionRequired && !a.isRead).length
-  const errorCount = alerts.filter((a) => a.type === "error" && !a.isRead).length
-  const warningCount = alerts.filter((a) => a.type === "warning" && !a.isRead).length
+  const paroCount = alerts.filter((a) => a.kind === "idle" && !a.isRead).length
+  const orphanProductionCount = alerts.filter(
+    (a) => (a.kind === "no_checkin" || a.kind === "no_packager") && !a.isRead,
+  ).length
 
   const filteredAlerts = alerts.filter((alert) => {
     const matchesTab =
       activeTab === "all" ||
       (activeTab === "unread" && !alert.isRead) ||
       (activeTab === "action" && alert.actionRequired && !alert.isRead)
-    const matchesType = filterType === "all" || alert.type === filterType
+    const matchesKind = filterKind === "all" || alert.kind === filterKind
     const matchesCategory = filterCategory === "all" || alert.category === filterCategory
     const matchesSearch =
       searchQuery === "" ||
       alert.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       alert.message.toLowerCase().includes(searchQuery.toLowerCase())
-    return matchesTab && matchesType && matchesCategory && matchesSearch
+    return matchesTab && matchesKind && matchesCategory && matchesSearch
   })
 
   const sortedAlerts = useMemo(
@@ -499,22 +509,22 @@ export default function AlertasClient() {
           <Card className="border-red-200 bg-red-50">
             <CardContent className="flex items-center gap-4 p-4">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
-                <AlertCircle className="h-6 w-6 text-red-600" />
+                <AlertTriangle className="h-6 w-6 text-red-600" />
               </div>
               <div>
-                <p className="text-sm font-medium text-red-700">Errores Críticos</p>
-                <p className="text-2xl font-bold text-red-700">{errorCount}</p>
+                <p className="text-sm font-medium text-red-700">Paros / inactividad</p>
+                <p className="text-2xl font-bold text-red-700">{paroCount}</p>
               </div>
             </CardContent>
           </Card>
           <Card className="border-amber-200 bg-amber-50">
             <CardContent className="flex items-center gap-4 p-4">
               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-100">
-                <AlertTriangle className="h-6 w-6 text-amber-600" />
+                <Monitor className="h-6 w-6 text-amber-600" />
               </div>
               <div>
-                <p className="text-sm font-medium text-amber-700">Advertencias</p>
-                <p className="text-2xl font-bold text-amber-700">{warningCount}</p>
+                <p className="text-sm font-medium text-amber-700">Producción huérfana</p>
+                <p className="text-2xl font-bold text-amber-700">{orphanProductionCount}</p>
               </div>
             </CardContent>
           </Card>
@@ -564,17 +574,18 @@ export default function AlertasClient() {
                     className="w-64 pl-9"
                   />
                 </div>
-                <Select value={filterType} onValueChange={setFilterType}>
-                  <SelectTrigger className="w-40">
+                <Select value={filterKind} onValueChange={setFilterKind}>
+                  <SelectTrigger className="w-56">
                     <Filter className="mr-2 h-4 w-4" />
-                    <SelectValue placeholder="Tipo" />
+                    <SelectValue placeholder="Causa" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">Todos los tipos</SelectItem>
-                    <SelectItem value="error">Error</SelectItem>
-                    <SelectItem value="warning">Advertencia</SelectItem>
-                    <SelectItem value="info">Información</SelectItem>
-                    <SelectItem value="success">Éxito</SelectItem>
+                    <SelectItem value="all">Todas las causas</SelectItem>
+                    {ALERT_KIND_FILTER_ORDER.map((kind) => (
+                      <SelectItem key={kind} value={kind}>
+                        {ALERT_KIND_LABELS[kind]}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
                 <Select value={filterCategory} onValueChange={setFilterCategory}>
@@ -584,6 +595,8 @@ export default function AlertasClient() {
                   <SelectContent>
                     <SelectItem value="all">Todas las categorías</SelectItem>
                     <SelectItem value="machine">Máquina</SelectItem>
+                    <SelectItem value="production">Producción</SelectItem>
+                    <SelectItem value="employee">Empleado</SelectItem>
                     <SelectItem value="system">Sistema</SelectItem>
                   </SelectContent>
                 </Select>
@@ -668,6 +681,9 @@ export default function AlertasClient() {
                               </p>
                             ) : null}
                             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                              <span className="rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
+                                {ALERT_KIND_LABELS[alert.kind]}
+                              </span>
                               <span className="flex items-center gap-1">
                                 <CategoryIcon className="h-3 w-3" />
                                 {categoryLabels[alert.category]}

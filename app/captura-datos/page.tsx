@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { RequirePermission } from "@/components/auth/require-permission"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -108,13 +108,11 @@ function DailyCaptureSection({
   category,
   machines,
   title,
-  description,
   employees,
 }: {
   category: ApiDataCaptureCategory
   machines: readonly { key: string; label: string }[]
   title: string
-  description: string
   employees: ApiEmployee[]
 }) {
   const { operators, packers, nameByCode } = useProductionStaff(employees)
@@ -241,7 +239,6 @@ function DailyCaptureSection({
       <Card>
         <CardHeader>
           <CardTitle>{title}</CardTitle>
-          <CardDescription>{description}</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -354,7 +351,6 @@ function DailyCaptureSection({
       <Card>
         <CardHeader>
           <CardTitle>Registros recientes</CardTitle>
-          <CardDescription>Últimas capturas de {title.toLowerCase()}</CardDescription>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -510,9 +506,6 @@ function HistoricalMonthlySection() {
       <Card>
         <CardHeader>
           <CardTitle>Producción mensual histórica</CardTitle>
-          <CardDescription>
-            Totales mensuales de años anteriores para métricas, comparativos y reportes anuales.
-          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -588,7 +581,6 @@ function HistoricalMonthlySection() {
         <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
           <div>
             <CardTitle>Registros por año</CardTitle>
-            <CardDescription>Producción mensual capturada</CardDescription>
           </div>
           <Select value={filterYear} onValueChange={setFilterYear}>
             <SelectTrigger className="w-28">
@@ -694,10 +686,6 @@ export default function CapturaDatosPage() {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-foreground">Captura de datos</h1>
-              <p className="text-muted-foreground">
-                Registro manual para máquinas no monitoreadas, scrap y producción histórica.
-                Solo administradores.
-              </p>
             </div>
           </div>
 
@@ -716,7 +704,6 @@ export default function CapturaDatosPage() {
                 machines={WINDING_MACHINES}
                 employees={employees}
                 title="Winding"
-                description="Producción manual: M-009, M-010 y M-023 con operador y empacador."
               />
             </TabsContent>
 
@@ -726,7 +713,6 @@ export default function CapturaDatosPage() {
                 machines={BENDING_MACHINES}
                 employees={employees}
                 title="Bending"
-                description="Producción manual de bending con operador y empacador."
               />
             </TabsContent>
 
@@ -736,7 +722,6 @@ export default function CapturaDatosPage() {
                 machines={ROLLER_MACHINES}
                 employees={employees}
                 title="Roller"
-                description="Producción manual de roller con operador y empacador."
               />
             </TabsContent>
 

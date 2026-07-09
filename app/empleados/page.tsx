@@ -48,7 +48,6 @@ import {
   Palmtree,
   Scale,
   AlertTriangle,
-  Timer,
   ChevronDown,
   Gift,
   IdCard,
@@ -99,7 +98,6 @@ import {
   formatDespensaMxn,
 } from "@/lib/mexico-despensa-vouchers"
 import { localTodayYmdMexico } from "@/lib/employee-role-day"
-import { EmployeeDowntimeTab } from "./employee-downtime-tab"
 import { EmployeeTransportTab } from "./employee-transport-tab"
 import {
   earliestAllowedVacationDate,
@@ -966,7 +964,7 @@ export default function EmployeesPage() {
         )}
 
         <Tabs value={employeeTab} onValueChange={setEmployeeTab} className="space-y-4">
-          <TabsList className="grid h-auto w-full grid-cols-2 gap-1.5 bg-muted/60 p-1.5 sm:grid-cols-3 lg:grid-cols-5">
+          <TabsList className="grid h-auto w-full grid-cols-2 gap-1.5 bg-muted/60 p-1.5 sm:grid-cols-2 lg:grid-cols-4">
             {allowedTabs.includes("employees") && (
             <TabsTrigger
               value="employees"
@@ -983,15 +981,6 @@ export default function EmployeesPage() {
             >
               <Bus className="h-4 w-4 shrink-0" />
               Transporte
-            </TabsTrigger>
-            )}
-            {allowedTabs.includes("downtime") && (
-            <TabsTrigger
-              value="downtime"
-              className="h-auto min-h-12 flex-col gap-1 whitespace-normal py-2 text-center text-xs leading-tight sm:flex-row sm:text-sm"
-            >
-              <Timer className="h-4 w-4 shrink-0" />
-              Paros
             </TabsTrigger>
             )}
             {allowedTabs.includes("attendance") && (
@@ -1138,10 +1127,6 @@ export default function EmployeesPage() {
               employees={employees}
               onEmployeesChange={setEmployees}
             />
-          </TabsContent>
-
-          <TabsContent value="downtime">
-            <EmployeeDowntimeTab employees={employees} />
           </TabsContent>
 
           <TabsContent value="attendance" className="space-y-4">

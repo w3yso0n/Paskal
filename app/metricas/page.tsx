@@ -88,6 +88,7 @@ import type { AttendanceRecord } from "@/lib/types"
 import { useAuth } from "@/contexts/auth-context"
 import { RequireModule } from "@/components/auth/require-module"
 import { visibleMetricasTabs } from "@/lib/permissions"
+import { EmployeeDowntimeTab } from "./employee-downtime-tab"
 import {
   getEmployees,
   getMachines,
@@ -1300,11 +1301,13 @@ export default function MetricsPage() {
   )
 
   const machineActivity = useMemo(
-    () =>
-      buildMachineActivitySummary(activityRows, {
+    () => {
+      if (activeTab !== "produccion") return buildMachineActivitySummary([], { refDay: filterEndDate })
+      return buildMachineActivitySummary(activityRows, {
         refDay: lastDayWithData ?? filterEndDate,
-      }),
-    [activityRows, lastDayWithData, filterEndDate],
+      })
+    },
+    [activeTab, activityRows, lastDayWithData, filterEndDate],
   )
 
   const activityRowsForMachine = useMemo(() => {
@@ -1313,14 +1316,17 @@ export default function MetricsPage() {
   }, [activityRows, activityMachineFilter])
 
   const scopedMachineActivity = useMemo(
-    () =>
-      buildMachineActivitySummary(activityRowsForMachine, {
+    () => {
+      if (activeTab !== "produccion") return buildMachineActivitySummary([], { refDay: filterEndDate })
+      return buildMachineActivitySummary(activityRowsForMachine, {
         refDay: lastDayWithData ?? filterEndDate,
-      }),
-    [activityRowsForMachine, lastDayWithData, filterEndDate],
+      })
+    },
+    [activeTab, activityRowsForMachine, lastDayWithData, filterEndDate],
   )
 
   const dominantOperatorByMachine = useMemo(() => {
+    if (activeTab !== "produccion") return new Map<string, string>()
     const units = new Map<string, Map<string, number>>()
     for (const r of scopedProductionRows) {
       if (r.event !== "Producción") continue
@@ -1343,7 +1349,7 @@ export default function MetricsPage() {
       result.set(machine, best)
     }
     return result
-  }, [scopedProductionRows])
+  }, [activeTab, scopedProductionRows])
 
   const activityScopeLabel =
     activityMachineFilter === "all"
@@ -1366,13 +1372,17 @@ export default function MetricsPage() {
   }, [machineActivity.byMachine, activityMachineFilter])
 
   const inactivityDailySeries = useMemo(
-    () => buildDailyInactivitySeries(activityRows),
-    [activityRows],
+    () => {
+      if (activeTab !== "produccion") return []
+      return buildDailyInactivitySeries(activityRows)
+    },
+    [activeTab, activityRows],
   )
 
   const alertRoleCounts = useMemo(
-    () =>
-      buildAlertRoleCounts({
+    () => {
+      if (activeTab !== "produccion") return { operator: 0, packager: 0, other: 0, total: 0 }
+      return buildAlertRoleCounts({
         alerts: alertsLoaded,
         startDate: filterStartDate,
         endDate: filterEndDate,
@@ -1380,11 +1390,13 @@ export default function MetricsPage() {
           eventRaw: r.eventRaw,
           timestamp: r.timestamp,
         })),
-      }),
-    [alertsLoaded, filterStartDate, filterEndDate, scopedProductionRows],
+      })
+    },
+    [activeTab, alertsLoaded, filterStartDate, filterEndDate, scopedProductionRows],
   )
 
   const hourlyProductionData = useMemo(() => {
+    if (activeTab !== "produccion") return []
     // Use the last day with real production data in the range.
     // Falls back to filterEndDate only if no data at all (will return empty array).
     const refDay = lastDayWithData ?? filterEndDate
@@ -1409,9 +1421,10 @@ export default function MetricsPage() {
     return [...byHour.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([hour, production]) => ({ hour: `${hour}:00`, production }))
-  }, [scopedProductionRows, lastDayWithData, filterEndDate])
+  }, [activeTab, scopedProductionRows, lastDayWithData, filterEndDate])
 
   const topMachinesData = useMemo(() => {
+    if (activeTab !== "produccion") return []
     const start = new Date(`${filterStartDate}T00:00:00`)
     start.setHours(0, 0, 0, 0)
     const end = new Date(`${filterEndDate}T00:00:00`)
@@ -1456,7 +1469,7 @@ export default function MetricsPage() {
         uptime,
       }
     })
-  }, [analytics.machineScatter, scopedProductionRows, filterStartDate, filterEndDate])
+  }, [activeTab, analytics.machineScatter, scopedProductionRows, filterStartDate, filterEndDate])
 
   const monthlyGoalSummary = useMemo(() => {
     return summarizeMonthlyGoalProgress(goalsRows, goalActualByGoalId, {
@@ -1572,12 +1585,14 @@ export default function MetricsPage() {
   }
 
   const attendanceFromCheckins = useMemo(
-    () =>
-      mergeAttendanceWithDayRecords(
+    () => {
+      if (activeTab !== "asistencia") return []
+      return mergeAttendanceWithDayRecords(
         machineCheckinsToAttendanceRecords(shiftFilteredCheckins, employeeRows),
         shiftFilteredDayRecords,
-      ),
-    [shiftFilteredCheckins, employeeRows, shiftFilteredDayRecords],
+      )
+    },
+    [activeTab, shiftFilteredCheckins, employeeRows, shiftFilteredDayRecords],
   )
 
   // Filtro por calendario (los check-ins ya vienen acotados por API, esto alinea con Desde/Hasta).
@@ -1595,12 +1610,14 @@ export default function MetricsPage() {
   }, [filterStartDate, filterEndDate, attendanceFromCheckins])
 
   const vacationDaysByEmployee = useMemo(
-    () =>
-      aggregateEmployeeVacationDays(shiftFilteredDayRecords, {
+    () => {
+      if (activeTab !== "asistencia") return []
+      return aggregateEmployeeVacationDays(shiftFilteredDayRecords, {
         from: filterStartDate,
         to: filterEndDate,
-      }),
-    [shiftFilteredDayRecords, filterStartDate, filterEndDate],
+      })
+    },
+    [activeTab, shiftFilteredDayRecords, filterStartDate, filterEndDate],
   )
 
   const vacationSummary = useMemo(() => {
@@ -1614,11 +1631,16 @@ export default function MetricsPage() {
   }, [vacationDaysByEmployee])
 
   const personnelMovements = useMemo(
-    () => buildPersonnelMovementsFromEmployees(employeeRows).slice(0, 40),
-    [employeeRows],
+    () => {
+      if (activeTab !== "rotacion") return []
+      return buildPersonnelMovementsFromEmployees(employeeRows).slice(0, 40)
+    },
+    [activeTab, employeeRows],
   )
 
   const personnelMonthSummary = useMemo(() => {
+    const empty = { ingresos: 0, salidas: 0, net: 0, ingPct: 0, salPct: 0, monthLabel: "" }
+    if (activeTab !== "rotacion") return empty
     const now = new Date()
     const inCurrentMonth = (ts: number) => {
       const d = new Date(ts)
@@ -1642,11 +1664,16 @@ export default function MetricsPage() {
       salPct: Math.round((salidas / max) * 100),
       monthLabel: now.toLocaleDateString("es-MX", { month: "long", year: "numeric" }),
     }
-  }, [employeeRows])
+  }, [activeTab, employeeRows])
 
   const turnoverMetrics = useMemo(
-    () => computeMonthlyTurnover(employeeRows),
-    [employeeRows],
+    () => {
+      if (activeTab !== "rotacion") {
+        return { terminations: 0, hires: 0, totalEmployeesLastMonth: 0, denominator: 0, turnoverPercent: null, monthLabel: "", year: 0, month: 0 }
+      }
+      return computeMonthlyTurnover(employeeRows)
+    },
+    [activeTab, employeeRows],
   )
 
   const handleGenerateProductionReport = async () => {
@@ -2239,7 +2266,7 @@ export default function MetricsPage() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+          <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-7">
             {allowedTabs.includes("produccion") && (
               <TabsTrigger value="produccion">Producción</TabsTrigger>
             )}
@@ -2251,6 +2278,9 @@ export default function MetricsPage() {
             )}
             {allowedTabs.includes("operadores") && (
               <TabsTrigger value="operadores">Operadores & Empacadores</TabsTrigger>
+            )}
+            {allowedTabs.includes("paros") && (
+              <TabsTrigger value="paros">Paros</TabsTrigger>
             )}
             {allowedTabs.includes("asistencia") && (
               <TabsTrigger value="asistencia">Asistencia</TabsTrigger>
@@ -3328,6 +3358,11 @@ export default function MetricsPage() {
                 </div>
               </div>
             </div>
+          </TabsContent>
+
+          {/* ========== PAROS TAB ========== */}
+          <TabsContent value="paros" className="space-y-6">
+            <EmployeeDowntimeTab employees={employeeRows} />
           </TabsContent>
 
           {/* ========== ASISTENCIA TAB ========== */}

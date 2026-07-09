@@ -2,6 +2,8 @@
  * Tipos usados en la plataforma. Los datos reales vienen del backend / PLC.
  */
 
+import type { ApiAlertKind } from "@/lib/api"
+
 export type MachineStatus = "active" | "waiting" | "inactive" | "maintenance"
 
 export interface Machine {
@@ -37,10 +39,13 @@ export interface Employee {
 
 export type AlertType = "warning" | "error" | "info" | "success"
 export type AlertCategory = "machine" | "production" | "employee" | "system"
+export type AlertKind = ApiAlertKind
 
 export interface Alert {
   id: string
   type: AlertType
+  /** Causa de negocio (coincide con `ApiAlert.type` del backend). */
+  kind: AlertKind
   category: AlertCategory
   title: string
   message: string

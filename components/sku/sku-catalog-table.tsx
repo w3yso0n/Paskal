@@ -135,10 +135,6 @@ export function SkuCatalogTable({
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Catálogo de SKUs</h2>
-          <p className="text-sm text-muted-foreground">
-            Todos los SKUs registrados en plataforma. Edita piezas por caja y componentes; el
-            código se recalcula al guardar.
-          </p>
         </div>
         <div className="relative w-full sm:max-w-xs">
           <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -268,12 +264,6 @@ export function SkuCatalogTable({
         </div>
       )}
 
-      <p className="mt-3 text-xs text-muted-foreground">
-        {catalog.length} SKU{catalog.length === 1 ? "" : "s"} en catálogo
-        {catalog.filter((s) => !s.isActive).length > 0
-          ? ` · ${catalog.filter((s) => !s.isActive).length} inactivo(s)`
-          : ""}
-      </p>
     </div>
   )
 }

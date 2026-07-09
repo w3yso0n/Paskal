@@ -21,6 +21,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import { ALERT_KIND_LABELS } from "@/lib/alert-ui"
 import type { Alert, AlertType, AlertCategory } from "@/lib/types"
 
 interface AlertsDropdownProps {
@@ -212,6 +213,9 @@ export function AlertsDropdown({
                       {alert.message}
                     </p>
                     <div className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
+                      <span className="rounded bg-muted px-1 py-0.5 font-medium">
+                        {ALERT_KIND_LABELS[alert.kind]}
+                      </span>
                       <CategoryIcon className="h-3 w-3" />
                       <span>{formatTimeAgo(alert.timestamp)}</span>
                       {!alert.isRead && (

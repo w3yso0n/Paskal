@@ -122,10 +122,6 @@ function WindingShiftSection({
               <ReadOnlyField label="Meta mensual 100% (auto)" value={monthly100} />
               <ReadOnlyField label="Meta mensual 110% (auto)" value={monthly110} />
             </div>
-            <p className="text-xs text-muted-foreground">
-              Meta diaria 100% usada en tablero operativo y en Metas. Mensual = diaria × días
-              laborables (p. ej. 3,650 × 20 = 73,000 piezas).
-            </p>
           </div>
         )
       })}
@@ -158,10 +154,6 @@ function BendingShiftSection({ config }: { config: BonusProductionConfigData }) 
           </div>
         )
       })}
-      <p className="col-span-full text-sm text-muted-foreground">
-        La meta de Bending es fija: {BENDING_MONTHLY_META_PER_SHIFT.toLocaleString("es-MX")} piezas
-        por turno al mes. El 110% se calcula automáticamente.
-      </p>
     </div>
   )
 }
@@ -324,11 +316,7 @@ export function BonusConfigPanel({ onSaved }: BonusConfigPanelProps) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <p className="text-sm text-muted-foreground max-w-2xl">
-          Metas por área: Winding (meta diaria 100% del tablero operativo), Bending (fija) y Roller,
-          más reglas de pago. Al guardar se reflejan en Metas y en los reportes Excel.
-        </p>
+      <div className="flex flex-wrap items-start justify-end gap-4">
         <Button onClick={handleSave} disabled={saving} className="gap-2 shrink-0">
           <Save className="h-4 w-4" />
           {saving ? "Guardando…" : "Guardar y sincronizar metas"}

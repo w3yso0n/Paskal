@@ -21,7 +21,7 @@ import { RequireModule } from "@/components/auth/require-module"
 import { hasModuleAccess, visibleReglasTabs } from "@/lib/permissions"
 import { BonusConfigPanel } from "@/components/metas/bonus-config-panel"
 import { ScrapMaterialsPanel } from "@/components/reglas/scrap-materials-panel"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -306,9 +306,6 @@ export default function ReglasNegocioPage() {
                 <Scale className="h-7 w-7 text-primary" />
                 Reglas de negocio
               </h1>
-              <p className="text-sm text-muted-foreground mt-1">
-                Festivos, fallos eléctricos, umbrales de alertas y configuración de bono mensual.
-              </p>
             </div>
             <div className="flex items-center gap-2">
               <Label htmlFor="rules-year" className="sr-only">
@@ -371,9 +368,6 @@ export default function ReglasNegocioPage() {
                   <Card>
                     <CardHeader>
                       <CardTitle className="text-lg">Calendario {year}</CardTitle>
-                      <CardDescription>
-                        Festivos oficiales de México y días adicionales de la planta.
-                      </CardDescription>
                     </CardHeader>
                     <CardContent className="max-h-[420px] overflow-y-auto space-y-2">
                       {allHolidaysSorted.length === 0 ? (
@@ -412,9 +406,6 @@ export default function ReglasNegocioPage() {
                   <Card>
                     <CardHeader>
                       <CardTitle className="text-lg">Agregar festivo</CardTitle>
-                      <CardDescription>
-                        Aparece como DF en el acumulado de bono junto con los oficiales.
-                      </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <div className="grid gap-2">
@@ -480,9 +471,6 @@ export default function ReglasNegocioPage() {
                   <Card>
                     <CardHeader>
                       <CardTitle className="text-lg">Registros {year}</CardTitle>
-                      <CardDescription>
-                        Días u horas con fallo eléctrico que afectaron producción.
-                      </CardDescription>
                     </CardHeader>
                     <CardContent className="max-h-[420px] overflow-y-auto space-y-2">
                       {incidents.length === 0 ? (
@@ -622,9 +610,6 @@ export default function ReglasNegocioPage() {
                 <Card className="max-w-3xl">
                   <CardHeader>
                     <CardTitle className="text-lg">Alertas de inactividad</CardTitle>
-                    <CardDescription>
-                      Minutos sin producción antes de generar alerta en el centro de alertas.
-                    </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="grid gap-4 sm:grid-cols-2">
@@ -642,9 +627,6 @@ export default function ReglasNegocioPage() {
                             }))
                           }
                         />
-                        <p className="text-xs text-muted-foreground">
-                          Primera alerta de paro (por defecto 15 min).
-                        </p>
                       </div>
                       <div className="grid gap-2">
                         <Label>Alerta 2 (minutos)</Label>
@@ -660,9 +642,6 @@ export default function ReglasNegocioPage() {
                             }))
                           }
                         />
-                        <p className="text-xs text-muted-foreground">
-                          Escalada de severidad (por defecto 45 min). Debe ser ≥ alerta 1.
-                        </p>
                       </div>
                     </div>
                     <Button onClick={handleSaveThresholds} disabled={savingThresholds}>
@@ -685,11 +664,6 @@ export default function ReglasNegocioPage() {
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-lg">Configuración de bono</CardTitle>
-                    <CardDescription>
-                      Metas por área: Winding, Bending (81 600 fijo por turno) y Roller, más reglas
-                      de bono por mes. Al guardar se sincronizan las metas en Metas y los reportes
-                      Excel.
-                    </CardDescription>
                   </CardHeader>
                   <CardContent>
                     <BonusConfigPanel />

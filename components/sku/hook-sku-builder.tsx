@@ -209,11 +209,6 @@ export function HookSkuBuilder({
               </label>
             ))}
           </div>
-          {selectedColors.size > 1 && (
-            <p className="text-xs text-muted-foreground">
-              Varios colores se unen con &quot;/&quot; en el SKU (ej. w/o/y).
-            </p>
-          )}
         </div>
 
         <div className="space-y-2">

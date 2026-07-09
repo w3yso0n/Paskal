@@ -9,7 +9,6 @@ import { RequirePermission } from "@/components/auth/require-permission"
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
@@ -37,7 +36,6 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -328,9 +326,6 @@ export default function DatosPage() {
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">Datos</h1>
-              <p className="text-sm text-muted-foreground">
-                Consulta SQL de solo lectura sobre las tablas del sistema. Para validación y revisión durante el desarrollo.
-              </p>
             </div>
           </div>
 
@@ -338,12 +333,6 @@ export default function DatosPage() {
             <CardHeader className="gap-4">
               <div className="space-y-1.5">
                 <CardTitle className="text-base">Consulta</CardTitle>
-                <CardDescription>
-                  Elige una tabla (prellena <code className="font-mono text-xs">select * from …</code>) y edita el SQL: agrega
-                  <code className="font-mono text-xs"> where</code>, <code className="font-mono text-xs">order by</code>,
-                  <code className="font-mono text-xs"> limit</code>, joins, etc. Solo lectura — una sentencia
-                  <code className="font-mono text-xs"> SELECT</code>/<code className="font-mono text-xs">WITH</code>.
-                </CardDescription>
               </div>
 
               <div className="flex flex-col gap-3 md:flex-row md:items-start">
@@ -375,10 +364,7 @@ export default function DatosPage() {
                     className="font-mono text-sm"
                     placeholder="select * from machines where ..."
                   />
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-muted-foreground">
-                      Ctrl/⌘ + Enter para ejecutar · tope 50,000 filas (usa LIMIT/WHERE para acotar)
-                    </span>
+                  <div className="flex items-center justify-end">
                     <div className="flex gap-2">
                       <Button
                         variant="ghost"
@@ -563,7 +549,6 @@ export default function DatosPage() {
                   Copiar
                 </Button>
               </div>
-              <DialogDescription>Vista completa, incluido el payload (solo lectura).</DialogDescription>
             </DialogHeader>
             <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-4 text-xs leading-relaxed">
               {detail ? JSON.stringify(detail, null, 2) : ""}

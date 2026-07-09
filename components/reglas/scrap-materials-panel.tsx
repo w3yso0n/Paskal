@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import { Loader2, Save } from "lucide-react"
 import { toast } from "sonner"
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -90,11 +90,7 @@ export function ScrapMaterialsPanel() {
   return (
     <Card className="max-w-5xl">
       <CardHeader>
-        <CardTitle className="text-lg">Costos de scrap por material</CardTitle>
-        <CardDescription>
-          Costo por kg y precio de recuperación por venta de scrap. Los kilos mensuales se
-          capturan en Captura de datos → Scrap.
-        </CardDescription>
+        <CardTitle>Costos de scrap por material</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         {loading ? (

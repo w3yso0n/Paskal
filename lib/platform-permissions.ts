@@ -148,6 +148,7 @@ export const REGLAS_MODULES: readonly PlatformModule[] = [
 export const METRICAS_TAB_MODULES: Record<string, PlatformModule> = {
   produccion: "metricas_produccion",
   operadores: "metricas_produccion",
+  paros: "metricas_produccion",
   incidencias: "metricas_incidencias",
   mantenimiento: "metricas_mantenimiento",
   asistencia: "metricas_asistencia_rotacion_bono",
@@ -158,7 +159,6 @@ export const EMPLEADOS_TAB_MODULES: Record<string, PlatformModule | readonly Pla
   /** Lista y alta/edición: RH/director o personal de piso con paros/vacaciones/rol. */
   employees: ["empleados_asignar_tarjetas", "empleados_paros_vacaciones_rol_secundario"],
   transport: "empleados_transporte",
-  downtime: "empleados_paros_vacaciones_rol_secundario",
   attendance: "metricas_asistencia_rotacion_bono",
   roles: "empleados_paros_vacaciones_rol_secundario",
 }

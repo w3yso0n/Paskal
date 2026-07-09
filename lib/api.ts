@@ -694,9 +694,22 @@ export async function deleteEmployee(accessToken: string, id: string): Promise<A
 export type ApiAlertSeverity = "low" | "medium" | "high" | "critical";
 export type ApiAlertStatus = "open" | "acknowledged" | "closed";
 
+/** Clave de idempotencia en backend — causa real de la alerta. */
+export type ApiAlertKind =
+  | "no_checkin"
+  | "no_packager"
+  | "idle"
+  | "no_checkout"
+  | "overtime_hours"
+  | "plant_outage"
+  | "counter_not_zero"
+  | "device_down"
+  | "other";
+
 export interface ApiAlert {
   id: string;
   machineId: string | null;
+  type: ApiAlertKind | null;
   title: string;
   message: string | null;
   severity: ApiAlertSeverity;

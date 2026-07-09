@@ -76,11 +76,6 @@ export default function SkuManagementPage() {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h1 className="text-2xl font-bold text-foreground">Gestión de SKUs Hook / Rafía</h1>
-            <p className="text-muted-foreground">
-              Genera códigos con formato{" "}
-              <span className="font-mono text-sm">[gancho][embobinado][metros][color][rafia]</span>
-              {" "}— ej. <span className="font-mono text-sm">522pk18+4l-10</span>
-            </p>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" asChild>
@@ -120,11 +115,7 @@ export default function SkuManagementPage() {
 
           <TabsContent value="generador" className="space-y-4">
             <div className="rounded-xl border border-border bg-card p-4 sm:p-6">
-              <h2 className="mb-1 text-lg font-semibold">Generador de SKU</h2>
-              <p className="mb-4 text-sm text-muted-foreground">
-                Selecciona características del producto, revisa el código generado y guárdalo en el
-                catálogo.
-              </p>
+              <h2 className="mb-4 text-lg font-semibold">Generador de SKU</h2>
               <HookSkuGeneratorPanel
                 quantityRules={quantityRules}
                 getAccessToken={getAccessToken}
