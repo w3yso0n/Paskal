@@ -1,9 +1,6 @@
 import type { UserRole } from "./api"
 import {
-  EMPLEADOS_TAB_MODULES,
-  METRICAS_TAB_MODULES,
   MODULE_ACCESS,
-  REGLAS_TAB_MODULES,
   ROLE_LABELS,
   USER_ROLES,
   type PlatformModule,
@@ -13,130 +10,209 @@ export type AccessMatrixRow = {
   id: string
   section: string
   label: string
+  /** Texto corto opcional bajo la etiqueta (qué implica el permiso). */
+  detail?: string
   roles: Record<UserRole, boolean>
 }
 
-const MODULE_LABELS: Record<PlatformModule, string> = {
-  inicio: "Inicio",
-  piso_produccion: "Piso de producción",
-  tablero_operativo: "Tablero operativo",
-  metricas_produccion: "Métricas (módulo producción)",
-  metricas_incidencias: "Métricas (módulo incidencias)",
-  metricas_mantenimiento: "Métricas (módulo mantenimiento)",
-  metricas_asistencia_rotacion_bono: "Métricas (asistencia / rotación / bono)",
-  metas: "Metas",
-  alertas: "Alertas",
-  gestion_usuarios: "Gestión de usuarios",
-  empleados_asignar_tarjetas: "Empleados — tarjetas NFC",
-  empleados_transporte: "Empleados — transporte",
-  empleados_paros_vacaciones_rol_secundario: "Empleados — paros / vacaciones / rol secundario",
-  skus: "Gestión de SKUs",
-  captura_historico: "Captura de datos — histórico",
-  captura_produccion: "Captura de datos — producción",
-  reglas_dias_festivos: "Reglas — días festivos",
-  reglas_fallos_electricos: "Reglas — fallos eléctricos",
-  reglas_umbrales: "Reglas — umbrales y scrap",
-  datos: "Datos (tablas SQL)",
-  configuracion: "Configuración de cuenta",
+type CapabilityDef = {
+  id: string
+  section: string
+  label: string
+  detail?: string
+  /** Acceso si el rol tiene cualquiera de estos módulos. */
+  modules: readonly PlatformModule[]
 }
 
-const METRICAS_TAB_LABELS: Record<string, string> = {
-  produccion: "Producción",
-  operadores: "Operadores",
-  paros: "Paros",
-  incidencias: "Incidencias",
-  mantenimiento: "Mantenimiento",
-  asistencia: "Asistencia",
-  rotacion: "Rotación",
+/**
+ * Capacidades visibles en la matriz. Se derivan de `MODULE_ACCESS`
+ * (misma fuente que `hasModuleAccess`), con etiquetas orientadas a acciones.
+ */
+const CAPABILITIES: readonly CapabilityDef[] = [
+  // —— Menú principal ——
+  {
+    id: "nav:inicio",
+    section: "Menú principal",
+    label: "Ver Inicio (dashboard)",
+    modules: ["inicio"],
+  },
+  {
+    id: "nav:piso",
+    section: "Menú principal",
+    label: "Usar piso de producción",
+    detail: "Asignar operadores/empacadores y ver máquinas",
+    modules: ["piso_produccion"],
+  },
+  {
+    id: "nav:tablero",
+    section: "Menú principal",
+    label: "Ver tablero operativo",
+    modules: ["tablero_operativo"],
+  },
+  {
+    id: "nav:metas",
+    section: "Menú principal",
+    label: "Ver y gestionar metas",
+    modules: ["metas"],
+  },
+  {
+    id: "nav:alertas",
+    section: "Menú principal",
+    label: "Ver y gestionar alertas",
+    modules: ["alertas"],
+  },
+  {
+    id: "nav:config",
+    section: "Menú principal",
+    label: "Configurar su cuenta",
+    modules: ["configuracion"],
+  },
+
+  // —— Empleados ——
+  {
+    id: "emp:crud",
+    section: "Empleados",
+    label: "Ver, agregar, editar y eliminar empleados",
+    detail: "Directorio completo (CRUD)",
+    modules: ["empleados_gestionar"],
+  },
+  {
+    id: "emp:nfc",
+    section: "Empleados",
+    label: "Asignar o cambiar tarjetas NFC",
+    modules: ["empleados_asignar_tarjetas"],
+  },
+  {
+    id: "emp:transporte",
+    section: "Empleados",
+    label: "Gestionar apoyo de transporte",
+    modules: ["empleados_transporte"],
+  },
+  {
+    id: "emp:paros",
+    section: "Empleados",
+    label: "Registrar vacaciones, paros e incidencias",
+    detail: "Ausencias y registros diarios",
+    modules: ["empleados_paros_vacaciones_rol_secundario"],
+  },
+  {
+    id: "emp:roles",
+    section: "Empleados",
+    label: "Cambiar rol secundario del día",
+    modules: ["empleados_paros_vacaciones_rol_secundario"],
+  },
+  {
+    id: "emp:asistencia",
+    section: "Empleados",
+    label: "Ver asistencia en empleados",
+    modules: ["metricas_asistencia_rotacion_bono"],
+  },
+
+  // —— Métricas ——
+  {
+    id: "met:prod",
+    section: "Métricas",
+    label: "Ver producción, operadores y paros",
+    modules: ["metricas_produccion"],
+  },
+  {
+    id: "met:inc",
+    section: "Métricas",
+    label: "Ver incidencias",
+    modules: ["metricas_incidencias"],
+  },
+  {
+    id: "met:mant",
+    section: "Métricas",
+    label: "Ver mantenimiento",
+    modules: ["metricas_mantenimiento"],
+  },
+  {
+    id: "met:asist",
+    section: "Métricas",
+    label: "Ver asistencia, rotación y bono",
+    modules: ["metricas_asistencia_rotacion_bono"],
+  },
+
+  // —— Reglas de negocio ——
+  {
+    id: "reg:festivos",
+    section: "Reglas de negocio",
+    label: "Gestionar días festivos",
+    modules: ["reglas_dias_festivos"],
+  },
+  {
+    id: "reg:electricos",
+    section: "Reglas de negocio",
+    label: "Gestionar fallos eléctricos",
+    modules: ["reglas_fallos_electricos"],
+  },
+  {
+    id: "reg:umbrales",
+    section: "Reglas de negocio",
+    label: "Editar umbrales de alerta y scrap",
+    modules: ["reglas_umbrales"],
+  },
+  {
+    id: "reg:bono",
+    section: "Reglas de negocio",
+    label: "Configurar bono",
+    modules: ["metricas_asistencia_rotacion_bono"],
+  },
+
+  // —— Administración ——
+  {
+    id: "adm:usuarios",
+    section: "Administración",
+    label: "Gestionar usuarios de la plataforma",
+    detail: "Crear, editar y eliminar cuentas",
+    modules: ["gestion_usuarios"],
+  },
+  {
+    id: "adm:skus",
+    section: "Administración",
+    label: "Gestionar catálogo de SKUs",
+    modules: ["skus"],
+  },
+  {
+    id: "adm:captura",
+    section: "Administración",
+    label: "Capturar datos de producción",
+    modules: ["captura_produccion"],
+  },
+  {
+    id: "adm:historico",
+    section: "Administración",
+    label: "Capturar / corregir histórico",
+    modules: ["captura_historico"],
+  },
+  {
+    id: "adm:datos",
+    section: "Administración",
+    label: "Consultar tablas SQL (Datos)",
+    modules: ["datos"],
+  },
+]
+
+function roleHasAnyModule(role: UserRole, modules: readonly PlatformModule[]): boolean {
+  return modules.some((module) => MODULE_ACCESS[module]?.includes(role) ?? false)
 }
 
-const EMPLEADOS_TAB_LABELS: Record<string, string> = {
-  employees: "Empleados",
-  transport: "Transporte",
-  attendance: "Asistencia",
-  roles: "Roles del día",
-}
-
-const REGLAS_TAB_LABELS: Record<string, string> = {
-  holidays: "Días festivos",
-  electrical: "Fallos eléctricos",
-  thresholds: "Umbrales de alerta",
-  scrap: "Scrap",
-  bono: "Bono",
-}
-
-function rowForModule(section: string, module: PlatformModule, label?: string): AccessMatrixRow {
+function rowForCapability(cap: CapabilityDef): AccessMatrixRow {
   return {
-    id: `${section}:${module}`,
-    section,
-    label: label ?? MODULE_LABELS[module],
+    id: cap.id,
+    section: cap.section,
+    label: cap.label,
+    detail: cap.detail,
     roles: Object.fromEntries(
-      USER_ROLES.map((role) => [role, MODULE_ACCESS[module]?.includes(role) ?? false]),
+      USER_ROLES.map((role) => [role, roleHasAnyModule(role, cap.modules)]),
     ) as Record<UserRole, boolean>,
   }
 }
 
 /** Matriz derivada de `MODULE_ACCESS` — misma fuente que `hasModuleAccess`. */
 export function buildRoleAccessMatrix(): AccessMatrixRow[] {
-  const rows: AccessMatrixRow[] = []
-
-  const mainNav: PlatformModule[] = [
-    "inicio",
-    "piso_produccion",
-    "tablero_operativo",
-    "metas",
-    "alertas",
-    "configuracion",
-  ]
-  for (const module of mainNav) {
-    rows.push(rowForModule("Menú principal", module))
-  }
-
-  const adminNav: PlatformModule[] = [
-    "gestion_usuarios",
-    "skus",
-    "captura_produccion",
-    "captura_historico",
-    "datos",
-  ]
-  for (const module of adminNav) {
-    rows.push(rowForModule("Administración y datos", module))
-  }
-
-  for (const [tab, module] of Object.entries(METRICAS_TAB_MODULES)) {
-    rows.push(
-      rowForModule(
-        "Métricas — pestañas",
-        module,
-        `Métricas → ${METRICAS_TAB_LABELS[tab] ?? tab}`,
-      ),
-    )
-  }
-
-  for (const [tab, moduleOrModules] of Object.entries(EMPLEADOS_TAB_MODULES)) {
-    const modules = Array.isArray(moduleOrModules) ? moduleOrModules : [moduleOrModules]
-    for (const module of modules) {
-      rows.push(
-        rowForModule(
-          "Empleados — pestañas",
-          module,
-          `Empleados → ${EMPLEADOS_TAB_LABELS[tab] ?? tab}`,
-        ),
-      )
-    }
-  }
-
-  for (const [tab, module] of Object.entries(REGLAS_TAB_MODULES)) {
-    rows.push(
-      rowForModule(
-        "Reglas de negocio — pestañas",
-        module,
-        `Reglas → ${REGLAS_TAB_LABELS[tab] ?? tab}`,
-      ),
-    )
-  }
-
-  return rows
+  return CAPABILITIES.map(rowForCapability)
 }
 
 export { ROLE_LABELS, USER_ROLES }

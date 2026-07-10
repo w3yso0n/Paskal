@@ -38,9 +38,7 @@ const MODULE_TO_PERMISSIONS: Partial<Record<PlatformModule, readonly Permission[
     "production.edit-threshold",
     "production.esp-idle-config",
   ],
-  empleados_asignar_tarjetas: ["employees.manage"],
-  empleados_transporte: ["employees.manage"],
-  empleados_paros_vacaciones_rol_secundario: ["employees.manage"],
+  empleados_gestionar: ["employees.manage"],
   skus: ["business-rules.manage"],
   reglas_dias_festivos: ["business-rules.manage"],
   reglas_fallos_electricos: ["business-rules.manage"],
@@ -163,6 +161,7 @@ export { ROLE_LABELS }
 export function showAdminSection(user: RequestUser | null | undefined): boolean {
   return hasAnyModuleAccess(user, [
     "gestion_usuarios",
+    "empleados_gestionar",
     "empleados_asignar_tarjetas",
     "empleados_transporte",
     "empleados_paros_vacaciones_rol_secundario",

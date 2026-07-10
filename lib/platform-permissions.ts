@@ -12,6 +12,7 @@ export type PlatformModule =
   | "metas"
   | "alertas"
   | "gestion_usuarios"
+  | "empleados_gestionar"
   | "empleados_asignar_tarjetas"
   | "empleados_transporte"
   | "empleados_paros_vacaciones_rol_secundario"
@@ -96,6 +97,15 @@ export const MODULE_ACCESS: Record<PlatformModule, readonly UserRole[]> = {
     "droven",
   ],
   gestion_usuarios: ["droven"],
+  /** Alta / consulta / edición / baja del directorio de empleados. */
+  empleados_gestionar: [
+    "supervisor",
+    "jefe_produccion",
+    "gerente_operaciones",
+    "director",
+    "rh",
+    "droven",
+  ],
   empleados_asignar_tarjetas: ["director", "rh", "droven"],
   empleados_transporte: ["director", "rh", "droven"],
   empleados_paros_vacaciones_rol_secundario: [
@@ -134,6 +144,7 @@ export const MODULE_ACCESS: Record<PlatformModule, readonly UserRole[]> = {
 }
 
 export const EMPLOYEE_MODULES: readonly PlatformModule[] = [
+  "empleados_gestionar",
   "empleados_asignar_tarjetas",
   "empleados_transporte",
   "empleados_paros_vacaciones_rol_secundario",
@@ -156,8 +167,8 @@ export const METRICAS_TAB_MODULES: Record<string, PlatformModule> = {
 }
 
 export const EMPLEADOS_TAB_MODULES: Record<string, PlatformModule | readonly PlatformModule[]> = {
-  /** Lista y alta/edición: RH/director o personal de piso con paros/vacaciones/rol. */
-  employees: ["empleados_asignar_tarjetas", "empleados_paros_vacaciones_rol_secundario"],
+  /** Directorio: ver / agregar / editar / eliminar empleados. */
+  employees: "empleados_gestionar",
   transport: "empleados_transporte",
   attendance: "metricas_asistencia_rotacion_bono",
   roles: "empleados_paros_vacaciones_rol_secundario",

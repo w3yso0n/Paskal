@@ -901,6 +901,7 @@ export default function EmployeesPage() {
   return (
     <RequireModule
       modules={[
+        "empleados_gestionar",
         "empleados_asignar_tarjetas",
         "empleados_transporte",
         "empleados_paros_vacaciones_rol_secundario",
