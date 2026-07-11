@@ -106,7 +106,14 @@ export const MODULE_ACCESS: Record<PlatformModule, readonly UserRole[]> = {
     "rh",
     "droven",
   ],
-  empleados_asignar_tarjetas: ["director", "rh", "droven"],
+  empleados_asignar_tarjetas: [
+    "supervisor",
+    "jefe_produccion",
+    "gerente_operaciones",
+    "director",
+    "rh",
+    "droven",
+  ],
   empleados_transporte: ["director", "rh", "droven"],
   empleados_paros_vacaciones_rol_secundario: [
     "supervisor",

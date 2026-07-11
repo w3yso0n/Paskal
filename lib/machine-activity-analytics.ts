@@ -5,6 +5,11 @@ export type ActivityRow = {
   event: string
   eventRaw: string
   count: number
+  /** Resumen horario in-place (`payload.rolled_up`). */
+  rolledUp?: boolean
+  firstOccurredAt?: string | null
+  lastOccurredAt?: string | null
+  sourceEventCount?: number
 }
 
 export function normalizeActivityEventType(eventRaw: string): string {
@@ -183,7 +188,30 @@ export function buildMachineActivitySummary(
       const ts = new Date(r.timestamp)
       if (Number.isNaN(ts.getTime())) continue
       if (isProductionActivityEvent(r.eventRaw) && Number(r.count) > 0) {
-        stats.productionEvents++
+        const sourceCount =
+          r.rolledUp && r.sourceEventCount && r.sourceEventCount > 0
+            ? r.sourceEventCount
+            : 1
+        stats.productionEvents += sourceCount
+
+        if (r.rolledUp && r.firstOccurredAt && r.lastOccurredAt) {
+          const firstMs = new Date(r.firstOccurredAt).getTime()
+          const lastMs = new Date(r.lastOccurredAt).getTime()
+          if (!Number.isNaN(firstMs) && !Number.isNaN(lastMs)) {
+            const startMs = Math.min(firstMs, lastMs)
+            const endMs = Math.max(firstMs, lastMs)
+            const spanMin = endMs > startMs ? (endMs - startMs) / 60_000 : 10
+            addMinutesToHourBuckets(hourlyBuckets, startMs, spanMin, "active")
+            let t = startMs
+            const guard = endMs + 60_000
+            while (t <= endMs && t < guard) {
+              stats.activeHours.add(new Date(t).getHours())
+              t += 60_000
+            }
+            continue
+          }
+        }
+
         stats.activeHours.add(ts.getHours())
         addMinutesToHourBuckets(hourlyBuckets, ts.getTime() - 5 * 60_000, 10, "active")
       }

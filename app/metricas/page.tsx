@@ -244,6 +244,11 @@ interface ProductionBaseRow {
   count: number
   event: ProductionEventType
   sku: string
+  /** Compactación horaria in-place. */
+  rolledUp?: boolean
+  firstOccurredAt?: string | null
+  lastOccurredAt?: string | null
+  sourceEventCount?: number
 }
 
 type PersonProductionAgg = {
@@ -604,6 +609,17 @@ function mapEventsToProductionBaseRows(
     const packer_1 = packersAttributed[0] ?? "—"
     const packer_2 = packersAttributed[1] ?? "—"
 
+    const rolledUp = payload.rolled_up === true || payload.rolled_up === "true"
+    const firstOccurredAt =
+      typeof payload.first_occurred_at === "string" ? payload.first_occurred_at : null
+    const lastOccurredAt =
+      typeof payload.last_occurred_at === "string" ? payload.last_occurred_at : null
+    const sourceEventCountRaw = Number(payload.source_event_count ?? 0)
+    const sourceEventCount =
+      Number.isFinite(sourceEventCountRaw) && sourceEventCountRaw > 0
+        ? sourceEventCountRaw
+        : undefined
+
     return {
       machine_id,
       machineIdRaw: e.machineId?.trim() ?? null,
@@ -620,6 +636,10 @@ function mapEventsToProductionBaseRows(
       count: Number.isFinite(count) ? count : 0,
       event,
       sku: skuResolved ?? "—",
+      rolledUp: rolledUp || undefined,
+      firstOccurredAt,
+      lastOccurredAt,
+      sourceEventCount,
     }
   })
 }
@@ -1296,6 +1316,10 @@ export default function MetricsPage() {
         event: r.event,
         eventRaw: r.eventRaw,
         count: r.count,
+        rolledUp: r.rolledUp,
+        firstOccurredAt: r.firstOccurredAt,
+        lastOccurredAt: r.lastOccurredAt,
+        sourceEventCount: r.sourceEventCount,
       })),
     [scopedProductionRows],
   )

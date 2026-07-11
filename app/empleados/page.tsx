@@ -56,7 +56,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
 import { RequireModule } from "@/components/auth/require-module"
-import { hasModuleAccess, hasPermission, visibleEmpleadosTabs } from "@/lib/permissions"
+import { hasPermission, visibleEmpleadosTabs } from "@/lib/permissions"
 import {
   createEmployee,
   createEmployeeDayRecord,
@@ -227,12 +227,10 @@ function EmployeeFormFields({
   form,
   onChange,
   idPrefix,
-  canEditNfc = true,
 }: {
   form: EmployeeFormState
   onChange: (next: EmployeeFormState) => void
   idPrefix: string
-  canEditNfc?: boolean
 }) {
   return (
     <div className="grid gap-4 sm:grid-cols-2">
@@ -252,13 +250,7 @@ function EmployeeFormFields({
           value={form.nfcCardUid}
           onChange={(e) => onChange({ ...form, nfcCardUid: e.target.value })}
           placeholder="Ej: 03110694"
-          disabled={!canEditNfc}
         />
-        {!canEditNfc ? (
-          <p className="text-xs text-muted-foreground">
-            Solo Recursos Humanos o Director pueden asignar o cambiar tarjetas NFC.
-          </p>
-        ) : null}
         {form.primaryRole === "maintenance" ? (
           <p className="text-xs text-muted-foreground">
             Con rol Mantenimiento, el tap en la máquina abre/cierra una sesión azul: la producción de
@@ -385,7 +377,6 @@ export default function EmployeesPage() {
   const { user, getAccessToken } = useAuth()
   const allowedTabs = useMemo(() => visibleEmpleadosTabs(user), [user])
   const canManageEmployees = hasPermission(user, "employees.manage")
-  const canAssignNfcCards = hasModuleAccess(user, "empleados_asignar_tarjetas")
   const [employeeTab, setEmployeeTab] = useState("employees")
 
   useEffect(() => {
@@ -640,9 +631,7 @@ export default function EmployeesPage() {
     try {
       const payload = {
         fullName,
-        nfcCardUid: canAssignNfcCards
-          ? employeeForm.nfcCardUid.trim() || null
-          : editingEmployee?.nfcCardUid?.trim() || null,
+        nfcCardUid: employeeForm.nfcCardUid.trim() || null,
         rfc: employeeForm.rfc.trim() || null,
         imss: employeeForm.imss.trim() || null,
         primaryRole: employeeForm.primaryRole,
@@ -1629,7 +1618,6 @@ export default function EmployeesPage() {
             form={employeeForm}
             onChange={setEmployeeForm}
             idPrefix={editingEmployee ? "edit" : "new"}
-            canEditNfc={canAssignNfcCards}
           />
           <DialogFooter className="gap-2 sm:gap-0">
             <Button variant="outline" onClick={() => setIsEmployeeDialogOpen(false)}>
