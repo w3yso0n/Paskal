@@ -186,6 +186,8 @@ export function shouldFlagEarlyCheckoutUnderGoal(input: {
   bonusConfig: BonusProductionConfigData | null
   productionRows: EarlyCheckoutProductionRow[]
   employees: Array<{ fullName: string; employeeCode?: string | null }>
+  /** Evita machines.find en cada check-out cuando el caller ya indexó. */
+  machineHint?: ApiMachine | null
 }): { flag: boolean; quota: OperatorDailyQuota } {
   if (!isCheckoutBeforeShiftEnd(input.checkout, input.shift)) {
     return { flag: false, quota: { target: 0, actual: 0, met: false, sourceKey: null } }
@@ -193,7 +195,9 @@ export function shouldFlagEarlyCheckoutUnderGoal(input: {
 
   const day = dayKeyFromDate(input.checkout)
   const machine =
-    input.machines.find((m) => m.id === input.checkin.machineId) ?? null
+    input.machineHint !== undefined
+      ? input.machineHint
+      : (input.machines.find((m) => m.id === input.checkin.machineId) ?? null)
 
   const quota = resolveOperatorDailyQuota({
     operatorCode: input.operatorCode,

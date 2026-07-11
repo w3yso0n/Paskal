@@ -162,6 +162,8 @@ import {
 import { buildAlertRoleCounts } from "@/lib/alert-role-metrics"
 import {
   buildShiftIncidentsAnalytics,
+  INCIDENCIAS_EARLY_LEAVE_ENABLED,
+  INCIDENCIAS_OUT_OF_SHIFT_ENABLED,
   type ShiftIncidentRow,
   type ShiftIncidentsAnalytics,
 } from "@/lib/shift-incidents-analytics"
@@ -344,18 +346,6 @@ function nthStringFromArrayLoose(
   return s
 }
 
-function isMetricasDebugEnabled(): boolean {
-  if (typeof window === "undefined") return false
-  try {
-    return (
-      window.localStorage.getItem("METRICAS_DEBUG") === "1" ||
-      process.env.NEXT_PUBLIC_METRICAS_DEBUG === "1"
-    )
-  } catch {
-    return process.env.NEXT_PUBLIC_METRICAS_DEBUG === "1"
-  }
-}
-
 /** Índice check-ins por máquina (evita O(eventos × check-ins) al mapear producción). */
 function buildCheckinsByMachineId(
   checkins: ApiMachineCheckin[],
@@ -469,7 +459,9 @@ function mapEventsToProductionBaseRows(
   checkins: ApiMachineCheckin[],
   employees: ApiEmployee[],
   apiMachines: ApiMachine[],
+  options?: { skipCheckinEnrich?: boolean },
 ): ProductionBaseRow[] {
+  const skipCheckinEnrich = options?.skipCheckinEnrich === true
   const machineLabelById = new Map<string, string>()
   const machineSkuById = new Map<string, string>()
   const machineUpbById = new Map<string, number>()
@@ -490,7 +482,9 @@ function mapEventsToProductionBaseRows(
     return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
   }
 
-  const checkinsByMachine = buildCheckinsByMachineId(checkins)
+  const checkinsByMachine = skipCheckinEnrich
+    ? new Map<string, ApiMachineCheckin[]>()
+    : buildCheckinsByMachineId(checkins)
 
   return events
     .filter((e) => !(e.payload as Record<string, unknown>)?.excludedMaintenance)
@@ -547,7 +541,7 @@ function mapEventsToProductionBaseRows(
       nthStringFromArrayLoose(payload, "operators", 0)
 
     let operatorLabel = resolvePerson(operatorCodeRaw)
-    if (operatorLabel === "—" && e.machineId?.trim()) {
+    if (!skipCheckinEnrich && operatorLabel === "—" && e.machineId?.trim()) {
       const fromChk = primaryOperatorLabelFromCheckin(
         e.machineId,
         new Date(ts).getTime(),
@@ -562,7 +556,7 @@ function mapEventsToProductionBaseRows(
       nthStringFromArray(payload, "operators", 1) ??
       nthStringFromArrayLoose(payload, "operators", 1)
     let operator2Label = resolvePerson(operator2CodeRaw)
-    if (operator2Label === "—" && e.machineId?.trim()) {
+    if (!skipCheckinEnrich && operator2Label === "—" && e.machineId?.trim()) {
       const ch = findBestCheckinForMachineAndTime(e.machineId, new Date(ts).getTime(), checkinsByMachine)
       const oc2 = ch?.operator2Code?.trim()
       if (oc2) operator2Label = resolvePerson(oc2)
@@ -598,7 +592,7 @@ function mapEventsToProductionBaseRows(
     let packersAttributed = dedupeTrimmedPreserveOrder(
       rawPackerCodes.map((c) => resolvePerson(c)).filter((p) => p && p !== "—"),
     )
-    if (packersAttributed.length === 0 && e.machineId?.trim()) {
+    if (!skipCheckinEnrich && packersAttributed.length === 0 && e.machineId?.trim()) {
       packersAttributed = packerDisplayNamesFromCheckin(
         e.machineId,
         new Date(ts).getTime(),
@@ -773,8 +767,14 @@ function buildPersonnelMovementsFromEmployees(
 
 export default function MetricsPage() {
   const { user, getAccessToken } = useAuth()
-  const allowedTabs = useMemo(() => visibleMetricasTabs(user), [user])
-  const [activeTab, setActiveTab] = useState("produccion")
+  // Incidencias oculto temporalmente (métricas pesadas fuera de turno / salida sin meta).
+  const allowedTabs = useMemo(
+    () => visibleMetricasTabs(user).filter((tab) => tab !== "incidencias"),
+    [user],
+  )
+
+
+  const [activeTab, setActiveTab] = useState<string>("produccion")
   // Initialise to the current calendar month
   const [filterStartDate, setFilterStartDate] = useState(() => {
     const d = new Date()
@@ -953,6 +953,7 @@ export default function MetricsPage() {
       const silent = options?.silent ?? false
       const generation = ++loadGenerationRef.current
 
+
       const token = await getAccessToken()
       if (generation !== loadGenerationRef.current) return
 
@@ -1029,37 +1030,6 @@ export default function MetricsPage() {
 
         const mapped = mapEventsToProductionBaseRows(events, checkins, employees, apiMachines)
         if (generation !== loadGenerationRef.current) return
-
-        if (isMetricasDebugEnabled()) {
-          const prodRows = mapped.filter((r) => r.event === "Producción")
-          const byOp = new Map<string, number>()
-          for (const r of prodRows) {
-            byOp.set(r.operator, (byOp.get(r.operator) ?? 0) + r.count)
-          }
-          const sinOp = prodRows.filter((r) => r.operator === "—").length
-          const conMaquina = prodRows.filter((r) => Boolean(r.machineIdRaw)).length
-          const codeToName = buildEmployeeCodeToNameMap(employees)
-          console.info("[Métricas] METRICAS_DEBUG=1 — producción / operadores", {
-            rango: { desde: filterStartDate, hasta: filterEndDate },
-            registrosApi: events.length,
-            posibleCortePorLimiteApi: events.length >= 49_000,
-            filasMapeadas: mapped.length,
-            filasProduccion: prodRows.length,
-            produccionSinOperadorResuelto: sinOp,
-            produccionConMachineId: conMaquina,
-            checkinsEnRango: checkins.length,
-            empleadosMaestro: employees.length,
-            codigosEmpleadoEnMapa: codeToName.size,
-            operadoresDistintosEnAgg: byOp.size,
-            topOperadoresPorUnidades: [...byOp.entries()]
-              .sort((a, b) => b[1] - a[1])
-              .slice(0, 20),
-            hintSiPocosOperadores:
-              sinOp > 0
-                ? "Muchos PROD sin OPERATOR_1 en payload: ya se intenta check-in NFC por máquina/fecha. Verifica check-ins en el rango."
-                : "Si operadoresDistintosEnAgg es bajo, revisa que los códigos OPERATOR_1/OPERATOR coincidan con employeeCode en maestro.",
-          })
-        }
 
         setProductionBaseRows(mapped)
       } catch (err) {
@@ -1326,7 +1296,9 @@ export default function MetricsPage() {
 
   const machineActivity = useMemo(
     () => {
-      if (activeTab !== "produccion") return buildMachineActivitySummary([], { refDay: filterEndDate })
+      if (activeTab !== "produccion") {
+        return buildMachineActivitySummary([], { refDay: filterEndDate })
+      }
       return buildMachineActivitySummary(activityRows, {
         refDay: lastDayWithData ?? filterEndDate,
       })
@@ -1341,7 +1313,9 @@ export default function MetricsPage() {
 
   const scopedMachineActivity = useMemo(
     () => {
-      if (activeTab !== "produccion") return buildMachineActivitySummary([], { refDay: filterEndDate })
+      if (activeTab !== "produccion") {
+        return buildMachineActivitySummary([], { refDay: filterEndDate })
+      }
       return buildMachineActivitySummary(activityRowsForMachine, {
         refDay: lastDayWithData ?? filterEndDate,
       })
@@ -1405,7 +1379,9 @@ export default function MetricsPage() {
 
   const alertRoleCounts = useMemo(
     () => {
-      if (activeTab !== "produccion") return { operator: 0, packager: 0, other: 0, total: 0 }
+      if (activeTab !== "produccion") {
+        return { operator: 0, packager: 0, other: 0, total: 0 }
+      }
       return buildAlertRoleCounts({
         alerts: alertsLoaded,
         startDate: filterStartDate,
@@ -1562,6 +1538,19 @@ export default function MetricsPage() {
     if (activeTab !== "incidencias") {
       return EMPTY_SHIFT_INCIDENTS
     }
+    // Sin mediciones pesadas: solo notas de horario (barato).
+    if (!INCIDENCIAS_OUT_OF_SHIFT_ENABLED && !INCIDENCIAS_EARLY_LEAVE_ENABLED) {
+      return buildShiftIncidentsAnalytics({
+        productionRows: [],
+        checkins: [],
+        machines: [],
+        goals: [],
+        bonusConfig: null,
+        employees: [],
+        from: filterStartDate,
+        to: filterEndDate,
+      })
+    }
     const built = buildShiftIncidentsAnalytics({
       productionRows: productionRowsForIncidents,
       checkins: checkinsForIncidents,
@@ -1581,8 +1570,9 @@ export default function MetricsPage() {
         overtimeCount: incidents.filter((i) => i.kind === "overtime_production").length,
         earlyLeaveCount: incidents.filter((i) => i.kind === "early_leave_under_goal").length,
         postCleaningCount: incidents.filter((i) => i.kind === "post_cleaning_production").length,
-        cleaningProductionCount: incidents.filter((i) => i.kind === "production_during_cleaning")
-          .length,
+        cleaningProductionCount: incidents.filter(
+          (i) => i.kind === "production_during_cleaning",
+        ).length,
         total: incidents.length,
       },
     }
@@ -2120,7 +2110,7 @@ export default function MetricsPage() {
             </Button>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-border pt-3">
             <span className="text-xs font-medium text-muted-foreground">Turno global:</span>
             <ToggleGroup
               type="single"
@@ -2128,15 +2118,27 @@ export default function MetricsPage() {
               onValueChange={(v) => {
                 if (v === "all" || v === "matutino" || v === "vespertino") setShiftFilter(v)
               }}
-              className="justify-start"
+              className="justify-start gap-2"
             >
-              <ToggleGroupItem value="all" size="sm">
+              <ToggleGroupItem
+                value="all"
+                size="sm"
+                className="rounded-md px-4 shadow-none data-[variant=outline]:border-l"
+              >
                 Todos
               </ToggleGroupItem>
-              <ToggleGroupItem value="matutino" size="sm">
+              <ToggleGroupItem
+                value="matutino"
+                size="sm"
+                className="rounded-md px-4 shadow-none data-[variant=outline]:border-l"
+              >
                 Matutino
               </ToggleGroupItem>
-              <ToggleGroupItem value="vespertino" size="sm">
+              <ToggleGroupItem
+                value="vespertino"
+                size="sm"
+                className="rounded-md px-4 shadow-none data-[variant=outline]:border-l"
+              >
                 Vespertino
               </ToggleGroupItem>
             </ToggleGroup>
@@ -2288,7 +2290,6 @@ export default function MetricsPage() {
           </DialogContent>
         </Dialog>
 
-        {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList className="grid w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-7">
             {allowedTabs.includes("produccion") && (
@@ -2769,6 +2770,25 @@ export default function MetricsPage() {
             <div className="rounded-xl border border-border bg-card p-6 space-y-6">
               <h3 className="font-semibold text-foreground">Incidencias de turno</h3>
 
+              {(!INCIDENCIAS_OUT_OF_SHIFT_ENABLED ||
+                !INCIDENCIAS_EARLY_LEAVE_ENABLED) && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
+                  <p className="font-medium">Mediciones pesadas temporalmente desactivadas</p>
+                  <ul className="mt-1 list-disc pl-5 text-xs opacity-90 space-y-0.5">
+                    {!INCIDENCIAS_OUT_OF_SHIFT_ENABLED ? (
+                      <li>
+                        Producción fuera de turno / limpieza (Después del turno, Post-limpieza)
+                      </li>
+                    ) : null}
+                    {!INCIDENCIAS_EARLY_LEAVE_ENABLED ? (
+                      <li>Salida anticipada sin meta</li>
+                    ) : null}
+                  </ul>
+                </div>
+              )}
+
+              {(INCIDENCIAS_OUT_OF_SHIFT_ENABLED ||
+                INCIDENCIAS_EARLY_LEAVE_ENABLED) && (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <KpiCard
                   title="Total incidencias"
@@ -2776,26 +2796,47 @@ export default function MetricsPage() {
                   icon={AlertTriangle}
                   iconColor="text-red-600"
                 />
-                <KpiCard
-                  title="Después del turno"
-                  value={String(shiftIncidentsAnalytics.summary.overtimeCount)}
-                  icon={Clock}
-                  iconColor="text-orange-600"
-                />
-                <KpiCard
-                  title="Salida sin meta"
-                  value={String(shiftIncidentsAnalytics.summary.earlyLeaveCount)}
-                  icon={Users}
-                  iconColor="text-amber-600"
-                />
-                <KpiCard
-                  title="Post-limpieza"
-                  value={String(shiftIncidentsAnalytics.summary.postCleaningCount)}
-                  icon={AlertTriangle}
-                  iconColor="text-red-700"
-                />
+                {INCIDENCIAS_OUT_OF_SHIFT_ENABLED ? (
+                  <KpiCard
+                    title="Después del turno"
+                    value={String(shiftIncidentsAnalytics.summary.overtimeCount)}
+                    icon={Clock}
+                    iconColor="text-orange-600"
+                  />
+                ) : null}
+                {INCIDENCIAS_EARLY_LEAVE_ENABLED ? (
+                  <KpiCard
+                    title="Salida sin meta"
+                    value={String(shiftIncidentsAnalytics.summary.earlyLeaveCount)}
+                    icon={Users}
+                    iconColor="text-amber-600"
+                  />
+                ) : null}
+                {INCIDENCIAS_OUT_OF_SHIFT_ENABLED ? (
+                  <KpiCard
+                    title="Post-limpieza"
+                    value={String(shiftIncidentsAnalytics.summary.postCleaningCount)}
+                    icon={AlertTriangle}
+                    iconColor="text-red-700"
+                  />
+                ) : null}
               </div>
+              )}
 
+              {shiftIncidentsAnalytics.scheduleNotes.length > 0 ? (
+                <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 space-y-1">
+                  <p className="text-sm font-medium text-foreground">Horarios de referencia</p>
+                  {shiftIncidentsAnalytics.scheduleNotes.map((note) => (
+                    <p key={note} className="text-xs text-muted-foreground">
+                      {note}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+
+              {(INCIDENCIAS_OUT_OF_SHIFT_ENABLED ||
+                INCIDENCIAS_EARLY_LEAVE_ENABLED) && (
+              <>
               <div className="overflow-x-auto rounded-lg border border-border">
                 <Table>
                   <TableHeader>
@@ -2817,7 +2858,7 @@ export default function MetricsPage() {
                         </TableCell>
                       </TableRow>
                     ) : (
-                      shiftIncidentsAnalytics.incidents.map((row) => (
+                      shiftIncidentsAnalytics.incidents.slice(0, 500).map((row) => (
                         <TableRow key={row.id} className={shiftIncidentRowClass(row)}>
                           <TableCell className="whitespace-nowrap text-sm">
                             {new Date(row.occurredAt).toLocaleString("es-MX", {
@@ -2867,6 +2908,14 @@ export default function MetricsPage() {
                   </TableBody>
                 </Table>
               </div>
+              {shiftIncidentsAnalytics.incidents.length > 500 ? (
+                <p className="text-xs text-muted-foreground">
+                  Mostrando 500 de {shiftIncidentsAnalytics.incidents.length} incidencias (las más
+                  recientes).
+                </p>
+              ) : null}
+              </>
+              )}
             </div>
           </TabsContent>
 
