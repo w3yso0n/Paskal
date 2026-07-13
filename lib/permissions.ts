@@ -33,7 +33,7 @@ export type Permission =
 
 const MODULE_TO_PERMISSIONS: Partial<Record<PlatformModule, readonly Permission[]>> = {
   gestion_usuarios: ["users.list", "users.create", "users.update", "users.delete"],
-  alertas: ["alerts.dismiss", "alerts.clear"],
+  alertas: ["alerts.dismiss"],
   reglas_umbrales: [
     "production.edit-threshold",
     "production.esp-idle-config",
@@ -92,6 +92,10 @@ export function hasPermission(
   permission: Permission,
 ): boolean {
   if (!user) return false
+  // Borrar todas las alertas: solo Droven / admin de plataforma.
+  if (permission === "alerts.clear") {
+    return user.isPlatformAdmin === true || user.role === "droven"
+  }
   if (user.isPlatformAdmin || user.role === "droven") return true
   return ROLE_PERMISSIONS[user.role]?.includes(permission) ?? false
 }

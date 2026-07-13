@@ -604,12 +604,23 @@ function buildOperatorRanking(
   }
 
   const operatorCodes = new Set<string>()
+  const employeeByCodeLower = new Map<string, ApiEmployee>()
+  for (const emp of employees) {
+    const code = emp.employeeCode?.trim()
+    if (code) employeeByCodeLower.set(code.toLowerCase(), emp)
+  }
+
+  const shiftNum = shiftFilter === "matutino" ? 1 : 2
   for (const emp of employees) {
     if (!isFloorOperatorCandidate(emp)) continue
+    if (emp.shift !== shiftNum) continue
     const code = emp.employeeCode?.trim()
     if (code) operatorCodes.add(code)
   }
   for (const code of productionByCode.keys()) {
+    const emp = employeeByCodeLower.get(code.trim().toLowerCase())
+    // Sin empleado en catálogo (p. ej. NFC de pruebas borrados) o no es operadora activa → no listar.
+    if (!emp || !isFloorOperatorCandidate(emp)) continue
     operatorCodes.add(code)
   }
 

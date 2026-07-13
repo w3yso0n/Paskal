@@ -17,11 +17,18 @@ import {
   normalizeSku,
   sumProductionUnitsInRange,
 } from "@/lib/production-goal-events"
+import { plantDateOnlyRangeToIso } from "@/lib/shift-timezone"
 
+/** ISO inclusivo/exclusivo en zona de planta (no medianoche UTC — evita que el T2 cruce al día siguiente). */
 function toDateTimeRange(dateOnlyStart: string, dateOnlyEnd: string) {
+  const plant = plantDateOnlyRangeToIso(dateOnlyStart, dateOnlyEnd)
+  if (plant) {
+    return { from: plant.from, to: plant.toExclusive, toExclusive: true as const }
+  }
   return {
     from: `${dateOnlyStart}T00:00:00.000Z`,
     to: `${dateOnlyEnd}T23:59:59.999Z`,
+    toExclusive: false as const,
   }
 }
 
@@ -128,15 +135,16 @@ export function computeActualByGoalId(input: {
 
   for (const g of goals) {
     const range = goalComplianceDateRange(g, complianceRef)
-    const { from, to } = toDateTimeRange(range.startDate, range.endDate)
     const shift = g.shift ?? null
     const goalSku = normalizeSku(g.sku)
 
     if (g.metricKind === "production") {
+      const rangeMeta = toDateTimeRange(range.startDate, range.endDate)
       actual[g.id] = sumProductionUnitsInRange(productionEvents, {
         machineId: g.machineId,
-        from,
-        to,
+        from: rangeMeta.from,
+        to: rangeMeta.to,
+        toExclusive: rangeMeta.toExclusive,
         shift,
         sku: goalSku,
         machineSkuById: skuById,

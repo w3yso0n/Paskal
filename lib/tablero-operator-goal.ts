@@ -261,7 +261,10 @@ function findGoalByBonusDefinition(
   if (!def) return null
   const month = today.slice(0, 7)
   const monthBounds = monthDateBounds(month)
-  return resolveBusinessGoalForDisplay(goals, def, monthBounds)
+  // Meta individual por operador (no × headcount del turno).
+  return resolveBusinessGoalForDisplay(goals, def, monthBounds, {
+    operatorsPerShift: 1,
+  })
 }
 
 export function findDailyGoalForOperator(
@@ -382,7 +385,10 @@ export function resolveTableroWindingDailyGoalProgress(
   }
 
   const monthBounds = monthDateBounds(today.slice(0, 7))
-  const goal = resolveBusinessGoalForDisplay(goals, def, monthBounds)
+  // Meta diaria Winding por persona (3650 T1 / 3000 T2), no la meta agregada del turno.
+  const goal = resolveBusinessGoalForDisplay(goals, def, monthBounds, {
+    operatorsPerShift: 1,
+  })
   const target = Number(goal.targetValue)
   if (!Number.isFinite(target) || target <= 0) {
     return { percentage: 0, goalRemaining: null, goalTarget: null }

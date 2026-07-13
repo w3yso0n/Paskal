@@ -79,8 +79,10 @@ import {
   EMPLOYEE_PRODUCTION_ROLE_LABELS,
   EMPLOYEE_SECONDARY_ROLE_LABELS,
   isEmployeeProductionRole,
-  PRIMARY_ROLES,
-  SECONDARY_ROLES,
+  SELECTABLE_PRIMARY_ROLES,
+  SELECTABLE_SECONDARY_ROLES,
+  TEMPORARILY_HIDDEN_PRIMARY_ROLES,
+  TEMPORARILY_HIDDEN_SECONDARY_ROLES,
   type EmployeeProductionRole,
   type EmployeeSecondaryRole,
 } from "@/lib/employee-production-role"
@@ -235,21 +237,23 @@ function EmployeeFormFields({
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       <div className="space-y-2 sm:col-span-2">
-        <Label htmlFor={`${idPrefix}-fullName`}>Nombre completo</Label>
+        <Label htmlFor={`${idPrefix}-fullName`}>Nombre completo *</Label>
         <Input
           id={`${idPrefix}-fullName`}
           value={form.fullName}
           onChange={(e) => onChange({ ...form, fullName: e.target.value })}
           placeholder="Ej: Juan Pérez"
+          required
         />
       </div>
       <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-nfcCardUid`}>Código NFC (UID de tarjeta)</Label>
+        <Label htmlFor={`${idPrefix}-nfcCardUid`}>Código NFC (UID de tarjeta) *</Label>
         <Input
           id={`${idPrefix}-nfcCardUid`}
           value={form.nfcCardUid}
           onChange={(e) => onChange({ ...form, nfcCardUid: e.target.value })}
           placeholder="Ej: 03110694"
+          required
         />
         {form.primaryRole === "maintenance" ? (
           <p className="text-xs text-muted-foreground">
@@ -287,16 +291,21 @@ function EmployeeFormFields({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {PRIMARY_ROLES.map((role) => (
+            {SELECTABLE_PRIMARY_ROLES.map((role) => (
               <SelectItem key={role} value={role}>
                 {EMPLOYEE_PRODUCTION_ROLE_LABELS[role]}
               </SelectItem>
             ))}
+            {TEMPORARILY_HIDDEN_PRIMARY_ROLES.has(form.primaryRole) ? (
+              <SelectItem value={form.primaryRole} disabled>
+                {EMPLOYEE_PRODUCTION_ROLE_LABELS[form.primaryRole]} (desactivado)
+              </SelectItem>
+            ) : null}
           </SelectContent>
         </Select>
       </div>
       <div className="space-y-2">
-        <Label>Turno asignado</Label>
+        <Label>Turno asignado *</Label>
         <Select
           value={form.shift || "none"}
           onValueChange={(v) =>
@@ -304,10 +313,12 @@ function EmployeeFormFields({
           }
         >
           <SelectTrigger>
-            <SelectValue placeholder="Sin turno asignado" />
+            <SelectValue placeholder="Selecciona turno" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="none">Sin turno asignado</SelectItem>
+            <SelectItem value="none" disabled>
+              Selecciona turno (obligatorio)
+            </SelectItem>
             <SelectItem value="1">Turno 1 (Matutino)</SelectItem>
             <SelectItem value="2">Turno 2 (Vespertino)</SelectItem>
           </SelectContent>
@@ -333,11 +344,17 @@ function EmployeeFormFields({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="none">Sin rol secundario</SelectItem>
-              {SECONDARY_ROLES.map((role) => (
+              {SELECTABLE_SECONDARY_ROLES.map((role) => (
                 <SelectItem key={role} value={role}>
                   {EMPLOYEE_SECONDARY_ROLE_LABELS[role]}
                 </SelectItem>
               ))}
+              {form.secondaryRole &&
+              TEMPORARILY_HIDDEN_SECONDARY_ROLES.has(form.secondaryRole) ? (
+                <SelectItem value={form.secondaryRole} disabled>
+                  {EMPLOYEE_SECONDARY_ROLE_LABELS[form.secondaryRole]} (desactivado)
+                </SelectItem>
+              ) : null}
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
@@ -573,14 +590,38 @@ export default function EmployeesPage() {
   }, [getAccessToken, attendanceMonth])
 
   const stats = useMemo(() => {
-    const withShift = employees.filter((e) => e.shift === 1 || e.shift === 2).length
-    return { total: employees.length, withShift }
+    let operators = 0
+    let packers = 0
+    let maintenance = 0
+    let withShift = 0
+    for (const e of employees) {
+      const role = e.primaryRole ?? "operator"
+      if (role === "operator") operators++
+      else if (role === "packer") packers++
+      else if (role === "maintenance") maintenance++
+      if (e.shift === 1 || e.shift === 2) withShift++
+    }
+    return {
+      total: employees.length,
+      operators,
+      packers,
+      maintenance,
+      withShift,
+    }
   }, [employees])
 
   const operatorEmployees = useMemo(
     () => employees.filter((e) => (e.primaryRole ?? "operator") === "operator"),
     [employees],
   )
+
+  const isEmployeeFormComplete = useMemo(() => {
+    return (
+      employeeForm.fullName.trim().length > 0 &&
+      employeeForm.nfcCardUid.trim().length > 0 &&
+      (employeeForm.shift === "1" || employeeForm.shift === "2")
+    )
+  }, [employeeForm.fullName, employeeForm.nfcCardUid, employeeForm.shift])
 
   const filteredEmployees = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
@@ -618,9 +659,14 @@ export default function EmployeesPage() {
 
   const handleSaveEmployee = async () => {
     const fullName = employeeForm.fullName.trim()
-    if (!fullName || !user) return
+    const nfcCardUid = employeeForm.nfcCardUid.trim()
+    if (!user) return
     if (!canManageEmployees) {
       toast.error("No tienes permiso para crear o editar empleados.")
+      return
+    }
+    if (!fullName || !nfcCardUid || (employeeForm.shift !== "1" && employeeForm.shift !== "2")) {
+      toast.error("Nombre, código NFC y turno son obligatorios.")
       return
     }
 
@@ -631,7 +677,7 @@ export default function EmployeesPage() {
     try {
       const payload = {
         fullName,
-        nfcCardUid: employeeForm.nfcCardUid.trim() || null,
+        nfcCardUid,
         rfc: employeeForm.rfc.trim() || null,
         imss: employeeForm.imss.trim() || null,
         primaryRole: employeeForm.primaryRole,
@@ -639,7 +685,7 @@ export default function EmployeesPage() {
           employeeForm.primaryRole === "operator" && employeeForm.secondaryRole
             ? employeeForm.secondaryRole
             : null,
-        shift: employeeForm.shift ? Number(employeeForm.shift) : null,
+        shift: Number(employeeForm.shift),
         hiredAt: employeeForm.hiredAt.trim() || null,
       }
 
@@ -926,7 +972,7 @@ export default function EmployeesPage() {
           </Button>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <Card>
             <CardContent className="pt-4 pb-4">
               <p className="text-xs font-medium uppercase text-muted-foreground">Total</p>
@@ -936,7 +982,19 @@ export default function EmployeesPage() {
           <Card>
             <CardContent className="pt-4 pb-4">
               <p className="text-xs font-medium uppercase text-muted-foreground">Operadores</p>
-              <p className="text-2xl font-bold text-foreground">{operatorEmployees.length}</p>
+              <p className="text-2xl font-bold text-foreground">{stats.operators}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-4 pb-4">
+              <p className="text-xs font-medium uppercase text-muted-foreground">Empacadores</p>
+              <p className="text-2xl font-bold text-foreground">{stats.packers}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-4 pb-4">
+              <p className="text-xs font-medium uppercase text-muted-foreground">Mantenimiento</p>
+              <p className="text-2xl font-bold text-foreground">{stats.maintenance}</p>
             </CardContent>
           </Card>
           <Card>
@@ -1022,8 +1080,15 @@ export default function EmployeesPage() {
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                 {filteredEmployees.map((employee) => {
                   const role = employee.primaryRole ?? "operator"
+                  const hasShift = employee.shift === 1 || employee.shift === 2
                   return (
-                    <Card key={employee.id} className="overflow-hidden">
+                    <Card
+                      key={employee.id}
+                      className={cn(
+                        "overflow-hidden",
+                        !hasShift && "border-amber-300/80 ring-1 ring-amber-200/60",
+                      )}
+                    >
                       <CardContent className="p-0">
                         <div className="border-b border-border bg-muted/30 px-4 py-3 flex items-start justify-between gap-2">
                           <div className="min-w-0">
@@ -1034,11 +1099,20 @@ export default function EmployeesPage() {
                               {EMPLOYEE_PRODUCTION_ROLE_LABELS[role]}
                             </p>
                           </div>
-                          {employee.shift === 1 || employee.shift === 2 ? (
+                          {hasShift ? (
                             <Badge variant="outline" className="font-normal shrink-0">
                               {employee.shift === 1 ? "Turno 1" : "Turno 2"}
                             </Badge>
-                          ) : null}
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className="shrink-0 gap-1 border-amber-400 bg-amber-50 font-normal text-amber-900"
+                              title="Sin turno asignado"
+                            >
+                              <AlertTriangle className="h-3.5 w-3.5" />
+                              Sin turno
+                            </Badge>
+                          )}
                         </div>
                         <div className="space-y-2 px-4 py-3 text-sm">
                           <div className="flex items-center gap-2 text-muted-foreground">
@@ -1500,7 +1574,7 @@ export default function EmployeesPage() {
                   <div>
                     <h2 className="text-lg font-semibold">Eventos de cambio de rol secundario</h2>
                     <p className="text-sm text-muted-foreground mt-1">
-                      Solo para operadores: registra cuando cubren empaque, roller, bending o auxiliar.
+                      Solo para operadores: registra cuando cubren empaque o auxiliar.
                       El rol primordial no cambia; los reportes de bono usan el rol secundario del día.
                       Al cierre del turno (23:35) el rol secundario se quita automáticamente; al día
                       siguiente hay que registrar de nuevo si aplica. En secciones que no correspondan
@@ -1610,8 +1684,8 @@ export default function EmployeesPage() {
             </DialogTitle>
             <DialogDescription>
               {editingEmployee
-                ? "Actualiza los datos del empleado. Rol primordial y secundario alimentan el reporte de bono."
-                : "Registra un nuevo empleado en el directorio."}
+                ? "Actualiza los datos del empleado. Nombre, NFC y turno son obligatorios."
+                : "Registra un nuevo empleado. Nombre, código NFC y turno son obligatorios."}
             </DialogDescription>
           </DialogHeader>
           <EmployeeFormFields
@@ -1625,7 +1699,7 @@ export default function EmployeesPage() {
             </Button>
             <Button
               onClick={handleSaveEmployee}
-              disabled={savingEmployee || !employeeForm.fullName.trim()}
+              disabled={savingEmployee || !isEmployeeFormComplete}
             >
               {savingEmployee
                 ? "Guardando…"
@@ -1980,7 +2054,7 @@ export default function EmployeesPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {SECONDARY_ROLES.map((role) => (
+                  {SELECTABLE_SECONDARY_ROLES.map((role) => (
                     <SelectItem key={role} value={role}>
                       {EMPLOYEE_SECONDARY_ROLE_LABELS[role]}
                     </SelectItem>

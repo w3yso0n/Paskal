@@ -30,7 +30,7 @@ export const ALERT_KIND_LABELS: Record<ApiAlertKind, string> = {
   other: "Otra",
 }
 
-/** Orden del filtro por causa en el centro de alertas. */
+/** Orden del filtro por causa en el centro de alertas (sin tipos legacy que ya no se generan). */
 export const ALERT_KIND_FILTER_ORDER: ApiAlertKind[] = [
   "idle",
   "no_checkin",
@@ -38,9 +38,7 @@ export const ALERT_KIND_FILTER_ORDER: ApiAlertKind[] = [
   "overtime_hours",
   "no_checkout",
   "plant_outage",
-  "device_down",
   "counter_not_zero",
-  "other",
 ]
 
 const ALERT_KIND_CATEGORY: Record<ApiAlertKind, AlertCategory> = {

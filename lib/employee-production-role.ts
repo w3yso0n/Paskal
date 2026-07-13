@@ -34,6 +34,28 @@ export const SECONDARY_ROLES: EmployeeSecondaryRole[] = [
   "auxiliary",
 ]
 
+/**
+ * Temporal: ocultar bending/roller en formularios de empleados mientras esas
+ * líneas no se monitorean (evita asignaciones incorrectas). Quitar de estos sets para reactivar.
+ */
+export const TEMPORARILY_HIDDEN_PRIMARY_ROLES = new Set<EmployeeProductionRole>([
+  "bending",
+  "roller",
+])
+
+export const TEMPORARILY_HIDDEN_SECONDARY_ROLES = new Set<EmployeeSecondaryRole>([
+  "bending",
+  "roller",
+])
+
+export const SELECTABLE_PRIMARY_ROLES: EmployeeProductionRole[] = PRIMARY_ROLES.filter(
+  (r) => !TEMPORARILY_HIDDEN_PRIMARY_ROLES.has(r),
+)
+
+export const SELECTABLE_SECONDARY_ROLES: EmployeeSecondaryRole[] = SECONDARY_ROLES.filter(
+  (r) => !TEMPORARILY_HIDDEN_SECONDARY_ROLES.has(r),
+)
+
 export function isEmployeeProductionRole(value: string): value is EmployeeProductionRole {
   return (
     value === "operator" ||

@@ -67,6 +67,7 @@ import {
   todayYmd,
 } from "@/lib/goal-compliance-range"
 import { fetchActualByGoalId } from "@/lib/goal-actual-progress"
+import { getPartsInTimeZone, makeZonedDate } from "@/lib/shift-timezone"
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -85,13 +86,177 @@ const shiftLabels: Record<ApiGoalShift, string> = {
 
 type GoalStatus = "on-track" | "at-risk" | "behind" | "completed" | "exceeded"
 
-function calcStatus(actual: number, target: number): GoalStatus {
+/** Zona de planta para ritmo esperado (igual que piso/tablero). */
+const METAS_TZ = "America/Mexico_City"
+
+function plantTodayYmd(ref: Date = new Date()): string {
+  const p = getPartsInTimeZone(ref, METAS_TZ)
+  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`
+}
+
+/** Reloj para estado: “ahora” si es hoy planta; si no, cierre de jornada del día elegido. */
+function statusRefForProgressDay(dailyProgressDate: string): Date {
+  if (dailyProgressDate === plantTodayYmd()) return new Date()
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dailyProgressDate.trim())
+  if (!m) return new Date(`${dailyProgressDate}T23:30:00`)
+  return makeZonedDate(Number(m[1]), Number(m[2]), Number(m[3]), 23, 30, METAS_TZ)
+}
+
+function plantParts(ref: Date) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: METAS_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    hour12: false,
+  })
+  const parts = dtf.formatToParts(ref)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value
+  const weekday = (get("weekday") ?? "").toLowerCase()
+  return {
+    year: Number(get("year")),
+    month: Number(get("month")),
+    day: Number(get("day")),
+    hour: (Number(get("hour")) || 0) % 24,
+    minute: Number(get("minute")) || 0,
+    isWeekend: weekday === "sat" || weekday === "sun",
+  }
+}
+
+/**
+ * % de avance esperado según el tiempo transcurrido del periodo/turno.
+ * Evita marcar "Atrasado" a mitad de jornada solo por comparar contra la meta completa.
+ */
+function expectedProgressPct(options: {
+  period: ApiGoalPeriod
+  shift?: ApiGoalShift | null
+  ref?: Date
+}): number | null {
+  const ref = options.ref ?? new Date()
+  const p = plantParts(ref)
+
+  if (options.period === "daily") {
+    if (p.isWeekend) return 0
+    const mins = p.hour * 60 + p.minute
+    const shift = options.shift
+    if (shift === "vespertino") {
+      const start = 16 * 60
+      const end = 23 * 60 + 30
+      if (mins < start) return 0
+      if (mins >= end) return 100
+      return ((mins - start) / (end - start)) * 100
+    }
+    // Matutino o sin turno: jornada T1 07:00–16:00
+    const start = 7 * 60
+    const end = 16 * 60
+    if (mins < start) return 0
+    if (mins >= end) return 100
+    return ((mins - start) / (end - start)) * 100
+  }
+
+  if (options.period === "weekly") {
+    // Lun=0 … Dom=6 en planta (Intl weekday)
+    const weekdayMap: Record<string, number> = {
+      mon: 0,
+      tue: 1,
+      wed: 2,
+      thu: 3,
+      fri: 4,
+      sat: 5,
+      sun: 6,
+    }
+    const dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: METAS_TZ,
+      weekday: "short",
+    })
+    const wd = dtf.formatToParts(ref).find((x) => x.type === "weekday")?.value?.toLowerCase() ?? "mon"
+    const dayIdx = weekdayMap[wd] ?? 0
+    // 5 días hábiles
+    if (dayIdx >= 5) return 100
+    return ((dayIdx + Math.min(1, (p.hour * 60 + p.minute) / (16 * 60))) / 5) * 100
+  }
+
+  if (options.period === "monthly") {
+    // Ritmo sobre ~20 días hábiles del mes (regla de negocio).
+    const workingDaysTarget = 20
+    let worked = 0
+    for (let d = 1; d <= p.day; d++) {
+      const probe = new Date(Date.UTC(p.year, p.month - 1, d, 18, 0, 0))
+      const wd = new Intl.DateTimeFormat("en-US", {
+        timeZone: METAS_TZ,
+        weekday: "short",
+      })
+        .formatToParts(probe)
+        .find((x) => x.type === "weekday")
+        ?.value?.toLowerCase()
+      if (wd !== "sat" && wd !== "sun") worked += 1
+    }
+    if (p.isWeekend) {
+      // Fin de semana: el avance esperado queda en el viernes previo.
+      return Math.min(100, (Math.max(0, worked) / workingDaysTarget) * 100)
+    }
+    const dayFraction = Math.min(1, Math.max(0, (p.hour * 60 + p.minute - 7 * 60) / (9 * 60)))
+    return Math.min(100, ((worked - 1 + dayFraction) / workingDaysTarget) * 100)
+  }
+
+  if (options.period === "quarterly" || options.period === "yearly") {
+    // Aproximación lineal por mes calendario.
+    const monthStart = options.period === "yearly" ? 1 : Math.floor((p.month - 1) / 3) * 3 + 1
+    const monthsSpan = options.period === "yearly" ? 12 : 3
+    const monthsElapsed = p.month - monthStart
+    const monthFrac = Math.min(1, p.day / 30)
+    return Math.min(100, ((monthsElapsed + monthFrac) / monthsSpan) * 100)
+  }
+
+  return null
+}
+
+function calcStatus(
+  actual: number,
+  target: number,
+  options?: {
+    period?: ApiGoalPeriod
+    shift?: ApiGoalShift | null
+    ref?: Date
+  },
+): GoalStatus {
   if (target <= 0) return "behind"
   const pct = (actual / target) * 100
   if (pct >= 110) return "exceeded"
   if (pct >= 100) return "completed"
-  if (pct >= 90) return "on-track"
-  if (pct >= 70) return "at-risk"
+
+  const expected =
+    options?.period != null
+      ? expectedProgressPct({
+          period: options.period,
+          shift: options.shift,
+          ref: options.ref,
+        })
+      : null
+
+  if (expected == null) {
+    // Fallback absoluto (más holgado que antes: 80 / 55).
+    if (pct >= 80) return "on-track"
+    if (pct >= 55) return "at-risk"
+    return "behind"
+  }
+
+  // Sin jornada esperada (p. ej. sábado/domingo en meta diaria) y sin producción → no “atrasado”.
+  if (expected <= 0) {
+    return pct <= 0 ? "on-track" : pct >= 80 ? "on-track" : pct >= 55 ? "at-risk" : "behind"
+  }
+
+  // Primer tramo del periodo: tolerancia amplia.
+  if (expected < 12) return "on-track"
+
+  // Ritmo = avance real / avance esperado por tiempo.
+  const paceRatio = (pct / expected) * 100
+  if (paceRatio >= 85) return "on-track"
+  if (paceRatio >= 65) return "at-risk"
   return "behind"
 }
 
@@ -172,6 +337,7 @@ function GoalCard({
   machineLabel,
   progressDayLabel,
   shiftOperatorCount,
+  statusRef,
 }: {
   goal: ApiGoal
   actual: number
@@ -183,10 +349,16 @@ function GoalCard({
   machineLabel?: string | null
   progressDayLabel?: string | null
   shiftOperatorCount?: number | null
+  /** Reloj / día de avance (para ritmo esperado). */
+  statusRef?: Date
 }) {
   const target = Number(goal.targetValue)
   const pct = target > 0 ? Math.min(100, (actual / target) * 100) : 0
-  const status = calcStatus(actual, target)
+  const status = calcStatus(actual, target, {
+    period: goal.period,
+    shift: goal.shift,
+    ref: statusRef,
+  })
   const cfg = statusConfig[status]
   const StatusIcon = cfg.icon
   const metric = metricKindInfo(goal.metricKind)
@@ -358,7 +530,7 @@ export default function MetasPage() {
   const [goals, setGoals] = useState<ApiGoal[]>([])
   const [machines, setMachines] = useState<ApiMachine[]>([])
   const [employees, setEmployees] = useState<ApiEmployee[]>([])
-  const [dailyProgressDate, setDailyProgressDate] = useState(() => todayYmd())
+  const [dailyProgressDate, setDailyProgressDate] = useState(() => plantTodayYmd())
   const [actualByGoalId, setActualByGoalId] = useState<Record<string, number>>({})
   const [filterPeriod, setFilterPeriod] = useState<ApiGoalPeriod | "all">("all")
   const [filterShift, setFilterShift] = useState<ApiGoalShift | "all">("all")
@@ -468,18 +640,24 @@ export default function MetasPage() {
           : null
         const progressDayLabel =
           fromBonusConfig && goal.period === "daily" ? dailyProgressDayLabel : null
+        const statusRef = statusRefForProgressDay(dailyProgressDate)
         return {
           goal,
           actual,
           target,
-          status: calcStatus(actual, target),
+          status: calcStatus(actual, target, {
+            period: goal.period,
+            shift: goal.shift,
+            ref: statusRef,
+          }),
           fromBonusConfig,
           businessLabel,
           progressDayLabel,
           shiftOperatorCount,
+          statusRef,
         }
       }),
-    [displayGoals, actualByGoalId, shiftHeadcount, dailyProgressDayLabel],
+    [displayGoals, actualByGoalId, shiftHeadcount, dailyProgressDayLabel, dailyProgressDate],
   )
 
   const filtered = useMemo(() => {
@@ -560,7 +738,7 @@ export default function MetasPage() {
         return
       }
 
-      const progressRef = new Date(`${dailyProgressDate}T12:00:00`)
+      const progressRef = statusRefForProgressDay(dailyProgressDate)
       const actual = await fetchActualByGoalId(token, goalsForActual, machinesData, {
         ref: progressRef,
       })
@@ -1059,6 +1237,7 @@ export default function MetasPage() {
                           businessLabel,
                           progressDayLabel,
                           shiftOperatorCount,
+                          statusRef,
                         }) => (
                         <GoalCard
                           key={goal.id}
@@ -1072,6 +1251,7 @@ export default function MetasPage() {
                           businessLabel={businessLabel}
                           progressDayLabel={progressDayLabel}
                           shiftOperatorCount={shiftOperatorCount}
+                          statusRef={statusRef}
                           onEdit={fromBonusConfig ? openBonusConfig : openEdit}
                           onDelete={onDelete}
                           onToggleActive={fromBonusConfig ? undefined : onToggleGoalActive}

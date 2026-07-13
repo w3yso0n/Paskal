@@ -144,6 +144,8 @@ export type ProductionAggregateFilters = {
   machineId?: string | null
   from?: string
   to?: string
+  /** Si true, `to` es exclusivo (>= from && < to). Por defecto inclusivo (<= to). */
+  toExclusive?: boolean
   shift?: "matutino" | "vespertino" | null
   sku?: string | null
   machineSkuById?: Map<string, string>
@@ -157,7 +159,13 @@ function eventMatchesProductionAggregate(
   if (!countsAsOperatorProduction(e)) return false
   if (filters.machineId && e.machineId !== filters.machineId) return false
   if (filters.from && e.occurredAt < filters.from) return false
-  if (filters.to && e.occurredAt > filters.to) return false
+  if (filters.to) {
+    if (filters.toExclusive) {
+      if (e.occurredAt >= filters.to) return false
+    } else if (e.occurredAt > filters.to) {
+      return false
+    }
+  }
   if (filters.shift && productionShiftFromMeasuredAt(e.occurredAt) !== filters.shift) {
     return false
   }

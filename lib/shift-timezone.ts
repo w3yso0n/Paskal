@@ -113,3 +113,45 @@ export function allCalendarDaysInMonth(anyDayInMonthIso: string): string[] {
     return `${y}-${mm}-${dd}`
   })
 }
+
+const PLANT_TZ = "America/Mexico_City"
+
+function parseYmdParts(dateOnly: string): { year: number; month: number; day: number } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateOnly.trim())
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null
+  return { year, month, day }
+}
+
+/** Medianoche planta (inicio inclusivo) → medianoche del día siguiente (exclusivo) en ISO UTC. */
+export function plantCalendarDayBoundsIso(
+  dateOnly: string,
+  timeZone = PLANT_TZ,
+): { from: string; toExclusive: string } | null {
+  const p = parseYmdParts(dateOnly)
+  if (!p) return null
+  const start = makeZonedDate(p.year, p.month, p.day, 0, 0, timeZone)
+  const noon = makeZonedDate(p.year, p.month, p.day, 12, 0, timeZone)
+  const nextNoon = new Date(noon.getTime() + 24 * 60 * 60 * 1000)
+  const np = getPartsInTimeZone(nextNoon, timeZone)
+  const end = makeZonedDate(np.year, np.month, np.day, 0, 0, timeZone)
+  return { from: start.toISOString(), toExclusive: end.toISOString() }
+}
+
+/**
+ * Rango de fechas calendario (YYYY-MM-DD) en zona de planta → ISO UTC.
+ * `from` inclusivo, `toExclusive` exclusivo (medianoche planta del día siguiente a end).
+ */
+export function plantDateOnlyRangeToIso(
+  dateOnlyStart: string,
+  dateOnlyEnd: string,
+  timeZone = PLANT_TZ,
+): { from: string; toExclusive: string } | null {
+  const startBounds = plantCalendarDayBoundsIso(dateOnlyStart, timeZone)
+  const endBounds = plantCalendarDayBoundsIso(dateOnlyEnd, timeZone)
+  if (!startBounds || !endBounds) return null
+  return { from: startBounds.from, toExclusive: endBounds.toExclusive }
+}

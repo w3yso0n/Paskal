@@ -31,8 +31,13 @@ import { TextAutocomplete, type TextAutocompleteOption } from "@/components/ui/t
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Check, Maximize2, Minimize2, Plus, RotateCcw, Settings2, X } from "lucide-react"
+import { Check, Eraser, Maximize2, Minimize2, Plus, RotateCcw, Settings2, X } from "lucide-react"
 import { toast } from "sonner"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { filterFloorMachines } from "@/lib/machine-floor"
 import {
   FLOOR_COLUMN_COUNT,
@@ -456,6 +461,38 @@ export default function ProductionFloorPage() {
     setPacker4Input("")
     setDialogShowSecondOperator(false)
     setDialogVisiblePackerSlots(1)
+  }
+
+  /** Borra solo una columna (SKU / operadores / empacadores) en todas las máquinas del piso. */
+  const clearColumnOnAllMachines = (column: "sku" | "operators" | "packers") => {
+    setMachineData((prev) =>
+      prev.map((m) => {
+        if (column === "sku") {
+          return {
+            ...m,
+            sku: undefined,
+            unitsPerBox: undefined,
+            status: computeEffectiveStatus(undefined, m.operator, m.offline),
+          }
+        }
+        if (column === "operators") {
+          return {
+            ...m,
+            operator: undefined,
+            operator2: undefined,
+            status: computeEffectiveStatus(m.sku, undefined, m.offline),
+          }
+        }
+        return { ...m, packers: undefined }
+      }),
+    )
+    setHasUnsavedChanges(true)
+    const messages = {
+      sku: "SKU borrado en todas las máquinas. Guarda para aplicar.",
+      operators: "Operadores borrados en todas las máquinas. Guarda para aplicar.",
+      packers: "Empacadores borrados en todas las máquinas. Guarda para aplicar.",
+    } as const
+    toast.success(messages[column])
   }
 
   const handleReset = () => {
@@ -988,27 +1025,49 @@ export default function ProductionFloorPage() {
         <div className="rounded-xl border border-border bg-card p-4">
           <div className="mb-3 flex flex-wrap items-center gap-3 px-2 sm:px-4">
             <div className="flex items-center gap-2">
-              <Button
-                size="icon"
-                className="h-9 w-9 bg-sky-600 text-white hover:bg-sky-700"
-                onClick={() => setCreateSkuOpen(true)}
-                aria-label="Nuevo SKU"
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-              <Button
-                size="icon"
-                variant="outline"
-                className="h-9 w-9 border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
-                onClick={handleReset}
-                aria-label="Reset"
-              >
-                <RotateCcw className="h-4 w-4" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    className="h-9 w-9 bg-sky-600 text-white hover:bg-sky-700"
+                    onClick={() => setCreateSkuOpen(true)}
+                    aria-label="Nuevo SKU"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-[16rem]">
+                  Crear un SKU nuevo en el catálogo.
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    className="h-9 w-9 border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+                    onClick={handleReset}
+                    aria-label="Reset"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-[16rem]">
+                  Reinicia el turno: cierra check-ins y borra SKU, operadores y empacadores de todas
+                  las máquinas.
+                </TooltipContent>
+              </Tooltip>
               {hasUnsavedChanges ? (
-                <Button size="sm" className="h-9" onClick={applyAndSaveAssignments}>
-                  Guardar
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button size="sm" className="h-9" onClick={applyAndSaveAssignments}>
+                      Guardar
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-[16rem]">
+                    Guarda en el servidor las asignaciones editadas en la carga rápida.
+                  </TooltipContent>
+                </Tooltip>
               ) : null}
             </div>
             <div className="flex items-center gap-3 rounded-lg border border-border/60 bg-muted/25 px-3 py-1">
@@ -1039,37 +1098,114 @@ export default function ProductionFloorPage() {
               placeholder="SKU"
               className="h-9 min-w-40 flex-1 sm:max-w-xs"
             />
-            <Button
-              type="button"
-              size="sm"
-              className="h-9 bg-emerald-600 text-white hover:bg-emerald-700"
-              onClick={applyBulkSku}
-              disabled={selectedMachineIds.size === 0 || !bulkSku.trim()}
-            >
-              Aplicar
-              {selectedMachineIds.size > 0 ? (
-                <span className="ml-1 rounded-full bg-white/25 px-1.5 text-xs font-semibold">
-                  {selectedMachineIds.size}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="inline-flex">
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-9 bg-emerald-600 text-white hover:bg-emerald-700"
+                    onClick={applyBulkSku}
+                    disabled={selectedMachineIds.size === 0 || !bulkSku.trim()}
+                  >
+                    Aplicar
+                    {selectedMachineIds.size > 0 ? (
+                      <span className="ml-1 rounded-full bg-white/25 px-1.5 text-xs font-semibold">
+                        {selectedMachineIds.size}
+                      </span>
+                    ) : null}
+                  </Button>
                 </span>
-              ) : null}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              className="h-9 bg-green-600 text-white hover:bg-green-700"
-              onClick={() => toggleAllMachinesSelected(true)}
-            >
-              Todas
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-9 border-red-300 text-red-700 hover:bg-red-50"
-              onClick={() => toggleAllMachinesSelected(false)}
-            >
-              Limpiar
-            </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[16rem]">
+                Asigna el SKU escrito a las máquinas seleccionadas (rango o casillas). No toca
+                operadores ni empacadores.
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-9 bg-green-600 text-white hover:bg-green-700"
+                  onClick={() => toggleAllMachinesSelected(true)}
+                >
+                  Todas
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[16rem]">
+                Marca todas las máquinas de la lista para poder aplicar el SKU masivo.
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-9 border-red-300 text-red-700 hover:bg-red-50"
+                  onClick={() => toggleAllMachinesSelected(false)}
+                >
+                  Limpiar
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[16rem]">
+                Quita la selección de máquinas. No borra SKU ni personal ya asignado.
+              </TooltipContent>
+            </Tooltip>
+            <div className="flex items-center gap-1.5 border-l border-border pl-3">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-9"
+                    onClick={() => clearColumnOnAllMachines("sku")}
+                  >
+                    <Eraser className="mr-1.5 h-3.5 w-3.5" />
+                    SKU
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-[16rem]">
+                  Borra solo el SKU de todas las máquinas. Conserva operadores y empacadores.
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-9"
+                    onClick={() => clearColumnOnAllMachines("operators")}
+                  >
+                    <Eraser className="mr-1.5 h-3.5 w-3.5" />
+                    Op.
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-[16rem]">
+                  Borra solo operadores (1 y 2) de todas las máquinas. Conserva SKU y empacadores.
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-9"
+                    onClick={() => clearColumnOnAllMachines("packers")}
+                  >
+                    <Eraser className="mr-1.5 h-3.5 w-3.5" />
+                    Emp.
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-[16rem]">
+                  Borra solo empacadores de todas las máquinas. Conserva SKU y operadores.
+                </TooltipContent>
+              </Tooltip>
+            </div>
           </div>
 
           <Table>

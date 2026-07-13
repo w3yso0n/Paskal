@@ -8,7 +8,13 @@ function pad2(n: number): string {
 }
 
 export function todayYmd(ref: Date = new Date()): string {
-  return `${ref.getFullYear()}-${pad2(ref.getMonth() + 1)}-${pad2(ref.getDate())}`
+  // Día calendario en zona de planta (evita desfases UTC al cargar metas de madrugada).
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Mexico_City",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(ref)
 }
 
 export function isOpenEndedGoal(goal: { endDate: string }): boolean {

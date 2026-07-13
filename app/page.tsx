@@ -34,6 +34,7 @@ import {
 import { buildGoalsForProgressTracking, resolveWindingShiftHeadcount } from "@/lib/bonus-goals-bridge"
 import {
   DEFAULT_BONUS_PRODUCTION_CONFIG,
+  monthlyMeta100FromDaily,
   normalizeBonusProductionConfig,
 } from "@/lib/bonus-production-config"
 import { filterFloorMachines } from "@/lib/machine-floor"
@@ -260,6 +261,8 @@ export default function HomePage() {
   const [monthlyGoal, setMonthlyGoal] = useState<{ actual: number; target: number; pct: number } | null>(
     null,
   )
+  /** Meta mensual 100% por operador (diario × días hábiles del mes) del turno seleccionado. */
+  const [operatorMonthlyTarget, setOperatorMonthlyTarget] = useState<number | null>(null)
   const [operatorStats, setOperatorStats] = useState<Record<string, OperatorProductionStats>>({})
   const [selectedShift, setSelectedShift] = useState<ShiftId>("shift1")
   const [selectedDate, setSelectedDate] = useState(() => todayDateInputValue(DASHBOARD_TIMEZONE))
@@ -283,6 +286,8 @@ export default function HomePage() {
             setEmployees([])
             setTotalProduced(0)
             setProducedOnSelectedDay(0)
+            setMonthlyGoal(null)
+            setOperatorMonthlyTarget(null)
             setOperatorStats({})
           }
           return
@@ -463,6 +468,14 @@ export default function HomePage() {
         const actualByGoalId = await fetchActualByGoalId(token, goalsForActual, floorMachines)
         if (cancelled) return
         const shiftFilter = selectedShift === "shift1" ? "matutino" : "vespertino"
+        const windingShiftCfg =
+          selectedShift === "shift1" ? bonusConfig.winding.shift1 : bonusConfig.winding.shift2
+        setOperatorMonthlyTarget(
+          monthlyMeta100FromDaily(
+            windingShiftCfg.dailyMeta100,
+            windingShiftCfg.workingDaysPerMonth,
+          ),
+        )
         const monthlySummary = summarizeMonthlyGoalProgress(goalsForActual, actualByGoalId, {
           shiftFilter,
         })
@@ -576,13 +589,29 @@ export default function HomePage() {
   ])
 
   const filteredMonthlyGoal = useMemo(() => {
-    if (!monthlyGoal || !operatorFilterActive) return monthlyGoal
+    if (!monthlyGoal) return null
+    if (!operatorFilterActive || selectedOperators.length === 0) return monthlyGoal
+    const perOperator =
+      operatorMonthlyTarget != null && operatorMonthlyTarget > 0
+        ? operatorMonthlyTarget
+        : null
+    const target =
+      perOperator != null
+        ? Math.round(perOperator * selectedOperators.length)
+        : monthlyGoal.target
+    const actual = displayKpis.month
     return {
-      actual: displayKpis.month,
-      target: monthlyGoal.target,
-      pct: monthlyGoal.target > 0 ? Math.round((displayKpis.month / monthlyGoal.target) * 100) : 0,
+      actual,
+      target,
+      pct: target > 0 ? Math.round((actual / target) * 100) : 0,
     }
-  }, [monthlyGoal, operatorFilterActive, displayKpis.month])
+  }, [
+    monthlyGoal,
+    operatorFilterActive,
+    selectedOperators.length,
+    operatorMonthlyTarget,
+    displayKpis.month,
+  ])
 
   const machineStatusCounts = useMemo(() => {
     let activas = 0
@@ -678,8 +707,8 @@ export default function HomePage() {
                 : filteredMonthlyGoal == null
                   ? "Sin meta mensual configurada"
                   : operatorFilterActive
-                    ? `${filteredMonthlyGoal.pct}% del objetivo · ${displayKpis.operatorLabel ?? "operador"}`
-                    : `${filteredMonthlyGoal.pct}% del objetivo`
+                    ? `Conteo del ${shiftLabel} · ${filteredMonthlyGoal.pct}% del objetivo · ${displayKpis.operatorLabel ?? "operador"}`
+                    : `Conteo del ${shiftLabel} · ${filteredMonthlyGoal.pct}% del objetivo`
             }
             icon={Target}
             iconColor="text-teal-600"

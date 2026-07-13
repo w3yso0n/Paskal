@@ -159,6 +159,7 @@ export default function AlertasClient() {
   const { user, getAccessToken } = useAuth()
 
   const canDismissAlerts = hasPermission(user, "alerts.dismiss")
+  const canDeleteAllAlerts = hasPermission(user, "alerts.clear")
 
   const [filterKind, setFilterKind] = useState("all")
   const [filterCategory, setFilterCategory] = useState("all")
@@ -345,6 +346,20 @@ export default function AlertasClient() {
     await Promise.allSettled(toDelete.map((id) => deleteAlert(token, id)))
   }
 
+  const handleDeleteAllAlerts = async () => {
+    if (!canDeleteAllAlerts || alerts.length === 0) return
+    const ok = window.confirm(
+      `¿Borrar las ${alerts.length} alerta${alerts.length === 1 ? "" : "s"}? Esta acción no se puede deshacer.`,
+    )
+    if (!ok) return
+    const token = await getAccessToken()
+    if (!token) return
+    const ids = alerts.map((a) => a.id)
+    setAlerts([])
+    await Promise.allSettled(ids.map((id) => deleteAlert(token, id)))
+    await reloadAlerts()
+  }
+
   const handleResolve = async (id: string) => {
     setAlerts((prev) =>
       prev.map((a) => (a.id === id ? { ...a, isRead: true, actionRequired: false } : a)),
@@ -500,6 +515,17 @@ export default function AlertasClient() {
               <Button variant="outline" onClick={handleClearAll}>
                 <Trash2 className="mr-2 h-4 w-4" />
                 Limpiar leídas
+              </Button>
+            )}
+            {canDeleteAllAlerts && (
+              <Button
+                variant="outline"
+                className="border-red-300 text-red-700 hover:bg-red-50"
+                onClick={() => void handleDeleteAllAlerts()}
+                disabled={alerts.length === 0}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                Borrar todas
               </Button>
             )}
           </div>
