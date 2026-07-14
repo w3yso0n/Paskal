@@ -116,7 +116,8 @@ function resolveOperatorDisplayName(
   if (!raw || raw === "SIN_OPERADOR") return "Sin operador"
   const byCode = codeToName.get(raw.toLowerCase())
   if (byCode) return byCode
-  return raw
+  // Código sin empleado asociado (tarjeta no registrada / dato viejo): no exponer el UID crudo.
+  return "Sin nombre"
 }
 
 /** Código operador por máquina: prioriza check-in activo, luego configuración de máquina. */

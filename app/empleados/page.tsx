@@ -611,7 +611,10 @@ export default function EmployeesPage() {
   }, [employees])
 
   const operatorEmployees = useMemo(
-    () => employees.filter((e) => (e.primaryRole ?? "operator") === "operator"),
+    () =>
+      employees.filter(
+        (e) => (e.primaryRole ?? "operator") === "operator" && e.status !== "terminated",
+      ),
     [employees],
   )
 
@@ -711,19 +714,28 @@ export default function EmployeesPage() {
 
   const handleDeleteEmployee = async (employee: ApiEmployee) => {
     if (!canManageEmployees) {
-      toast.error("No tienes permiso para eliminar empleados.")
+      toast.error("No tienes permiso para dar de baja empleados.")
       return
     }
-    const ok = window.confirm(`¿Eliminar a ${employee.fullName}? Esta acción no se puede deshacer.`)
+    const ok = window.confirm(
+      `¿Dar de baja a ${employee.fullName}?\n\n` +
+        `Se conserva su historial de producción (sus reportes seguirán mostrando su nombre), ` +
+        `pero dejará de aparecer como activo y su tarjeta NFC quedará libre para reasignar a otra persona.`,
+    )
     if (!ok) return
     const token = await getAccessToken()
     if (!token) return
     try {
       await deleteEmployee(token, employee.id)
-      setEmployees((prev) => prev.filter((e) => e.id !== employee.id))
-      toast.success("Empleado eliminado")
+      // Baja lógica: se conserva en el directorio con estado "Baja" y sin tarjeta.
+      setEmployees((prev) =>
+        prev.map((e) =>
+          e.id === employee.id ? { ...e, status: "terminated", nfcCardUid: null } : e,
+        ),
+      )
+      toast.success("Empleado dado de baja")
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "No se pudo eliminar el empleado")
+      toast.error(e instanceof Error ? e.message : "No se pudo dar de baja el empleado")
     }
   }
 
@@ -1168,14 +1180,16 @@ export default function EmployeesPage() {
                             <Pencil className="h-4 w-4" />
                             Editar
                           </Button>
+                          {employee.status !== "terminated" ? (
                           <Button
                             variant="ghost"
                             className="flex-1 rounded-none gap-1.5 h-10 text-destructive hover:text-destructive hover:bg-destructive/10 border-l border-border"
                             onClick={() => handleDeleteEmployee(employee)}
                           >
                             <Trash2 className="h-4 w-4" />
-                            Eliminar
+                            Dar de baja
                           </Button>
+                          ) : null}
                         </div>
                         ) : null}
                       </CardContent>
@@ -1770,12 +1784,14 @@ export default function EmployeesPage() {
                   <SelectValue placeholder="Seleccionar…" />
                 </SelectTrigger>
                 <SelectContent>
-                  {employees.map((emp) => (
-                    <SelectItem key={emp.id} value={emp.id}>
-                      {emp.fullName}
-                      {emp.employeeCode ? ` (${emp.employeeCode})` : ""}
-                    </SelectItem>
-                  ))}
+                  {employees
+                    .filter((emp) => emp.status !== "terminated")
+                    .map((emp) => (
+                      <SelectItem key={emp.id} value={emp.id}>
+                        {emp.fullName}
+                        {emp.employeeCode ? ` (${emp.employeeCode})` : ""}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
               {selectedVacationBalance && newDayRecord.recordType === "vacation" ? (

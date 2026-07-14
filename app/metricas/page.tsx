@@ -284,6 +284,10 @@ function resolvePersonRoleLabel(
   return "—"
 }
 
+/** Etiqueta para códigos de operador que ya no resuelven a ningún empleado (tarjeta no
+ * registrada o dato viejo). Evita mostrar el UID NFC crudo como "operador fantasma". */
+const UNKNOWN_PERSON_LABEL = "Sin nombre"
+
 const PERSON_ROLE_CHART_COLORS: Record<string, string> = {
   Operador: "#22c55e",
   Empacador: "#3b82f6",
@@ -479,7 +483,9 @@ function mapEventsToProductionBaseRows(
   const resolvePerson = (raw: string | undefined) => {
     const code = String(raw ?? "").trim()
     if (!code || code === "—") return "—"
-    return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
+    // Si el código no resuelve a ningún empleado (tarjeta no registrada / dato viejo),
+    // mostramos "Sin nombre" en vez del ID crudo — no exponer el UID NFC en la UI.
+    return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? UNKNOWN_PERSON_LABEL
   }
 
   const checkinsByMachine = skipCheckinEnrich
@@ -645,7 +651,7 @@ function machineCheckinsToAttendanceRecords(
 ): AttendanceRecord[] {
   const codeToName = buildEmployeeCodeToNameMap(employees)
   const resolveName = (code: string) =>
-    codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
+    codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? UNKNOWN_PERSON_LABEL
   const employeeIdByCode = new Map<string, string>()
   for (const e of employees) {
     const c = e.employeeCode?.trim()
@@ -1516,7 +1522,7 @@ export default function MetricsPage() {
           v.employeeCode
             ? codeToName.get(v.employeeCode) ??
               codeToName.get(v.employeeCode.toLowerCase()) ??
-              v.employeeCode
+              UNKNOWN_PERSON_LABEL
             : "—",
       }))
   }, [maintenanceMetrics.visits, employeeRows])
@@ -1530,7 +1536,7 @@ export default function MetricsPage() {
           ? "—"
           : codeToName.get(row.employeeCode) ??
             codeToName.get(row.employeeCode.toLowerCase()) ??
-            row.employeeCode,
+            UNKNOWN_PERSON_LABEL,
     }))
   }, [maintenanceMetrics.byTechnician, employeeRows])
 
@@ -1695,12 +1701,12 @@ export default function MetricsPage() {
     const resolvePerson = (raw: string | undefined) => {
       const code = String(raw ?? "").trim()
       if (!code) return "—"
-      return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? code
+      return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? UNKNOWN_PERSON_LABEL
     }
     const resolvePersonFromCode = (code: string | null | undefined) => {
       const c = String(code ?? "").trim()
       if (!c) return ""
-      return codeToName.get(c) ?? codeToName.get(c.toLowerCase()) ?? c
+      return codeToName.get(c) ?? codeToName.get(c.toLowerCase()) ?? UNKNOWN_PERSON_LABEL
     }
     const resolveFromCheckin = (ch: ApiMachineCheckin) => ({
       operator1: resolvePerson(ch.operatorCode),
@@ -1833,7 +1839,7 @@ export default function MetricsPage() {
     const resolvePersonFromCode = (code: string | null | undefined) => {
       const c = String(code ?? "").trim()
       if (!c) return ""
-      return codeToName.get(c) ?? codeToName.get(c.toLowerCase()) ?? c
+      return codeToName.get(c) ?? codeToName.get(c.toLowerCase()) ?? UNKNOWN_PERSON_LABEL
     }
 
     setBonusReportGenerating(true)

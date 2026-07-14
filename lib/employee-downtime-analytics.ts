@@ -94,7 +94,8 @@ function resolveOperatorFromCheckin(
   return {
     employeeId: emp?.id ?? null,
     employeeCode: code,
-    employeeName: emp?.fullName ?? code,
+    // Código sin empleado asociado (tarjeta no registrada / dato viejo): no exponer el UID crudo.
+    employeeName: emp?.fullName ?? "Sin nombre",
   }
 }
 
