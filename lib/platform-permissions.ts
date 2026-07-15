@@ -31,6 +31,17 @@ export const USER_ROLES: readonly UserRole[] = [
   "gerente_operaciones",
   "director",
   "rh",
+  "mantenimiento",
+  "droven",
+] as const
+
+/** Roles con cuenta/perfil en Configuración (excluye técnicos de mantenimiento). */
+export const CONFIG_ROLES: readonly UserRole[] = [
+  "supervisor",
+  "jefe_produccion",
+  "gerente_operaciones",
+  "director",
+  "rh",
   "droven",
 ] as const
 
@@ -40,6 +51,7 @@ export const ROLE_LABELS: Record<UserRole, string> = {
   gerente_operaciones: "Gerente de Operaciones",
   director: "Director",
   rh: "Recursos Humanos",
+  mantenimiento: "Mantenimiento",
   droven: "Equipo Droven",
 }
 
@@ -86,6 +98,7 @@ export const MODULE_ACCESS: Record<PlatformModule, readonly UserRole[]> = {
     "jefe_produccion",
     "gerente_operaciones",
     "director",
+    "mantenimiento",
     "droven",
   ],
   metas: ["jefe_produccion", "gerente_operaciones", "director", "droven"],
@@ -147,7 +160,7 @@ export const MODULE_ACCESS: Record<PlatformModule, readonly UserRole[]> = {
   ],
   reglas_umbrales: ["jefe_produccion", "gerente_operaciones", "director", "droven"],
   datos: ["director", "droven"],
-  configuracion: USER_ROLES,
+  configuracion: CONFIG_ROLES,
 }
 
 export const EMPLOYEE_MODULES: readonly PlatformModule[] = [

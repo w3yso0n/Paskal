@@ -23,6 +23,7 @@ export type UserRole =
   | "gerente_operaciones"
   | "director"
   | "rh"
+  | "mantenimiento"
   | "droven";
 
 export interface RequestUser {

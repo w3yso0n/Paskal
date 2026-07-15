@@ -15,7 +15,6 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer,
 } from "recharts"
 import { TooltipProps } from "recharts"
@@ -152,80 +151,158 @@ function formatHmInTimeZone(date: Date, timeZone: string): string {
   }).format(date)
 }
 
-const CustomTooltip = ({ active, payload, label }: TooltipProps<number, string>) => {
-  if (active && payload && payload.length) {
-    const items = payload.map((entry) => ({
-      name: entry.name,
-      value: entry.value,
-      color: entry.color,
-    }))
+type ChartTooltipItem = {
+  name: string
+  value: number | string
+  color: string
+}
 
-    const halfLength = Math.ceil(items.length / 2)
-    const leftColumn = items.slice(0, halfLength)
-    const rightColumn = items.slice(halfLength)
+function ChartItemsTooltip({
+  label,
+  items,
+  subtitle,
+}: {
+  label: string
+  items: ChartTooltipItem[]
+  subtitle?: string
+}) {
+  if (items.length === 0) return null
 
-    return (
-      <div className="rounded-lg border border-border bg-card p-3 shadow-lg">
-        <p className="mb-2 text-xs font-semibold text-card-foreground">{label}</p>
-        <div className="flex gap-4">
+  const halfLength = Math.ceil(items.length / 2)
+  const leftColumn = items.slice(0, halfLength)
+  const rightColumn = items.slice(halfLength)
+
+  return (
+    <div className="rounded-lg border border-border bg-card p-3 shadow-lg">
+      <p className="mb-0.5 text-xs font-semibold text-card-foreground">{label}</p>
+      {subtitle ? (
+        <p className="mb-2 text-[10px] text-muted-foreground">{subtitle}</p>
+      ) : (
+        <div className="mb-2" />
+      )}
+      <div className="flex gap-4">
+        <div className="space-y-1">
+          {leftColumn.map((item) => (
+            <div key={String(item.name)} className="flex items-center gap-2">
+              <div
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: item.color }}
+              />
+              <span className="text-xs text-muted-foreground">
+                {item.name}:{" "}
+                <span className="font-semibold text-foreground">{item.value}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+        {rightColumn.length > 0 && (
           <div className="space-y-1">
-            {leftColumn.map((item, idx) => (
-              <div key={idx} className="flex items-center gap-2">
+            {rightColumn.map((item) => (
+              <div key={String(item.name)} className="flex items-center gap-2">
                 <div
-                  className="h-2 w-2 rounded-full"
+                  className="h-2.5 w-2.5 shrink-0 rounded-full"
                   style={{ backgroundColor: item.color }}
                 />
                 <span className="text-xs text-muted-foreground">
-                  {item.name}: <span className="font-semibold text-foreground">{item.value}</span>
+                  {item.name}:{" "}
+                  <span className="font-semibold text-foreground">{item.value}</span>
                 </span>
               </div>
             ))}
           </div>
-          {rightColumn.length > 0 && (
-            <div className="space-y-1">
-              {rightColumn.map((item, idx) => (
-                <div key={idx} className="flex items-center gap-2">
-                  <div
-                    className="h-2 w-2 rounded-full"
-                    style={{ backgroundColor: item.color }}
-                  />
-                  <span className="text-xs text-muted-foreground">
-                    {item.name}: <span className="font-semibold text-foreground">{item.value}</span>
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        )}
       </div>
-    )
-  }
-
-  return null
+    </div>
+  )
 }
 
-const machineColors = [
-  "#22c55e", // green
-  "#3b82f6", // blue
-  "#eab308", // yellow
-  "#ec4899", // pink
-  "#f97316", // orange
-  "#8b5cf6", // purple
-  "#06b6d4", // cyan
-  "#84cc16", // lime
-  "#ef4444", // red
-  "#14b8a6", // teal
-  "#a855f7", // violet
-  "#f59e0b", // amber
-  "#0ea5e9", // sky
-  "#10b981", // emerald
-  "#e11d48", // rose
-  "#6366f1", // indigo
-  "#22d3ee", // cyan 2
-  "#fb7185", // pink 2
-  "#65a30d", // lime 2
-  "#c026d3", // fuchsia
+/** Tooltip: una persona si el cursor está sobre su línea; si no, todas en esa hora. */
+function ProductionChartTooltip({
+  active,
+  payload,
+  label,
+  focusKey,
+}: TooltipProps<number, string> & { focusKey: string | null }) {
+  if (!active || !payload?.length) return null
+
+  const source = focusKey
+    ? payload.filter((entry) => String(entry.dataKey ?? entry.name) === focusKey)
+    : payload
+
+  // Hay una Line visible + otra transparente para el hit-area; deduplicar por persona.
+  const seen = new Set<string>()
+  const items: ChartTooltipItem[] = []
+  for (const entry of source) {
+    const stroke = String(entry.color ?? entry.stroke ?? "")
+    if (stroke === "transparent" || stroke === "none") continue
+    const name = String(entry.name ?? entry.dataKey ?? "").trim()
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    const value = typeof entry.value === "number" ? entry.value : Number(entry.value)
+    items.push({
+      name,
+      value: Number.isFinite(value) ? value : String(entry.value ?? "—"),
+      color: stroke || "#64748b",
+    })
+  }
+
+  items.sort((a, b) => Number(b.value) - Number(a.value))
+  if (items.length === 0) return null
+
+  return (
+    <ChartItemsTooltip
+      label={String(label ?? "")}
+      subtitle={focusKey ? "Operadora" : "Todas en esta hora"}
+      items={items}
+    />
+  )
+}
+
+/**
+ * Paleta de máximo contraste (tonos oscuros/medios).
+ * Espaciada en el círculo de color para que líneas cercanas no se confundan.
+ */
+const OPERATOR_LINE_COLORS = [
+  "#e41a1c", // rojo
+  "#377eb8", // azul
+  "#4daf4a", // verde
+  "#984ea3", // púrpura
+  "#ff7f00", // naranja
+  "#a65628", // café
+  "#f781bf", // rosa
+  "#1b9e77", // verde-azulado
+  "#d95f02", // naranja oscuro
+  "#7570b3", // índigo
+  "#e7298a", // magenta
+  "#66a61e", // lima
+  "#e6ab02", // oro
+  "#555555", // gris
+  "#01665e", // teal oscuro
+  "#8c510a", // marrón
+  "#762a83", // púrpura oscuro
+  "#1a9850", // verde intenso
+  "#d73027", // rojo intenso
+  "#4575b4", // azul medio
+  "#c51b7d", // fucsia
+  "#35978f", // turquesa
+  "#bf812d", // ocre
+  "#5e4fa2", // violeta
 ]
+
+function colorForOperator(name: string, orderedKeys: string[]): string {
+  const index = orderedKeys.indexOf(name)
+  const i = index >= 0 ? index : 0
+  return OPERATOR_LINE_COLORS[i % OPERATOR_LINE_COLORS.length]!
+}
+
+function formatHourTick(value: string): string {
+  const [hourStr, minuteStr] = value.split(":")
+  const hour = Number.parseInt(hourStr, 10)
+  if (!Number.isFinite(hour)) return value
+  const suffix = hour >= 12 ? "PM" : "AM"
+  const displayHour = hour % 12 || 12
+  return `${displayHour}:${minuteStr ?? "00"} ${suffix}`
+}
 
 type OperatorProductionStats = {
   month: number
@@ -515,6 +592,15 @@ export default function HomePage() {
   }, [hasProductionData, operatorProductionData])
 
   const [visibleMachines, setVisibleMachines] = useState<Record<string, boolean>>({})
+  const [hoveredLineKey, setHoveredLineKey] = useState<string | null>(null)
+
+  const operatorColorByName = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const key of operatorKeys) {
+      map.set(key, colorForOperator(key, operatorKeys))
+    }
+    return map
+  }, [operatorKeys])
 
   useEffect(() => {
     setVisibleMachines((prev) => {
@@ -793,6 +879,11 @@ export default function HomePage() {
                         checked={visibleMachines[name]}
                         onCheckedChange={() => toggleMachine(name)}
                       />
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: operatorColorByName.get(name) }}
+                        aria-hidden
+                      />
                       <label
                         htmlFor={name}
                         className="cursor-pointer text-xs leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
@@ -806,7 +897,10 @@ export default function HomePage() {
 
               <div className="h-[400px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={operatorProductionData}>
+                  <LineChart
+                    data={operatorProductionData}
+                    onMouseLeave={() => setHoveredLineKey(null)}
+                  >
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                     <XAxis
                       dataKey="time"
@@ -814,28 +908,58 @@ export default function HomePage() {
                       angle={-45}
                       textAnchor="end"
                       height={80}
-                      tickFormatter={(value) => {
-                        const [hourStr, minuteStr] = value.split(":")
-                        const hour = Number.parseInt(hourStr)
-                        const suffix = hour >= 12 ? "PM" : "AM"
-                        const displayHour = hour % 12 || 12
-                        return `${displayHour}:${minuteStr} ${suffix}`
-                      }}
+                      tickFormatter={formatHourTick}
                     />
                     <YAxis tick={{ fontSize: 12 }} domain={[0, 200]} />
-                    <Tooltip content={<CustomTooltip />} />
-                    {operatorKeys.map((key, index) =>
+                    <Tooltip
+                      shared
+                      content={(props) => (
+                        <ProductionChartTooltip {...props} focusKey={hoveredLineKey} />
+                      )}
+                      cursor={{ stroke: "#94a3b8", strokeDasharray: "4 4" }}
+                    />
+                    {operatorKeys.map((key) =>
+                      visibleMachines[key] ? (
+                        <Line
+                          key={`${key}-hit`}
+                          type="linear"
+                          dataKey={key}
+                          name={`__hit__${key}`}
+                          stroke="transparent"
+                          strokeWidth={14}
+                          dot={false}
+                          activeDot={false}
+                          legendType="none"
+                          tooltipType="none"
+                          isAnimationActive={false}
+                          onMouseOver={() => setHoveredLineKey(key)}
+                          onMouseOut={() => setHoveredLineKey(null)}
+                        />
+                      ) : null,
+                    )}
+                    {operatorKeys.map((key) =>
                       visibleMachines[key] ? (
                         <Line
                           key={key}
                           type="linear"
                           dataKey={key}
-                          stroke={machineColors[index % machineColors.length]}
-                          strokeWidth={2}
+                          name={key}
+                          stroke={operatorColorByName.get(key)}
+                          strokeWidth={hoveredLineKey === key ? 3.5 : 2.25}
+                          strokeOpacity={
+                            hoveredLineKey && hoveredLineKey !== key ? 0.15 : 1
+                          }
                           dot={false}
-                          activeDot={{ r: 4 }}
+                          activeDot={{
+                            r: 6,
+                            strokeWidth: 2,
+                            onMouseOver: () => setHoveredLineKey(key),
+                            onMouseOut: () => setHoveredLineKey(null),
+                          }}
+                          onMouseOver={() => setHoveredLineKey(key)}
+                          onMouseOut={() => setHoveredLineKey(null)}
                         />
-                      ) : null
+                      ) : null,
                     )}
                   </LineChart>
                 </ResponsiveContainer>

@@ -1,4 +1,5 @@
-import type { ApiAlert } from "@/lib/api"
+import type { ApiAlert, ApiAlertKind } from "@/lib/api"
+import { ALERT_KIND_LABELS, resolveAlertKind } from "@/lib/alert-ui"
 
 export type AlertPersonnelRole = "operator" | "packager" | "other"
 
@@ -7,6 +8,118 @@ export type AlertRoleCounts = {
   packager: number
   other: number
   total: number
+}
+
+/** Colores distintos por causa de alerta (gráfica de métricas). */
+export const ALERT_KIND_CHART_COLORS: Record<ApiAlertKind, string> = {
+  idle: "#f97316",
+  no_checkin: "#2563eb",
+  no_packager: "#8b5cf6",
+  overtime_hours: "#eab308",
+  no_checkout: "#14b8a6",
+  checkin_blocked: "#f43f5e",
+  plant_outage: "#ef4444",
+  counter_not_zero: "#06b6d4",
+  device_down: "#64748b",
+  other: "#94a3b8",
+}
+
+export type AlertsByKindDailyRow = {
+  date: string
+  total: number
+} & Partial<Record<ApiAlertKind, number>>
+
+export type AlertsByKindDailySeries = {
+  series: AlertsByKindDailyRow[]
+  kindsInRange: ApiAlertKind[]
+  total: number
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0")
+}
+
+function dayKeyFromDate(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+}
+
+/**
+ * Serie diaria de alertas apiladas por tipo (`ApiAlert.type` / causa resuelta).
+ * Solo incluye días con al menos una alerta en el rango.
+ */
+export function buildDailyAlertsByKindSeries(
+  alerts: ApiAlert[],
+  startDate: string,
+  endDate: string,
+): AlertsByKindDailySeries {
+  const scoped = filterAlertsInDateRange(alerts, startDate, endDate)
+  const dailyAgg = new Map<string, Partial<Record<ApiAlertKind, number>>>()
+  const kindTotals = new Map<ApiAlertKind, number>()
+
+  for (const alert of scoped) {
+    const created = new Date(alert.createdAt)
+    if (Number.isNaN(created.getTime())) continue
+    const kind = resolveAlertKind(alert)
+    const day = dayKeyFromDate(created)
+    const row = dailyAgg.get(day) ?? {}
+    row[kind] = (row[kind] ?? 0) + 1
+    dailyAgg.set(day, row)
+    kindTotals.set(kind, (kindTotals.get(kind) ?? 0) + 1)
+  }
+
+  const kindsInRange = (
+    Object.keys(ALERT_KIND_LABELS) as ApiAlertKind[]
+  ).filter((k) => (kindTotals.get(k) ?? 0) > 0)
+
+  // Preferir el orden de filtro del centro de alertas cuando esté presente.
+  const preferredOrder: ApiAlertKind[] = [
+    "idle",
+    "no_checkin",
+    "no_packager",
+    "overtime_hours",
+    "no_checkout",
+    "checkin_blocked",
+    "plant_outage",
+    "counter_not_zero",
+    "device_down",
+    "other",
+  ]
+  kindsInRange.sort(
+    (a, b) => preferredOrder.indexOf(a) - preferredOrder.indexOf(b),
+  )
+
+  const series: AlertsByKindDailyRow[] = [...dailyAgg.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, counts]) => {
+      let total = 0
+      const row: AlertsByKindDailyRow = { date: date.slice(5), total: 0 }
+      for (const kind of kindsInRange) {
+        const n = counts[kind] ?? 0
+        row[kind] = n
+        total += n
+      }
+      row.total = total
+      return row
+    })
+
+  return {
+    series,
+    kindsInRange,
+    total: scoped.length,
+  }
+}
+
+export function buildAlertsByKindChartConfig(
+  kinds: ApiAlertKind[],
+): Record<string, { label: string; color: string }> {
+  const config: Record<string, { label: string; color: string }> = {}
+  for (const kind of kinds) {
+    config[kind] = {
+      label: ALERT_KIND_LABELS[kind],
+      color: ALERT_KIND_CHART_COLORS[kind],
+    }
+  }
+  return config
 }
 
 /** Clasifica una alerta como de operador, empacador u otra categoría. */

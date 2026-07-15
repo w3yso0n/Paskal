@@ -23,6 +23,8 @@ import {
 } from "@/components/ui/table"
 import {
   ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart"
@@ -143,7 +145,11 @@ import {
   EMPLOYEE_PRODUCTION_ROLE_LABELS,
   resolveEmployeeProductionRole,
 } from "@/lib/employee-production-role"
-import { productionShiftFromMeasuredAt } from "@/lib/tablero-operator-goal"
+import {
+  PLANT_TIMEZONE,
+  productionShiftFromMeasuredAt,
+} from "@/lib/tablero-operator-goal"
+import { getPartsInTimeZone } from "@/lib/shift-timezone"
 import {
   buildOperatorShiftByCode,
   productionShiftForEvent,
@@ -164,7 +170,11 @@ import {
   buildMachineActivitySummary,
   formatDurationMinutes,
 } from "@/lib/machine-activity-analytics"
-import { buildAlertRoleCounts } from "@/lib/alert-role-metrics"
+import {
+  buildAlertRoleCounts,
+  buildAlertsByKindChartConfig,
+  buildDailyAlertsByKindSeries,
+} from "@/lib/alert-role-metrics"
 import {
   buildShiftIncidentsAnalytics,
   INCIDENCIAS_EARLY_LEAVE_ENABLED,
@@ -306,6 +316,81 @@ const PERSON_ROLE_CHART_COLORS: Record<string, string> = {
 
 function personRoleBarColor(role: string): string {
   return PERSON_ROLE_CHART_COLORS[role] ?? "#6366f1"
+}
+
+type OperatorPiecesPerHourRow = {
+  name: string
+  units: number
+  /** Horas-reloj distintas con producción > 0 (misma lógica que la gráfica del inicio). */
+  hours: number
+  piecesPerHour: number
+}
+
+function isKnownOperatorName(name: string | null | undefined): name is string {
+  const t = name?.trim()
+  return Boolean(t && t !== "—" && t !== UNKNOWN_PERSON_LABEL)
+}
+
+function plantHourBucketKey(isoOrDate: string | Date): string | null {
+  const d = typeof isoOrDate === "string" ? new Date(isoOrDate) : isoOrDate
+  if (Number.isNaN(d.getTime())) return null
+  const p = getPartsInTimeZone(d, PLANT_TIMEZONE)
+  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}-${String(p.hour).padStart(2, "0")}`
+}
+
+/**
+ * Promedio piezas/hora por operadora, alineado con la gráfica del dashboard:
+ * total de piezas ÷ nº de horas-reloj (planta) en las que hubo producción.
+ * No usa duración de check-in: un check-in corto distorsionaba el promedio (ej. 2500/h).
+ */
+function buildOperatorPiecesPerHour(
+  productionRows: Array<{
+    event: string
+    count: number
+    timestamp: string
+    operator: string
+    operator_2: string
+  }>,
+): OperatorPiecesPerHourRow[] {
+  // persona → hora-planta → piezas en ese bucket
+  const unitsByNameHour = new Map<string, Map<string, number>>()
+
+  for (const r of productionRows) {
+    if (r.event !== "Producción") continue
+    const units = Number(r.count) || 0
+    if (units <= 0) continue
+    const ops = [r.operator, r.operator_2].filter(isKnownOperatorName)
+    if (ops.length === 0) continue
+    const hourKey = plantHourBucketKey(r.timestamp)
+    if (!hourKey) continue
+    const share = units / ops.length
+
+    for (const name of ops) {
+      const byHour = unitsByNameHour.get(name) ?? new Map<string, number>()
+      byHour.set(hourKey, (byHour.get(hourKey) ?? 0) + share)
+      unitsByNameHour.set(name, byHour)
+    }
+  }
+
+  const rows: OperatorPiecesPerHourRow[] = []
+  for (const [name, byHour] of unitsByNameHour.entries()) {
+    let units = 0
+    let activeHours = 0
+    for (const hourUnits of byHour.values()) {
+      if (hourUnits <= 0) continue
+      units += hourUnits
+      activeHours += 1
+    }
+    if (activeHours <= 0 || units <= 0) continue
+    rows.push({
+      name,
+      units: Math.round(units * 10) / 10,
+      hours: activeHours,
+      piecesPerHour: Math.round((units / activeHours) * 10) / 10,
+    })
+  }
+
+  return rows.sort((a, b) => b.piecesPerHour - a.piecesPerHour)
 }
 
 function buildEmployeeCodeToNameMap(employees: ApiEmployee[]): Map<string, string> {
@@ -1291,6 +1376,11 @@ export default function MetricsPage() {
     }
   }, [activeTab, scopedProductionRows, employeeRows])
 
+  const operatorPiecesPerHour = useMemo(() => {
+    if (activeTab !== "operadores" && activeTab !== "produccion") return []
+    return buildOperatorPiecesPerHour(scopedProductionRows)
+  }, [activeTab, scopedProductionRows])
+
   // Último día del rango con producción o paro/inactividad.
   const lastDayWithData = useMemo(() => {
     // Último día con producción REAL (piezas > 0). Se ignoran eventos sin unidades
@@ -1423,6 +1513,22 @@ export default function MetricsPage() {
       })
     },
     [activeTab, alertsLoaded, filterStartDate, filterEndDate, scopedProductionRows],
+  )
+
+  const alertsByKindDaily = useMemo(() => {
+    if (activeTab !== "produccion") {
+      return { series: [], kindsInRange: [], total: 0 }
+    }
+    return buildDailyAlertsByKindSeries(
+      alertsLoaded,
+      filterStartDate,
+      filterEndDate,
+    )
+  }, [activeTab, alertsLoaded, filterStartDate, filterEndDate])
+
+  const alertsByKindChartConfig = useMemo(
+    () => buildAlertsByKindChartConfig(alertsByKindDaily.kindsInRange),
+    [alertsByKindDaily.kindsInRange],
   )
 
   const hourlyProductionData = useMemo(() => {
@@ -2588,6 +2694,51 @@ export default function MetricsPage() {
                 </div>
 
                 <div className="rounded-xl border border-border bg-background p-4">
+                  <div className="mb-3">
+                    <h3 className="text-sm font-semibold text-foreground">
+                      Alertas por día
+                    </h3>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Cantidad diaria apilada por tipo de alerta
+                      {alertsByKindDaily.total > 0
+                        ? ` · ${alertsByKindDaily.total} en el rango`
+                        : ""}
+                    </p>
+                  </div>
+                  {alertsByKindDaily.series.length === 0 ? (
+                    <p className="py-12 text-center text-sm text-muted-foreground">
+                      Sin alertas en el rango seleccionado.
+                    </p>
+                  ) : (
+                    <ChartContainer
+                      className="h-[320px] w-full aspect-auto"
+                      config={alertsByKindChartConfig}
+                    >
+                      <BarChart data={alertsByKindDaily.series} margin={{ left: 8, right: 8 }}>
+                        <CartesianGrid vertical={false} />
+                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
+                        <ChartTooltip content={<ChartTooltipContent />} />
+                        <ChartLegend content={<ChartLegendContent />} />
+                        {alertsByKindDaily.kindsInRange.map((kind, idx) => (
+                          <Bar
+                            key={kind}
+                            dataKey={kind}
+                            stackId="alerts"
+                            fill={`var(--color-${kind})`}
+                            radius={
+                              idx === alertsByKindDaily.kindsInRange.length - 1
+                                ? [4, 4, 0, 0]
+                                : [0, 0, 0, 0]
+                            }
+                          />
+                        ))}
+                      </BarChart>
+                    </ChartContainer>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-border bg-background p-4">
                   <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
                       <h3 className="text-sm font-semibold text-foreground">Actividad por hora</h3>
@@ -3264,6 +3415,109 @@ export default function MetricsPage() {
 
           {/* ========== OPERADORES & EMPACADORES TAB ========== */}
           <TabsContent value="operadores" className="space-y-6">
+            {/* Promedio piezas/hora por operadora */}
+            <div className="rounded-xl border border-border bg-card p-6">
+              <div className="mb-4">
+                <h3 className="font-semibold text-foreground">
+                  Promedio de piezas por hora por operadora
+                </h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Piezas totales ÷ horas-reloj con producción (misma lógica que la gráfica del
+                  inicio). Ejemplo: 1 800 piezas en 3 horas → 600 uds/h.
+                </p>
+              </div>
+              {operatorPiecesPerHour.length === 0 ? (
+                <div className="flex min-h-[200px] items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+                  Sin datos de piezas/hora en el rango seleccionado.
+                </div>
+              ) : (
+                <div className="grid gap-6 lg:grid-cols-2">
+                  <ChartContainer
+                    className="h-[min(420px,50vh)] w-full aspect-auto"
+                    config={{
+                      piecesPerHour: { label: "Piezas/hora", color: "#0d9488" },
+                    }}
+                  >
+                    <BarChart
+                      layout="vertical"
+                      data={operatorPiecesPerHour.slice(0, 14)}
+                      margin={{ left: 8, right: 16, top: 8, bottom: 8 }}
+                    >
+                      <CartesianGrid horizontal={false} />
+                      <XAxis type="number" tick={{ fontSize: 12 }} />
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        width={108}
+                        tick={{ fontSize: 11 }}
+                        interval={0}
+                      />
+                      <ChartTooltip
+                        content={
+                          <ChartTooltipContent
+                            formatter={(value, _name, item) => {
+                              const row = item?.payload as OperatorPiecesPerHourRow | undefined
+                              const v = typeof value === "number" ? value : Number(value)
+                              const rate = Number.isFinite(v)
+                                ? v.toLocaleString("es-MX", { maximumFractionDigits: 1 })
+                                : String(value)
+                              return (
+                                <span>
+                                  {rate} uds/h
+                                  {row
+                                    ? ` · ${row.units.toLocaleString("es-MX", { maximumFractionDigits: 1 })} uds / ${row.hours} h con prod.`
+                                    : ""}
+                                </span>
+                              )
+                            }}
+                          />
+                        }
+                      />
+                      <Bar dataKey="piecesPerHour" radius={[0, 4, 4, 0]}>
+                        {operatorPiecesPerHour.slice(0, 14).map((entry, index) => (
+                          <Cell
+                            key={entry.name}
+                            fill={operatorBarPalette[index % operatorBarPalette.length]}
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ChartContainer>
+
+                  <div className="max-h-[min(420px,50vh)] overflow-y-auto rounded-lg border border-border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Operadora</TableHead>
+                          <TableHead className="text-right">Unidades</TableHead>
+                          <TableHead className="text-right">Horas c/ prod.</TableHead>
+                          <TableHead className="text-right">Uds/h</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {operatorPiecesPerHour.map((row) => (
+                          <TableRow key={row.name}>
+                            <TableCell className="font-medium">{row.name}</TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {row.units.toLocaleString("es-MX", { maximumFractionDigits: 1 })}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {row.hours.toLocaleString("es-MX", { maximumFractionDigits: 1 })}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums font-medium">
+                              {row.piecesPerHour.toLocaleString("es-MX", {
+                                maximumFractionDigits: 1,
+                              })}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Comparativa por persona y rol */}
             <div className="rounded-xl border border-border bg-card p-6">
               <h3 className="font-semibold text-foreground mb-4">Comparativa por persona y rol</h3>

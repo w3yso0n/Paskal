@@ -7,7 +7,6 @@ import {
   REGLAS_MODULES,
   REGLAS_TAB_MODULES,
   ROLE_LABELS,
-  USER_ROLES,
 } from "./platform-permissions"
 import type { PlatformModule } from "./platform-permissions"
 export type { PlatformModule } from "./platform-permissions"
@@ -68,6 +67,7 @@ const ROLE_PERMISSIONS: Record<UserRole, readonly Permission[]> = {
   gerente_operaciones: permissionsForRole("gerente_operaciones"),
   director: permissionsForRole("director"),
   rh: permissionsForRole("rh"),
+  mantenimiento: permissionsForRole("mantenimiento"),
   droven: permissionsForRole("droven"),
 }
 
@@ -178,7 +178,7 @@ export function showAdminSection(user: RequestUser | null | undefined): boolean 
 }
 
 export function showConfigSection(user: RequestUser | null | undefined): boolean {
-  return !!user && USER_ROLES.includes(user.role)
+  return hasModuleAccess(user, "configuracion")
 }
 
 export function showDataSection(user: RequestUser | null | undefined): boolean {

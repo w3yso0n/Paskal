@@ -7,7 +7,6 @@ import {
   AlertCircle,
   Info,
   CheckCircle2,
-  Factory,
   Users,
   Monitor,
   Filter,
@@ -19,6 +18,8 @@ import {
   Loader2,
   Save,
   StickyNote,
+  MoreHorizontal,
+  CalendarDays,
 } from "lucide-react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
@@ -41,12 +42,26 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import {
   type Alert,
   type AlertType,
-  type AlertCategory,
 } from "@/lib/types"
 import { useAuth } from "@/contexts/auth-context"
 import { hasPermission } from "@/lib/permissions"
@@ -89,7 +104,12 @@ import {
   buildDowntimeNoteContextFromAlert,
   isDowntimeParoAlert,
 } from "@/lib/employee-downtime-analytics"
-
+import { filterFloorMachines } from "@/lib/machine-floor"
+import { getPartsInTimeZone } from "@/lib/shift-timezone"
+import {
+  PLANT_TIMEZONE,
+  productionShiftFromMeasuredAt,
+} from "@/lib/tablero-operator-goal"
 
 // --- Constants ---
 
@@ -105,20 +125,6 @@ const typeColors: Record<AlertType, { bg: string; text: string; border: string }
   warning: { bg: "bg-amber-50", text: "text-amber-600", border: "border-amber-200" },
   info: { bg: "bg-blue-50", text: "text-blue-600", border: "border-blue-200" },
   success: { bg: "bg-green-50", text: "text-green-600", border: "border-green-200" },
-}
-
-const categoryIcons: Record<AlertCategory, typeof Factory> = {
-  machine: Factory,
-  production: Monitor,
-  employee: Users,
-  system: Info,
-}
-
-const categoryLabels: Record<AlertCategory, string> = {
-  machine: "Máquina",
-  production: "Producción",
-  employee: "Empleado",
-  system: "Sistema",
 }
 
 // --- Helpers ---
@@ -141,6 +147,31 @@ function formatDateTime(date: Date): string {
   })
 }
 
+function formatTimeOnly(date: Date): string {
+  return date.toLocaleTimeString("es-MX", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: PLANT_TIMEZONE,
+  })
+}
+
+function plantDayKey(date: Date): string {
+  const p = getPartsInTimeZone(date, PLANT_TIMEZONE)
+  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`
+}
+
+function todayPlantDayKey(): string {
+  return plantDayKey(new Date())
+}
+
+const SHIFT_LABELS = {
+  matutino: "Matutino",
+  vespertino: "Vespertino",
+} as const
+
+type ShiftFilter = "all" | "matutino" | "vespertino"
+
 function isOperatorOrphanProductionAlert(a: Alert): boolean {
   return isOperatorOrphanAlertKind(a.kind)
 }
@@ -162,9 +193,12 @@ export default function AlertasClient() {
   const canDeleteAllAlerts = hasPermission(user, "alerts.clear")
 
   const [filterKind, setFilterKind] = useState("all")
-  const [filterCategory, setFilterCategory] = useState("all")
+  const [filterMachine, setFilterMachine] = useState("all")
+  const [filterDay, setFilterDay] = useState(() => todayPlantDayKey())
+  const [filterShift, setFilterShift] = useState<ShiftFilter>("all")
   const [searchQuery, setSearchQuery] = useState("")
   const [activeTab, setActiveTab] = useState("all")
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
 
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [apiAlertsById, setApiAlertsById] = useState<Map<string, ApiAlert>>(new Map())
@@ -276,6 +310,23 @@ export default function AlertasClient() {
     return map
   }, [machineRows])
 
+  const machineFilterOptions = useMemo(() => {
+    const floor = filterFloorMachines(machineRows)
+    const byId = new Map<string, string>()
+    for (const m of floor) {
+      byId.set(m.id, (m.code ?? m.name ?? m.id).trim() || m.id)
+    }
+    for (const a of alerts) {
+      if (!a.machineId) continue
+      if (!byId.has(a.machineId)) {
+        byId.set(a.machineId, machineCodeById.get(a.machineId) ?? a.machineId)
+      }
+    }
+    return [...byId.entries()]
+      .map(([id, code]) => ({ id, code }))
+      .sort((a, b) => a.code.localeCompare(b.code, "es"))
+  }, [machineRows, alerts, machineCodeById])
+
   const unreadCount = alerts.filter((a) => !a.isRead).length
   const actionRequiredCount = alerts.filter((a) => a.actionRequired && !a.isRead).length
   const paroCount = alerts.filter((a) => a.kind === "idle" && !a.isRead).length
@@ -283,19 +334,66 @@ export default function AlertasClient() {
     (a) => (a.kind === "no_checkin" || a.kind === "no_packager") && !a.isRead,
   ).length
 
-  const filteredAlerts = alerts.filter((alert) => {
-    const matchesTab =
-      activeTab === "all" ||
-      (activeTab === "unread" && !alert.isRead) ||
-      (activeTab === "action" && alert.actionRequired && !alert.isRead)
-    const matchesKind = filterKind === "all" || alert.kind === filterKind
-    const matchesCategory = filterCategory === "all" || alert.category === filterCategory
-    const matchesSearch =
-      searchQuery === "" ||
-      alert.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      alert.message.toLowerCase().includes(searchQuery.toLowerCase())
-    return matchesTab && matchesKind && matchesCategory && matchesSearch
-  })
+  const hasActiveContextFilters =
+    filterMachine !== "all" ||
+    filterDay !== "" ||
+    filterShift !== "all" ||
+    filterKind !== "all" ||
+    searchQuery.trim() !== ""
+
+  const clearContextFilters = () => {
+    setFilterMachine("all")
+    setFilterDay("")
+    setFilterShift("all")
+    setFilterKind("all")
+    setSearchQuery("")
+  }
+
+  const filteredAlerts = useMemo(() => {
+    return alerts.filter((alert) => {
+      const matchesTab =
+        activeTab === "all" ||
+        (activeTab === "unread" && !alert.isRead) ||
+        (activeTab === "action" && alert.actionRequired && !alert.isRead)
+      const matchesKind = filterKind === "all" || alert.kind === filterKind
+      const matchesMachine =
+        filterMachine === "all" ||
+        (filterMachine === "__none__"
+          ? !alert.machineId
+          : alert.machineId === filterMachine)
+      const matchesDay =
+        filterDay === "" || plantDayKey(alert.timestamp) === filterDay
+      const shift = productionShiftFromMeasuredAt(alert.timestamp.toISOString())
+      const matchesShift = filterShift === "all" || shift === filterShift
+      const q = searchQuery.trim().toLowerCase()
+      const machineLabel = alert.machineId
+        ? (machineCodeById.get(alert.machineId) ?? alert.machineId).toLowerCase()
+        : ""
+      const matchesSearch =
+        q === "" ||
+        alert.title.toLowerCase().includes(q) ||
+        alert.message.toLowerCase().includes(q) ||
+        machineLabel.includes(q) ||
+        ALERT_KIND_LABELS[alert.kind].toLowerCase().includes(q)
+      return (
+        matchesTab &&
+        matchesKind &&
+        matchesMachine &&
+        matchesDay &&
+        matchesShift &&
+        matchesSearch
+      )
+    })
+  }, [
+    alerts,
+    activeTab,
+    filterKind,
+    filterMachine,
+    filterDay,
+    filterShift,
+    searchQuery,
+    machineCodeById,
+  ])
 
   const sortedAlerts = useMemo(
     () =>
@@ -315,6 +413,15 @@ export default function AlertasClient() {
       }),
     [filteredAlerts],
   )
+
+  const toggleExpanded = (id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   const handleMarkAsRead = async (id: string) => {
     setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, isRead: true } : a)))
@@ -579,8 +686,8 @@ export default function AlertasClient() {
         </div>
 
         <Card>
-          <CardHeader className="pb-4">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <CardHeader className="gap-4 space-y-0 pb-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <Tabs value={activeTab} onValueChange={setActiveTab}>
                 <TabsList>
                   <TabsTrigger value="all">Todas ({alerts.length})</TabsTrigger>
@@ -590,23 +697,115 @@ export default function AlertasClient() {
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>
+                  Mostrando{" "}
+                  <span className="font-medium text-foreground">{sortedAlerts.length}</span> de{" "}
+                  {alerts.length}
+                  {filterDay ? ` · ${filterDay}` : ""}
+                </span>
+                {hasActiveContextFilters && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={clearContextFilters}
+                  >
+                    <X className="mr-1 h-3.5 w-3.5" />
+                    Limpiar
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
+                <Label className="text-xs text-muted-foreground">Buscar</Label>
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
-                    placeholder="Buscar alertas..."
+                    placeholder="Título, mensaje, máquina…"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-64 pl-9"
+                    className="h-9 pl-9"
                   />
                 </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="filter-day" className="text-xs text-muted-foreground">
+                  Día
+                </Label>
+                <div className="flex h-9 gap-2">
+                  <Input
+                    id="filter-day"
+                    type="date"
+                    value={filterDay}
+                    onChange={(e) => setFilterDay(e.target.value)}
+                    className="h-9 min-w-0"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 shrink-0"
+                    title="Hoy"
+                    onClick={() => setFilterDay(todayPlantDayKey())}
+                  >
+                    <CalendarDays className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Turno</Label>
+                <Select
+                  value={filterShift}
+                  onValueChange={(v) => {
+                    if (v === "all" || v === "matutino" || v === "vespertino") {
+                      setFilterShift(v)
+                    }
+                  }}
+                >
+                  <SelectTrigger className="h-9 w-full">
+                    <SelectValue placeholder="Turno" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="matutino">Matutino</SelectItem>
+                    <SelectItem value="vespertino">Vespertino</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Máquina</Label>
+                <Select value={filterMachine} onValueChange={setFilterMachine}>
+                  <SelectTrigger className="h-9 w-full">
+                    <SelectValue placeholder="Máquina" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas</SelectItem>
+                    <SelectItem value="__none__">Sin máquina</SelectItem>
+                    {machineFilterOptions.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.code}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Causa</Label>
                 <Select value={filterKind} onValueChange={setFilterKind}>
-                  <SelectTrigger className="w-56">
-                    <Filter className="mr-2 h-4 w-4" />
+                  <SelectTrigger className="h-9 w-full">
+                    <Filter className="mr-2 h-3.5 w-3.5 shrink-0 opacity-60" />
                     <SelectValue placeholder="Causa" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">Todas las causas</SelectItem>
+                    <SelectItem value="all">Todas</SelectItem>
                     {ALERT_KIND_FILTER_ORDER.map((kind) => (
                       <SelectItem key={kind} value={kind}>
                         {ALERT_KIND_LABELS[kind]}
@@ -614,177 +813,244 @@ export default function AlertasClient() {
                     ))}
                   </SelectContent>
                 </Select>
-                <Select value={filterCategory} onValueChange={setFilterCategory}>
-                  <SelectTrigger className="w-44">
-                    <SelectValue placeholder="Categoría" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todas las categorías</SelectItem>
-                    <SelectItem value="machine">Máquina</SelectItem>
-                    <SelectItem value="production">Producción</SelectItem>
-                    <SelectItem value="employee">Empleado</SelectItem>
-                    <SelectItem value="system">Sistema</SelectItem>
-                  </SelectContent>
-                </Select>
               </div>
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="px-0 pb-0 sm:px-0">
             {alertsLoading ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 Cargando alertas…
               </div>
             ) : sortedAlerts.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+              <div className="flex flex-col items-center justify-center px-6 py-12 text-muted-foreground">
                 <Bell className="mb-3 h-12 w-12 opacity-50" />
                 <p className="text-sm">No hay alertas que coincidan con los filtros</p>
+                {hasActiveContextFilters && (
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="mt-2"
+                    onClick={clearContextFilters}
+                  >
+                    Quitar filtros
+                  </Button>
+                )}
               </div>
             ) : (
-              <div className="space-y-3">
-                {sortedAlerts.map((alert) => {
-                  const TypeIcon = typeIcons[alert.type]
-                  const CategoryIcon = categoryIcons[alert.category]
-                  const colors = typeColors[alert.type]
-                  const apiAlert = apiAlertsById.get(alert.id)
-                  const noteCtx = apiAlert ? buildDowntimeNoteContextFromAlert(apiAlert) : null
-                  const alertNote = noteCtx ? notesBySourceKey.get(noteCtx.sourceKey) : undefined
-                  const canAddNote = apiAlert ? isDowntimeParoAlert(apiAlert.title) : false
-                  const isOrphan = isAttributableOrphanAlert(alert)
-                  const updatedAt = apiAlert?.updatedAt
-                    ? new Date(apiAlert.updatedAt)
-                    : alert.timestamp
-                  const showUpdated =
-                    isOrphan &&
-                    !Number.isNaN(updatedAt.getTime()) &&
-                    updatedAt.getTime() > alert.timestamp.getTime() + 60_000
+              <div className="max-h-[min(70vh,720px)] overflow-auto border-t border-border">
+                <Table>
+                  <TableHeader className="sticky top-0 z-10 bg-card shadow-[0_1px_0_0_hsl(var(--border))]">
+                    <TableRow>
+                      <TableHead className="w-10 px-3" />
+                      <TableHead className="w-[90px]">Hora</TableHead>
+                      <TableHead className="w-[88px]">Turno</TableHead>
+                      <TableHead className="w-[100px]">Máquina</TableHead>
+                      <TableHead className="w-[150px]">Causa</TableHead>
+                      <TableHead>Detalle</TableHead>
+                      <TableHead className="w-[1%] whitespace-nowrap text-right">Acciones</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sortedAlerts.map((alert) => {
+                      const TypeIcon = typeIcons[alert.type]
+                      const colors = typeColors[alert.type]
+                      const apiAlert = apiAlertsById.get(alert.id)
+                      const noteCtx = apiAlert
+                        ? buildDowntimeNoteContextFromAlert(apiAlert)
+                        : null
+                      const alertNote = noteCtx
+                        ? notesBySourceKey.get(noteCtx.sourceKey)
+                        : undefined
+                      const canAddNote = apiAlert
+                        ? isDowntimeParoAlert(apiAlert.title)
+                        : false
+                      const isOrphan = isAttributableOrphanAlert(alert)
+                      const orphanUnits = orphanUnitsForAlert(alert)
+                      const shift =
+                        productionShiftFromMeasuredAt(alert.timestamp.toISOString()) ??
+                        null
+                      const expanded = expandedIds.has(alert.id)
+                      const machineCode = alert.machineId
+                        ? (machineCodeById.get(alert.machineId) ?? "—")
+                        : "—"
 
-                  return (
-                    <div
-                      key={alert.id}
-                      className={cn(
-                        "flex items-start gap-4 rounded-lg border p-4 transition-all",
-                        colors.border,
-                        !alert.isRead ? colors.bg : "bg-card hover:bg-muted/50",
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          "flex h-10 w-10 shrink-0 items-center justify-center rounded-full",
-                          colors.bg,
-                        )}
-                      >
-                        <TypeIcon className={cn("h-5 w-5", colors.text)} />
-                      </div>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h3
+                      return (
+                        <TableRow
+                          key={alert.id}
+                          className={cn(
+                            "align-top",
+                            !alert.isRead && colors.bg,
+                          )}
+                        >
+                          <TableCell className="px-3 py-2">
+                            <div
+                              className={cn(
+                                "flex h-8 w-8 items-center justify-center rounded-full",
+                                colors.bg,
+                              )}
+                              title={alert.type}
+                            >
+                              <TypeIcon className={cn("h-4 w-4", colors.text)} />
+                            </div>
+                          </TableCell>
+                          <TableCell className="py-2 tabular-nums text-xs">
+                            <div className="font-medium text-foreground">
+                              {formatTimeOnly(alert.timestamp)}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground">
+                              {formatTimeAgo(alert.timestamp)}
+                            </div>
+                          </TableCell>
+                          <TableCell className="py-2">
+                            {shift ? (
+                              <span
                                 className={cn(
-                                  "font-semibold",
-                                  !alert.isRead
-                                    ? "text-foreground"
-                                    : "text-muted-foreground",
+                                  "inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium",
+                                  shift === "matutino"
+                                    ? "bg-sky-100 text-sky-800"
+                                    : "bg-violet-100 text-violet-800",
                                 )}
                               >
-                                {alert.title}
-                              </h3>
-                              {alert.actionRequired && !alert.isRead && (
-                                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
-                                  Acción requerida
-                                </span>
-                              )}
-                              {!alert.isRead && (
-                                <span className="h-2 w-2 rounded-full bg-primary" />
-                              )}
-                            </div>
-                            <p className="mt-1 text-sm text-muted-foreground">{alert.message}</p>
-                            {alertNote ? (
-                              <p className="mt-2 text-sm rounded-md bg-muted/60 px-3 py-2 border border-border">
-                                <span className="font-medium text-foreground">Nota:</span> {alertNote}
-                              </p>
-                            ) : null}
-                            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                              <span className="rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
-                                {ALERT_KIND_LABELS[alert.kind]}
+                                {SHIFT_LABELS[shift]}
                               </span>
-                              <span className="flex items-center gap-1">
-                                <CategoryIcon className="h-3 w-3" />
-                                {categoryLabels[alert.category]}
-                              </span>
-                              <span>Creada {formatTimeAgo(alert.timestamp)}</span>
-                              {showUpdated && (
-                                <span className="text-amber-700">
-                                  Actualizada {formatTimeAgo(updatedAt)}
-                                </span>
-                              )}
-                              <span>{formatDateTime(alert.timestamp)}</span>
-                              {alert.machineId && (
-                                <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium">
-                                  {machineCodeById.get(alert.machineId) ?? alert.machineId}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="flex shrink-0 items-center gap-2">
-                            {canAddNote && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => openNoteDialog(alert.id)}
-                              >
-                                <StickyNote className="mr-1 h-3 w-3" />
-                                {alertNote ? "Editar nota" : "Añadir nota"}
-                              </Button>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">—</span>
                             )}
-                            {isOrphan && orphanUnitsForAlert(alert) > 0 && (
-                              <Button
-                                size="sm"
-                                variant="default"
-                                onClick={() => openAssign(alert)}
-                              >
-                                <Users className="mr-1 h-3 w-3" />
-                                Asignar producción
-                              </Button>
-                            )}
+                          </TableCell>
+                          <TableCell className="py-2">
+                            <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums">
+                              {machineCode}
+                            </span>
+                          </TableCell>
+                          <TableCell className="py-2">
+                            <span className="text-xs font-medium text-foreground">
+                              {ALERT_KIND_LABELS[alert.kind]}
+                            </span>
                             {alert.actionRequired && !alert.isRead && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleResolve(alert.id)}
-                              >
-                                <Check className="mr-1 h-3 w-3" />
-                                Resolver
-                              </Button>
+                              <div className="mt-1">
+                                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                                  Acción
+                                </span>
+                              </div>
                             )}
-                            {!alert.isRead && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleMarkAsRead(alert.id)}
-                              >
-                                Marcar leída
-                              </Button>
-                            )}
-                            {canDismissAlerts && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => handleDismiss(alert.id)}
-                                title="Eliminar alerta"
-                              >
-                                <X className="h-4 w-4" />
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
+                          </TableCell>
+                          <TableCell className="py-2">
+                            <button
+                              type="button"
+                              className="w-full text-left"
+                              onClick={() => toggleExpanded(alert.id)}
+                            >
+                              <div className="flex items-start gap-2">
+                                {!alert.isRead && (
+                                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+                                )}
+                                <div className="min-w-0 flex-1">
+                                  <p
+                                    className={cn(
+                                      "text-sm",
+                                      !alert.isRead
+                                        ? "font-semibold text-foreground"
+                                        : "font-medium text-muted-foreground",
+                                      !expanded && "line-clamp-1",
+                                    )}
+                                  >
+                                    {alert.title}
+                                  </p>
+                                  {alert.message ? (
+                                    <p
+                                      className={cn(
+                                        "mt-0.5 text-xs text-muted-foreground",
+                                        !expanded && "line-clamp-1",
+                                      )}
+                                    >
+                                      {alert.message}
+                                    </p>
+                                  ) : null}
+                                  {expanded && alertNote ? (
+                                    <p className="mt-1.5 rounded border border-border bg-muted/50 px-2 py-1 text-xs">
+                                      <span className="font-medium text-foreground">Nota:</span>{" "}
+                                      {alertNote}
+                                    </p>
+                                  ) : null}
+                                  {expanded ? (
+                                    <p className="mt-1 text-[10px] text-muted-foreground">
+                                      {formatDateTime(alert.timestamp)} · clic para comprimir
+                                    </p>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </button>
+                          </TableCell>
+                          <TableCell className="py-2 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {isOrphan && orphanUnits > 0 && (
+                                <Button
+                                  size="sm"
+                                  className="h-8 gap-1.5 whitespace-nowrap"
+                                  onClick={() => openAssign(alert)}
+                                >
+                                  <Users className="h-3.5 w-3.5" />
+                                  Asignar
+                                  <span className="tabular-nums opacity-90">
+                                    ({orphanUnits})
+                                  </span>
+                                </Button>
+                              )}
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    size="icon"
+                                    variant="ghost"
+                                    className="h-8 w-8"
+                                    aria-label="Más acciones"
+                                  >
+                                    <MoreHorizontal className="h-4 w-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="w-48">
+                                  {canAddNote && (
+                                    <DropdownMenuItem onClick={() => openNoteDialog(alert.id)}>
+                                      <StickyNote className="mr-2 h-4 w-4" />
+                                      {alertNote ? "Editar nota" : "Añadir nota"}
+                                    </DropdownMenuItem>
+                                  )}
+                                  {alert.actionRequired && !alert.isRead && (
+                                    <DropdownMenuItem
+                                      onClick={() => void handleResolve(alert.id)}
+                                    >
+                                      <Check className="mr-2 h-4 w-4" />
+                                      Resolver
+                                    </DropdownMenuItem>
+                                  )}
+                                  {!alert.isRead && (
+                                    <DropdownMenuItem
+                                      onClick={() => void handleMarkAsRead(alert.id)}
+                                    >
+                                      Marcar leída
+                                    </DropdownMenuItem>
+                                  )}
+                                  {canDismissAlerts && (
+                                    <>
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem
+                                        className="text-red-700 focus:text-red-700"
+                                        onClick={() => void handleDismiss(alert.id)}
+                                      >
+                                        <Trash2 className="mr-2 h-4 w-4" />
+                                        Eliminar
+                                      </DropdownMenuItem>
+                                    </>
+                                  )}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
               </div>
             )}
           </CardContent>
