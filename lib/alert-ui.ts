@@ -14,6 +14,7 @@ const KNOWN_ALERT_KINDS = new Set<ApiAlertKind>([
   "overtime_hours",
   "plant_outage",
   "counter_not_zero",
+  "counter_reset",
   "device_down",
   "other",
 ])
@@ -28,6 +29,7 @@ export const ALERT_KIND_LABELS: Record<ApiAlertKind, string> = {
   overtime_hours: "Horas de trabajo excedidas",
   plant_outage: "Corte de conectividad",
   counter_not_zero: "Contador no en cero",
+  counter_reset: "Contador reseteado en turno",
   device_down: "Equipo caído",
   other: "Otra",
 }
@@ -42,6 +44,7 @@ export const ALERT_KIND_FILTER_ORDER: ApiAlertKind[] = [
   "checkin_blocked",
   "plant_outage",
   "counter_not_zero",
+  "counter_reset",
 ]
 
 const ALERT_KIND_CATEGORY: Record<ApiAlertKind, AlertCategory> = {
@@ -53,6 +56,7 @@ const ALERT_KIND_CATEGORY: Record<ApiAlertKind, AlertCategory> = {
   overtime_hours: "employee",
   plant_outage: "system",
   counter_not_zero: "machine",
+  counter_reset: "machine",
   device_down: "machine",
   other: "system",
 }
@@ -66,6 +70,7 @@ function inferKindFromTitle(title: string): ApiAlertKind {
   if (title.startsWith("Horas de trabajo excedidas")) return "overtime_hours"
   if (title.startsWith("Posible corte de conectividad")) return "plant_outage"
   if (title.startsWith("Contador no inició en 0")) return "counter_not_zero"
+  if (title.startsWith("Contador reseteado en turno")) return "counter_reset"
   if (title.startsWith("Equipo caído")) return "device_down"
   return "other"
 }
@@ -88,6 +93,8 @@ function resolveUiSeverity(alert: ApiAlert, kind: ApiAlertKind): AlertType {
     case "no_packager":
     case "counter_not_zero":
       return "warning"
+    case "counter_reset":
+      return "info"
     case "idle":
       return alert.severity === "high" || alert.severity === "critical" ? "error" : "warning"
     case "plant_outage":

@@ -707,6 +707,7 @@ export type ApiAlertKind =
   | "overtime_hours"
   | "plant_outage"
   | "counter_not_zero"
+  | "counter_reset"
   | "device_down"
   | "other";
 
