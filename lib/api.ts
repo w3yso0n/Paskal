@@ -346,6 +346,8 @@ export interface ApiMachine {
   unitsPerBox?: number | null;
   /** Piezas producidas fuera de modo verde, pendientes de atribuir a un operador+SKU. */
   orphanUnits?: number;
+  /** Pestillo del verde: el contador se reseteó a 0. Verde = operador + SKU + counterReady. */
+  counterReady?: boolean;
   floorRow?: number | null;
   floorCol?: number | null;
   operatorCode?: string | null;
@@ -700,6 +702,7 @@ export type ApiAlertKind =
   | "no_packager"
   | "idle"
   | "no_checkout"
+  | "checkin_blocked"
   | "overtime_hours"
   | "plant_outage"
   | "counter_not_zero"

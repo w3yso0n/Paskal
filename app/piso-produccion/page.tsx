@@ -31,7 +31,7 @@ import { TextAutocomplete, type TextAutocompleteOption } from "@/components/ui/t
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Check, Eraser, Maximize2, Minimize2, Plus, RotateCcw, Settings2, X } from "lucide-react"
+import { AlertTriangle, Check, Eraser, Maximize2, Minimize2, Plus, RotateCcw, Settings2, X } from "lucide-react"
 import { toast } from "sonner"
 import {
   Tooltip,
@@ -119,8 +119,8 @@ function validateMachinePersonnelRoles(
 /**
  * Estado visual de la máquina según el heartbeat del dispositivo:
  *  - Rojo ("inactive"): sin heartbeat en > 2 min (apagada o sin wifi).
- *  - Verde ("active"): encendida y con SKU + operador asignados.
- *  - Amarillo ("waiting"): encendida pero sin configuración completa.
+ *  - Verde ("active"): encendida con SKU + operador + contador reseteado a 0 (counterReady).
+ *  - Amarillo ("waiting"): encendida pero sin configuración completa (o falta resetear el contador).
  * El empacador no influye en el estado.
  */
 function computeEffectiveStatus(
@@ -128,10 +128,11 @@ function computeEffectiveStatus(
   operator: string | undefined,
   offline?: boolean,
   inMaintenance?: boolean,
+  counterReady?: boolean,
 ): Machine["status"] {
   if (offline) return "inactive"
   if (inMaintenance) return "maintenance"
-  if (Boolean(sku) && Boolean(operator)) return "active"
+  if (Boolean(sku) && Boolean(operator) && Boolean(counterReady)) return "active"
   return "waiting"
 }
 
@@ -148,6 +149,8 @@ interface MachineData extends Machine {
   offline?: boolean
   /** Sesión de mantenimiento activa (estado azul). */
   inMaintenance?: boolean
+  /** Amarilla SOLO porque el contador no se ha reseteado a 0 (ya tiene SKU + operador). */
+  needsCounterReset?: boolean
 }
 
 function machineNumberFromName(name: string): number {
@@ -192,7 +195,7 @@ function buildMachineData(
     const inMaintenance = m.inMaintenance === true
     return {
       ...base,
-      status: computeEffectiveStatus(sku, operator, offline, inMaintenance),
+      status: computeEffectiveStatus(sku, operator, offline, inMaintenance, m.counterReady),
       machineCode: m.code ?? undefined,
       sku,
       unitsPerBox: m.unitsPerBox ?? undefined,
@@ -201,6 +204,9 @@ function buildMachineData(
       packers,
       offline,
       inMaintenance,
+      // Amarilla solo por falta de reset: ya tiene SKU + operador y está en línea, sin mantenimiento.
+      needsCounterReset:
+        Boolean(sku) && Boolean(operator) && !offline && !inMaintenance && !m.counterReady,
     }
   })
 }
@@ -905,6 +911,7 @@ export default function ProductionFloorPage() {
                         : undefined
                     }
                     production={machine.production}
+                    needsCounterReset={machine.needsCounterReset}
                     onClick={() => handleMachineClick(machine)}
                     isSelected={focusedMachineId === machine.id}
                   />
@@ -1672,6 +1679,12 @@ export default function ProductionFloorPage() {
                 <div className="flex items-center justify-between text-sm mt-2">
                   <span className="text-muted-foreground">Producción hoy:</span>
                   <span className="font-medium text-foreground">{selectedMachine.production} unidades</span>
+                </div>
+              )}
+              {selectedMachine?.needsCounterReset && (
+                <div className="mt-2 flex items-center gap-2 rounded-md bg-amber-100 px-2 py-1.5 text-xs font-medium text-amber-800">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span>El contador no está en 0 — resetéalo para que la máquina pase a verde.</span>
                 </div>
               )}
             </div>

@@ -17,6 +17,8 @@ interface MachineCardProps {
   operator?: string
   packer?: string
   production?: number
+  /** Amarilla solo porque el contador no está en 0 (ya tiene SKU + operador). */
+  needsCounterReset?: boolean
   onClick?: () => void
   isSelected?: boolean
 }
@@ -42,15 +44,16 @@ const statusBorderColors = {
   maintenance: "border-blue-500",
 }
 
-export function MachineCard({ 
-  name, 
-  status, 
+export function MachineCard({
+  name,
+  status,
   code,
   operator,
   packer,
   production,
+  needsCounterReset,
   onClick,
-  isSelected 
+  isSelected
 }: MachineCardProps) {
   return (
     <TooltipProvider>
@@ -94,6 +97,13 @@ export function MachineCard({
               <span className="mt-1 rounded bg-gray-700 px-2 py-0.5 text-xs font-medium text-white">
                 {name}
               </span>
+
+              {/* Aviso visible: amarilla solo porque falta resetear el contador a 0 */}
+              {needsCounterReset && (
+                <span className="mt-0.5 max-w-full rounded bg-amber-500 px-1 py-0.5 text-center text-[10px] font-semibold leading-tight text-white">
+                  Contador ≠ 0
+                </span>
+              )}
 
             </div>
           </button>
@@ -142,6 +152,11 @@ export function MachineCard({
                 </div>
               )}
             </div>
+            {needsCounterReset && (
+              <p className="rounded bg-amber-100 px-1.5 py-1 text-xs font-medium text-amber-800">
+                ⚠ El contador no está en 0 — resetéalo para pasar a verde.
+              </p>
+            )}
             <p className="text-xs text-muted-foreground pt-1 border-t border-border">
               Click para asignar SKU y personal
             </p>

@@ -10,6 +10,7 @@ const KNOWN_ALERT_KINDS = new Set<ApiAlertKind>([
   "no_packager",
   "idle",
   "no_checkout",
+  "checkin_blocked",
   "overtime_hours",
   "plant_outage",
   "counter_not_zero",
@@ -23,6 +24,7 @@ export const ALERT_KIND_LABELS: Record<ApiAlertKind, string> = {
   no_packager: "Producción sin empacador",
   idle: "Paro / inactividad",
   no_checkout: "Sin check-out",
+  checkin_blocked: "Falta check-out (tap rechazado)",
   overtime_hours: "Horas de trabajo excedidas",
   plant_outage: "Corte de conectividad",
   counter_not_zero: "Contador no en cero",
@@ -37,6 +39,7 @@ export const ALERT_KIND_FILTER_ORDER: ApiAlertKind[] = [
   "no_packager",
   "overtime_hours",
   "no_checkout",
+  "checkin_blocked",
   "plant_outage",
   "counter_not_zero",
 ]
@@ -46,6 +49,7 @@ const ALERT_KIND_CATEGORY: Record<ApiAlertKind, AlertCategory> = {
   no_packager: "production",
   idle: "machine",
   no_checkout: "machine",
+  checkin_blocked: "machine",
   overtime_hours: "employee",
   plant_outage: "system",
   counter_not_zero: "machine",
@@ -58,6 +62,7 @@ function inferKindFromTitle(title: string): ApiAlertKind {
   if (title.startsWith("Producción sin empacador")) return "no_packager"
   if (title.startsWith("Paro / inactividad")) return "idle"
   if (title.startsWith("Sin check-out")) return "no_checkout"
+  if (title.startsWith("Falta check-out")) return "checkin_blocked"
   if (title.startsWith("Horas de trabajo excedidas")) return "overtime_hours"
   if (title.startsWith("Posible corte de conectividad")) return "plant_outage"
   if (title.startsWith("Contador no inició en 0")) return "counter_not_zero"
@@ -78,6 +83,7 @@ function resolveUiSeverity(alert: ApiAlert, kind: ApiAlertKind): AlertType {
   switch (kind) {
     case "overtime_hours":
     case "no_checkout":
+    case "checkin_blocked":
     case "no_checkin":
     case "no_packager":
     case "counter_not_zero":
