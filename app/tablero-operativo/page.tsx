@@ -23,7 +23,11 @@ import {
   type ApiGoalShift,
 } from "@/lib/api"
 import { filterFloorMachines } from "@/lib/machine-floor"
-import { countsAsOperatorProduction } from "@/lib/production-goal-events"
+import {
+  buildOperatorShiftByCode,
+  countsAsOperatorProduction,
+  type OperatorShiftByCode,
+} from "@/lib/production-goal-events"
 import { isFloorOperatorCandidate } from "@/lib/employee-production-role"
 import { bonusConfigToGoalDefinitions } from "@/lib/bonus-goals-bridge"
 import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
@@ -508,11 +512,12 @@ function eventsForShiftFilter(
   shift: ApiGoalShift,
   rankingRange: RankingRange,
   goalDayKey: string,
+  operatorShiftByCode: OperatorShiftByCode,
 ): ApiProductionEvent[] {
   if (rankingRange === "day") {
-    return filterEventsForCalendarDayShift(events, goalDayKey, shift)
+    return filterEventsForCalendarDayShift(events, goalDayKey, shift, operatorShiftByCode)
   }
-  return filterEventsForShiftInPeriod(events, shift)
+  return filterEventsForShiftInPeriod(events, shift, operatorShiftByCode)
 }
 
 function buildOperatorRanking(
@@ -533,8 +538,22 @@ function buildOperatorRanking(
   const machinesById = buildMachinesByIdMap(floorMachines)
   const { skuById, upbById } = buildMachineMaps(floorMachines)
   const referenceIso = noonIsoForDateKey(goalDayKey, TABLERO_TIMEZONE)
-  const shiftEvents = eventsForShiftFilter(events, shiftFilter, rankingRange, goalDayKey)
-  const shiftTodayEvents = eventsForShiftFilter(todayEvents, shiftFilter, rankingRange, goalDayKey)
+  // El turno de un evento lo define el turno ASIGNADO de la operadora (fallback: reloj).
+  const operatorShiftByCode = buildOperatorShiftByCode(employees)
+  const shiftEvents = eventsForShiftFilter(
+    events,
+    shiftFilter,
+    rankingRange,
+    goalDayKey,
+    operatorShiftByCode,
+  )
+  const shiftTodayEvents = eventsForShiftFilter(
+    todayEvents,
+    shiftFilter,
+    rankingRange,
+    goalDayKey,
+    operatorShiftByCode,
+  )
   const productionByCode = new Map<
     string,
     {
@@ -654,6 +673,7 @@ function buildOperatorRanking(
             skuById,
             upbById,
             resolveOperatorCode,
+            operatorShiftByCode,
           )
         : rankingRange === "month"
           ? resolveTableroWindingPeriodGoalProgress(

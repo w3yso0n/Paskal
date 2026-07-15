@@ -5,6 +5,7 @@ import {
   allCalendarDaysInMonth,
   excelSheetNameForDay,
   formatDdMmYyyy,
+  getPlantDayBoundsForCalendarDate,
   getShiftBoundsForCalendarDate,
   monthNameCapitalizedEs,
 } from "@/lib/shift-timezone"
@@ -23,6 +24,8 @@ export type ProductionShiftReportSourceRow = {
   event: string
   sku: string
   unitsPerBox: number
+  /** Turno de la fila: turno ASIGNADO de la operadora del evento (fallback: reloj <16:00). */
+  shift: "matutino" | "vespertino"
 }
 
 export type ProductionShiftManualCapture = {
@@ -858,7 +861,9 @@ export async function buildProductionShiftReportBlob(
   const daysInMonth = allCalendarDaysInMonth(params.reportDate)
   const usedSheetNames = new Set<string>()
 
+  const reportShift = params.shiftNumber === 1 ? "matutino" : "vespertino"
   for (const dayIso of daysInMonth) {
+    // Ventana de reloj (mitades del día) solo para resolver el check-in del turno.
     const { start, end } = getShiftBoundsForCalendarDate(
       dayIso,
       params.shiftNumber,
@@ -867,10 +872,15 @@ export async function buildProductionShiftReportBlob(
     const startMs = start.getTime()
     const endMs = end.getTime()
 
+    // Piezas: día completo + turno por operadora (fila ya clasificada).
+    const dayBounds = getPlantDayBoundsForCalendarDate(dayIso, REPORT_TIMEZONE)
+    const dayStartMs = dayBounds.start.getTime()
+    const dayEndMs = dayBounds.end.getTime()
     const prodRows = params.rows.filter((r) => {
       if (r.event !== "Producción") return false
+      if (r.shift !== reportShift) return false
       const ts = new Date(r.timestamp).getTime()
-      return ts >= startMs && ts < endMs
+      return ts >= dayStartMs && ts < dayEndMs
     })
 
     const machineRows = aggregateMachineRows(

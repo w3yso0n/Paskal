@@ -11,7 +11,7 @@ import {
   monthlyMeta100FromDaily,
 } from "@/lib/bonus-production-config"
 import type { ProductionShiftReportSourceRow } from "@/lib/production-shift-report-excel"
-import { getShiftBoundsForCalendarDate, getPartsInTimeZone } from "@/lib/shift-timezone"
+import { getPlantDayBoundsForCalendarDate, getPartsInTimeZone } from "@/lib/shift-timezone"
 import {
   mergeHolidayIsos,
   mexicanPublicHolidayIsosForMonth,
@@ -592,10 +592,15 @@ function normalizeOperatorName(value: string | null | undefined): string | null 
 
 type ShiftDayBound = { dayIso: string; startMs: number; endMs: number }
 
-function buildShiftDayBounds(dayDates: Date[], shiftNumber: 1 | 2): ShiftDayBound[] {
+/**
+ * Límites por día calendario COMPLETO [00:00,24:00): el turno de cada fila ya viene
+ * clasificado por operadora (`row.shift`), así que el día solo ubica la fecha y no
+ * debe recortar producción hecha fuera del horario oficial del turno.
+ */
+function buildShiftDayBounds(dayDates: Date[]): ShiftDayBound[] {
   const dayIsos = dayDates.map((d) => dateToIsoInTimeZone(d, REPORT_TIMEZONE))
   return dayIsos.map((dayIso) => {
-    const { start, end } = getShiftBoundsForCalendarDate(dayIso, shiftNumber, REPORT_TIMEZONE)
+    const { start, end } = getPlantDayBoundsForCalendarDate(dayIso, REPORT_TIMEZONE)
     return { dayIso, startMs: start.getTime(), endMs: end.getTime() }
   })
 }
@@ -909,8 +914,12 @@ function configureTemplateSheet(
   const businessDays = businessDaysOfMonth(reportDate)
   const days = businessDays.length > 20 ? businessDays.slice(-20) : businessDays
   const dayIsos = days.map((d) => dateToIsoInTimeZone(d, REPORT_TIMEZONE))
-  const dayShiftBounds = buildShiftDayBounds(days, shiftNumber)
-  const productionRows = sourceRows.filter((r) => r.event === "Producción")
+  const dayShiftBounds = buildShiftDayBounds(days)
+  // Turno por operadora: la hoja de T1/T2 solo suma filas clasificadas a ese turno.
+  const sheetShift = shiftNumber === 1 ? "matutino" : "vespertino"
+  const productionRows = sourceRows.filter(
+    (r) => r.event === "Producción" && r.shift === sheetShift,
+  )
   const [yearRaw, monthRaw] = reportDate.split("-")
   const reportYear = Number(yearRaw)
   const reportMonth = Number(monthRaw)

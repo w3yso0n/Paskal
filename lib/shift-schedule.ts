@@ -68,11 +68,7 @@ export function classifyProductionTimestamp(iso: string): {
     return { shift, zone: m >= shiftEndMinutes("vespertino") ? "overtime" : "in_shift" }
   }
 
-  // Fallback (productionShiftFromMeasuredAt devolvió null): producción fuera de turno.
-  if (m >= 23 * 60 + 30) return { shift: "vespertino", zone: "overtime" }
-  if (m >= 16 * 60) return { shift: "vespertino", zone: "in_shift" }
-  if (m >= shiftEndMinutes("matutino")) return { shift: "matutino", zone: "overtime" }
-
+  // Inalcanzable con fecha válida: productionShiftFromMeasuredAt ya nunca devuelve null.
   return { shift: null, zone: "in_shift" }
 }
 

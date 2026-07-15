@@ -1,4 +1,4 @@
-import type { ApiProductionEvent } from "@/lib/api"
+import type { ApiEmployee, ApiGoalShift, ApiProductionEvent } from "@/lib/api"
 import { productionShiftFromMeasuredAt } from "@/lib/tablero-operator-goal"
 
 function payloadString(
@@ -140,6 +140,60 @@ export function normalizeSku(value: string | null | undefined): string | null {
   return sku ? sku : null
 }
 
+/** Turno asignado por código de empleada (minúsculas). Ver `buildOperatorShiftByCode`. */
+export type OperatorShiftByCode = Map<string, ApiGoalShift>
+
+/**
+ * Mapa código → turno ASIGNADO (employees.shift: 1 = matutino, 2 = vespertino).
+ * Indexa por employeeCode y nfcCardUid (en legacy coinciden) en minúsculas.
+ */
+export function buildOperatorShiftByCode(
+  employees: ReadonlyArray<Pick<ApiEmployee, "employeeCode" | "nfcCardUid" | "shift">>,
+): OperatorShiftByCode {
+  const map: OperatorShiftByCode = new Map()
+  for (const emp of employees) {
+    const shift: ApiGoalShift | null =
+      emp.shift === 1 ? "matutino" : emp.shift === 2 ? "vespertino" : null
+    if (!shift) continue
+    for (const key of [emp.employeeCode, emp.nfcCardUid]) {
+      const k = key?.trim().toLowerCase()
+      if (k) map.set(k, shift)
+    }
+  }
+  return map
+}
+
+/** Código de la operadora principal del evento (OPERATOR_1 / operators[0]). */
+export function eventPrimaryOperatorCode(event: ApiProductionEvent): string | null {
+  const payload = event.payload ?? {}
+  const direct = payloadString(payload, "OPERATOR_1", "operator_1", "OPERATOR", "operator")
+  if (direct) return direct
+  const arr = payload["operators"]
+  if (Array.isArray(arr)) {
+    const first = arr.find((x) => String(x ?? "").trim())
+    if (first != null) {
+      const s = String(first).trim()
+      if (s && s.toLowerCase() !== "null" && s !== "undefined") return s
+    }
+  }
+  return null
+}
+
+/**
+ * Turno al que pertenece la producción de un evento (regla de negocio 2026-07-15):
+ * manda el turno ASIGNADO de la operadora con check-in al momento de producir;
+ * si no se conoce (sin mapa, código desconocido o empleada sin turno), fallback al
+ * reloj de planta (`productionShiftFromMeasuredAt`: <16:00 matutino, ≥16:00 vespertino).
+ */
+export function productionShiftForEvent(
+  event: ApiProductionEvent,
+  operatorShiftByCode?: OperatorShiftByCode | null,
+): ApiGoalShift | null {
+  const code = eventPrimaryOperatorCode(event)?.toLowerCase()
+  const assigned = code ? operatorShiftByCode?.get(code) : undefined
+  return assigned ?? productionShiftFromMeasuredAt(event.occurredAt)
+}
+
 export type ProductionAggregateFilters = {
   machineId?: string | null
   from?: string
@@ -147,6 +201,8 @@ export type ProductionAggregateFilters = {
   /** Si true, `to` es exclusivo (>= from && < to). Por defecto inclusivo (<= to). */
   toExclusive?: boolean
   shift?: "matutino" | "vespertino" | null
+  /** Turno asignado por operadora; con esto el filtro `shift` sigue a la persona, no al reloj. */
+  operatorShiftByCode?: OperatorShiftByCode | null
   sku?: string | null
   machineSkuById?: Map<string, string>
   machineUpbById?: Map<string, number>
@@ -166,7 +222,7 @@ function eventMatchesProductionAggregate(
       return false
     }
   }
-  if (filters.shift && productionShiftFromMeasuredAt(e.occurredAt) !== filters.shift) {
+  if (filters.shift && productionShiftForEvent(e, filters.operatorShiftByCode) !== filters.shift) {
     return false
   }
   if (filters.sku) {

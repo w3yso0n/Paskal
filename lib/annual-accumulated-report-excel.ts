@@ -84,14 +84,6 @@ function isRollerMachine(machine: string): boolean {
   return m.includes("roll") || m.includes("roller") || m.includes("rodillo")
 }
 
-function getShift(date: Date): ShiftKind | null {
-  // Turnos reales (TZ MX): T1 07:00–16:00, T2 16:00–23:30.
-  const p = getPartsInTimeZone(date, TZ)
-  const mins = p.hour * 60 + p.minute
-  if (mins >= 7 * 60 && mins < 16 * 60) return "matutino"
-  if (mins >= 16 * 60 && mins < 23 * 60 + 30) return "vespertino"
-  return null
-}
 
 function safeName(v: string | null | undefined): string {
   const t = String(v ?? "").trim()
@@ -106,8 +98,8 @@ function toShiftRows(sourceRows: ProductionShiftReportSourceRow[]) {
     if (row.event !== "Producción") continue
     const ts = new Date(row.timestamp)
     if (Number.isNaN(ts.getTime())) continue
-    const shift = getShift(ts)
-    if (!shift) continue
+    // Turno por operadora: la fila ya viene clasificada (asignado, fallback reloj).
+    const shift = row.shift
 
     const count = Number.isFinite(row.count) ? row.count : 0
     const upb = row.unitsPerBox > 0 ? row.unitsPerBox : 48

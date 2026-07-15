@@ -1,6 +1,8 @@
 import {
+  getEmployees,
   getManualDataCaptures,
   getProductionEvents,
+  type ApiEmployee,
   type ApiGoal,
   type ApiGoalShift,
   type ApiMachine,
@@ -14,6 +16,7 @@ import {
   todayYmd,
 } from "@/lib/goal-compliance-range"
 import {
+  buildOperatorShiftByCode,
   normalizeSku,
   sumProductionUnitsInRange,
 } from "@/lib/production-goal-events"
@@ -125,12 +128,15 @@ export function computeActualByGoalId(input: {
   machines: ApiMachine[]
   productionEvents: ApiProductionEvent[]
   scrapCaptures?: ApiManualDataCapture[]
+  /** Empleadas para clasificar por turno ASIGNADO de la operadora (fallback: reloj). */
+  employees?: ApiEmployee[]
   /** Día de referencia para metas diarias (historial). */
   ref?: Date
 }): Record<string, number> {
-  const { goals, machines, productionEvents, scrapCaptures = [], ref } = input
+  const { goals, machines, productionEvents, scrapCaptures = [], employees, ref } = input
   const complianceRef = ref ?? new Date()
   const { skuById, upbById } = buildMachineMaps(machines)
+  const operatorShiftByCode = employees ? buildOperatorShiftByCode(employees) : null
   const actual: Record<string, number> = {}
 
   for (const g of goals) {
@@ -146,6 +152,7 @@ export function computeActualByGoalId(input: {
         to: rangeMeta.to,
         toExclusive: rangeMeta.toExclusive,
         shift,
+        operatorShiftByCode,
         sku: goalSku,
         machineSkuById: skuById,
         machineUpbById: upbById,
@@ -187,7 +194,7 @@ export async function fetchActualByGoalId(
   )
   const range = toDateTimeRange(minStart, maxEnd)
 
-  const [productionEvents, scrapCaptures] = await Promise.all([
+  const [productionEvents, scrapCaptures, employees] = await Promise.all([
     needsProductionEvents
       ? getProductionEvents(accessToken, { from: range.from, to: range.to, limit: 10000 })
       : Promise.resolve([] as ApiProductionEvent[]),
@@ -199,6 +206,10 @@ export async function fetchActualByGoalId(
           limit: 2000,
         })
       : Promise.resolve([] as ApiManualDataCapture[]),
+    // Turno asignado por operadora para clasificar la producción por persona.
+    needsProductionEvents
+      ? getEmployees(accessToken).catch(() => [] as ApiEmployee[])
+      : Promise.resolve([] as ApiEmployee[]),
   ])
 
   return computeActualByGoalId({
@@ -206,6 +217,7 @@ export async function fetchActualByGoalId(
     machines,
     productionEvents,
     scrapCaptures,
+    employees,
     ref: complianceRef,
   })
 }

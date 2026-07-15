@@ -46,7 +46,29 @@ export function makeZonedDate(
   return corrected
 }
 
-/** Turno 1: 07:00–16:00. Turno 2: 16:00–23:30 (mismo día calendario; no cruza medianoche). */
+/** Día calendario completo [00:00, 24:00) en la zona indicada. */
+export function getPlantDayBoundsForCalendarDate(
+  dateIso: string,
+  timeZone: string,
+): { start: Date; end: Date } {
+  const [y, m, d] = dateIso.split("-").map((n) => Number(n))
+  if (!y || !m || !d) {
+    const now = new Date()
+    return { start: now, end: now }
+  }
+  return {
+    start: makeZonedDate(y, m, d, 0, 0, timeZone),
+    // Hora 24 = medianoche del día siguiente (Date.UTC normaliza el desbordamiento).
+    end: makeZonedDate(y, m, d, 24, 0, timeZone),
+  }
+}
+
+/**
+ * Mitades de reloj por turno: T1 [00:00,16:00), T2 [16:00,24:00) del mismo día calendario.
+ * OJO: para CONTAR producción el turno lo define la operadora (ver `productionShiftForEvent`
+ * y el campo `shift` de las filas); estas ventanas quedan como aproximación de reloj para
+ * resolver check-ins/presencia, no para filtrar piezas.
+ */
 export function getShiftBoundsForCalendarDate(
   dateIso: string,
   shift: 1 | 2,
@@ -60,15 +82,15 @@ export function getShiftBoundsForCalendarDate(
 
   if (shift === 1) {
     return {
-      start: makeZonedDate(y, m, d, 7, 0, timeZone),
+      start: makeZonedDate(y, m, d, 0, 0, timeZone),
       end: makeZonedDate(y, m, d, 16, 0, timeZone),
     }
   }
 
-  // Turno 2: 16:00–23:30 del mismo día (ya no cruza medianoche).
   return {
     start: makeZonedDate(y, m, d, 16, 0, timeZone),
-    end: makeZonedDate(y, m, d, 23, 30, timeZone),
+    // Hora 24 = medianoche del día siguiente (Date.UTC normaliza el desbordamiento).
+    end: makeZonedDate(y, m, d, 24, 0, timeZone),
   }
 }
 

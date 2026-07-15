@@ -145,6 +145,11 @@ import {
 } from "@/lib/employee-production-role"
 import { productionShiftFromMeasuredAt } from "@/lib/tablero-operator-goal"
 import {
+  buildOperatorShiftByCode,
+  productionShiftForEvent,
+  type OperatorShiftByCode,
+} from "@/lib/production-goal-events"
+import {
   computeActualByGoalId,
   summarizeMonthlyGoalProgress,
 } from "@/lib/goal-actual-progress"
@@ -239,6 +244,8 @@ interface ProductionBaseRow {
   packer_1: string
   packer_2: string
   unitsPerBox: number
+  /** Turno de la producción: turno ASIGNADO de la operadora del evento (fallback: reloj <16:00). */
+  shift: "matutino" | "vespertino"
   /** Nombres únicos de empacadores atribuidos al evento (payload + fallback check-in). */
   packersAttributed: string[]
   parameter_1: number
@@ -492,6 +499,9 @@ function mapEventsToProductionBaseRows(
     ? new Map<string, ApiMachineCheckin[]>()
     : buildCheckinsByMachineId(checkins)
 
+  // Turno por evento = turno ASIGNADO de la operadora con check-in (fallback: reloj <16:00).
+  const operatorShiftByCode = buildOperatorShiftByCode(employees)
+
   return events
     .filter((e) => !(e.payload as Record<string, unknown>)?.excludedMaintenance)
     .filter((e) => (e.eventType ?? "").toUpperCase() !== "ORPHAN_PROD")
@@ -628,6 +638,7 @@ function mapEventsToProductionBaseRows(
       operator: operatorLabel,
       operator_2: operator2Label,
       unitsPerBox,
+      shift: productionShiftForEvent(e, operatorShiftByCode) ?? "matutino",
       packer_1,
       packer_2,
       packersAttributed,
@@ -912,14 +923,26 @@ export default function MetricsPage() {
     return productionBaseRows.filter((r) => {
       const rowDate = new Date(r.timestamp)
       if (rowDate < startDate || rowDate > endDate) return false
-      return matchesShiftFilter(r.timestamp, shiftFilter)
+      // Turno por persona (fila ya clasificada por turno asignado de la operadora).
+      return shiftFilter === "all" || r.shift === shiftFilter
     })
   }, [productionBaseRows, filterStartDate, filterEndDate, shiftFilter])
 
+  const operatorShiftByCode = useMemo(
+    () => buildOperatorShiftByCode(employeeRows),
+    [employeeRows],
+  )
+
   const shiftFilteredCheckins = useMemo(() => {
     if (shiftFilter === "all") return machineCheckinsLoaded
-    return machineCheckinsLoaded.filter((ch) => matchesShiftFilter(ch.checkedInAt, shiftFilter))
-  }, [machineCheckinsLoaded, shiftFilter])
+    // Turno del check-in = turno ASIGNADO de la operadora (fallback: reloj de entrada).
+    return machineCheckinsLoaded.filter((ch) => {
+      const code = ch.operatorCode?.trim().toLowerCase()
+      const assigned = code ? operatorShiftByCode.get(code) : undefined
+      const shift = assigned ?? productionShiftFromMeasuredAt(ch.checkedInAt)
+      return shift === shiftFilter
+    })
+  }, [machineCheckinsLoaded, shiftFilter, operatorShiftByCode])
 
   const shiftFilteredDayRecords = useMemo(() => {
     if (shiftFilter === "all") return employeeDayRecordsLoaded
@@ -1029,6 +1052,7 @@ export default function MetricsPage() {
           goals: goalsForActual,
           machines: apiMachines,
           productionEvents: events,
+          employees,
           ref: new Date(`${filterEndDate}T12:00:00`),
         })
         if (generation !== loadGenerationRef.current) return
@@ -1740,6 +1764,7 @@ export default function MetricsPage() {
       event: r.event,
       sku: r.sku,
       unitsPerBox: r.unitsPerBox,
+      shift: r.shift,
     }))
 
     const monthBounds = getMonthDateBounds(reportDate)
@@ -1879,6 +1904,7 @@ export default function MetricsPage() {
           event: r.event,
           sku: r.sku,
           unitsPerBox: r.unitsPerBox,
+          shift: r.shift,
         }))
 
       const monthBounds = getMonthDateBounds(bonusReportDate)
@@ -2002,6 +2028,7 @@ export default function MetricsPage() {
       event: r.event,
       sku: r.sku,
       unitsPerBox: r.unitsPerBox,
+      shift: r.shift,
     }))
     const blob = await buildAnnualAccumulatedReportBlob(year, sourceRows)
     downloadBlob(annualAccumulatedReportFilename(year), blob)
