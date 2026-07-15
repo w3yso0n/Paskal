@@ -10,6 +10,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 
+/** Motivo del amarillo — espeja el LED físico: fijo = sin operadora; parpadeo = falta SKU o reset. */
+export type MachineWaitingReason = "sin_operadora" | "sin_sku" | "contador"
+
 interface MachineCardProps {
   name: string
   status: MachineStatus
@@ -17,8 +20,8 @@ interface MachineCardProps {
   operator?: string
   packer?: string
   production?: number
-  /** Amarilla solo porque el contador no está en 0 (ya tiene SKU + operador). */
-  needsCounterReset?: boolean
+  /** Solo cuando status === "waiting": por qué está amarilla. */
+  waitingReason?: MachineWaitingReason
   onClick?: () => void
   isSelected?: boolean
 }
@@ -37,6 +40,13 @@ const statusLabels = {
   maintenance: "Mantenimiento",
 }
 
+/** Etiquetas específicas del amarillo (mismos estados que el LED del equipo). */
+const waitingLabels: Record<MachineWaitingReason, string> = {
+  sin_operadora: "Sin operadora",
+  sin_sku: "Falta SKU",
+  contador: "Contador ≠ 0",
+}
+
 const statusBorderColors = {
   active: "border-green-500",
   waiting: "border-yellow-500",
@@ -51,10 +61,15 @@ export function MachineCard({
   operator,
   packer,
   production,
-  needsCounterReset,
+  waitingReason,
   onClick,
   isSelected
 }: MachineCardProps) {
+  // Espeja el LED físico: parpadea cuando hay operadora pero falta SKU o resetear el contador.
+  const blinking =
+    status === "waiting" && (waitingReason === "sin_sku" || waitingReason === "contador")
+  const statusLabel =
+    status === "waiting" && waitingReason ? waitingLabels[waitingReason] : statusLabels[status]
   return (
     <TooltipProvider>
       <Tooltip delayDuration={200}>
@@ -69,10 +84,11 @@ export function MachineCard({
               isSelected && "bg-accent ring-2 ring-primary ring-offset-2"
             )}
           >
-            {/* Status indicator */}
+            {/* Status indicator — parpadea igual que el LED del equipo (falta SKU o reset) */}
             <div className={cn(
               "absolute -top-1 -right-1 z-10 h-4 w-4 rounded-full border-2 border-white shadow-md",
-              statusColors[status]
+              statusColors[status],
+              blinking && "animate-pulse"
             )} />
             
             {/* Machine image */}
@@ -98,10 +114,10 @@ export function MachineCard({
                 {name}
               </span>
 
-              {/* Aviso visible: amarilla solo porque falta resetear el contador a 0 */}
-              {needsCounterReset && (
+              {/* Aviso visible bajo el nombre: por qué parpadea (falta SKU o reset a 0) */}
+              {blinking && waitingReason && (
                 <span className="mt-0.5 max-w-full rounded bg-amber-500 px-1 py-0.5 text-center text-[10px] font-semibold leading-tight text-white">
-                  Contador ≠ 0
+                  {waitingLabels[waitingReason]}
                 </span>
               )}
 
@@ -114,7 +130,7 @@ export function MachineCard({
         >
           <div className="space-y-2 p-1">
             <div className="flex items-center gap-2">
-              <div className={cn("h-2.5 w-2.5 rounded-full", statusColors[status])} />
+              <div className={cn("h-2.5 w-2.5 rounded-full", statusColors[status], blinking && "animate-pulse")} />
               <span className="font-semibold text-card-foreground">{name}</span>
               <span className={cn(
                 "text-xs px-1.5 py-0.5 rounded",
@@ -123,7 +139,7 @@ export function MachineCard({
                 status === "inactive" && "bg-red-100 text-red-700",
                 status === "maintenance" && "bg-blue-100 text-blue-700"
               )}>
-                {statusLabels[status]}
+                {statusLabel}
               </span>
             </div>
             <div className="text-xs text-muted-foreground space-y-1">
@@ -152,9 +168,14 @@ export function MachineCard({
                 </div>
               )}
             </div>
-            {needsCounterReset && (
+            {waitingReason === "contador" && (
               <p className="rounded bg-amber-100 px-1.5 py-1 text-xs font-medium text-amber-800">
                 ⚠ El contador no está en 0 — resetéalo para pasar a verde.
+              </p>
+            )}
+            {waitingReason === "sin_sku" && (
+              <p className="rounded bg-amber-100 px-1.5 py-1 text-xs font-medium text-amber-800">
+                ⚠ Operadora presente sin SKU — asígnalo para pasar a verde.
               </p>
             )}
             <p className="text-xs text-muted-foreground pt-1 border-t border-border">

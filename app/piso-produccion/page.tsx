@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
-import { MachineCard } from "@/components/production/machine-card"
+import { MachineCard, type MachineWaitingReason } from "@/components/production/machine-card"
 import type { Machine } from "@/lib/types"
 import {
   closeAllMachineCheckins,
@@ -151,6 +151,8 @@ interface MachineData extends Machine {
   inMaintenance?: boolean
   /** Amarilla SOLO porque el contador no se ha reseteado a 0 (ya tiene SKU + operador). */
   needsCounterReset?: boolean
+  /** Motivo del amarillo (espeja el LED físico): fijo=sin operadora; parpadeo=falta SKU o reset. */
+  waitingReason?: MachineWaitingReason
 }
 
 function machineNumberFromName(name: string): number {
@@ -207,6 +209,17 @@ function buildMachineData(
       // Amarilla solo por falta de reset: ya tiene SKU + operador y está en línea, sin mantenimiento.
       needsCounterReset:
         Boolean(sku) && Boolean(operator) && !offline && !inMaintenance && !m.counterReady,
+      // Motivo del amarillo, en orden de resolución: operadora → SKU → reset del contador.
+      waitingReason:
+        offline || inMaintenance
+          ? undefined
+          : !operator
+            ? ("sin_operadora" as const)
+            : !sku
+              ? ("sin_sku" as const)
+              : !m.counterReady
+                ? ("contador" as const)
+                : undefined,
     }
   })
 }
@@ -805,6 +818,10 @@ export default function ProductionFloorPage() {
   // Stats
   const activeCount = machineData.filter(m => m.status === "active").length
   const waitingCount = machineData.filter(m => m.status === "waiting").length
+  const waitingNoOperatorCount = machineData.filter(m => m.waitingReason === "sin_operadora").length
+  const waitingBlinkCount = machineData.filter(
+    m => m.waitingReason === "sin_sku" || m.waitingReason === "contador",
+  ).length
   const inactiveCount = machineData.filter(m => m.status === "inactive").length
   const maintenanceCount = machineData.filter(m => m.status === "maintenance").length
   const assignedCount = machineData.filter(m => m.sku).length
@@ -912,7 +929,7 @@ export default function ProductionFloorPage() {
                         : undefined
                     }
                     production={machine.production}
-                    needsCounterReset={machine.needsCounterReset}
+                    waitingReason={machine.waitingReason}
                     onClick={() => handleMachineClick(machine)}
                     isSelected={focusedMachineId === machine.id}
                   />
@@ -1016,7 +1033,13 @@ export default function ProductionFloorPage() {
             </div>
             <div className="flex items-center gap-2">
               <div className="h-3 w-3 rounded-full bg-yellow-500" />
-              <span className="text-sm text-muted-foreground">Esperando ({waitingCount})</span>
+              <span className="text-sm text-muted-foreground">Sin operadora ({waitingNoOperatorCount})</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="h-3 w-3 animate-pulse rounded-full bg-yellow-500" />
+              <span className="text-sm text-muted-foreground">
+                Falta SKU o reset a 0 ({waitingBlinkCount})
+              </span>
             </div>
             <div className="flex items-center gap-2">
               <div className="h-3 w-3 rounded-full bg-red-500" />
@@ -1672,7 +1695,14 @@ export default function ProductionFloorPage() {
                     : "bg-red-100 text-red-700"
                 }`}>
                   {selectedMachine?.status === "active" && "Activa"}
-                  {selectedMachine?.status === "waiting" && "Esperando"}
+                  {selectedMachine?.status === "waiting" &&
+                    (selectedMachine?.waitingReason === "sin_operadora"
+                      ? "Sin operadora"
+                      : selectedMachine?.waitingReason === "sin_sku"
+                        ? "Falta SKU"
+                        : selectedMachine?.waitingReason === "contador"
+                          ? "Contador ≠ 0"
+                          : "Esperando")}
                   {selectedMachine?.status === "inactive" && "Inactiva"}
                 </span>
               </div>

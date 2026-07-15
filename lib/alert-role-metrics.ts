@@ -20,6 +20,7 @@ export const ALERT_KIND_CHART_COLORS: Record<ApiAlertKind, string> = {
   checkin_blocked: "#f43f5e",
   plant_outage: "#ef4444",
   counter_not_zero: "#06b6d4",
+  counter_reset: "#0ea5e9",
   device_down: "#64748b",
   other: "#94a3b8",
 }
