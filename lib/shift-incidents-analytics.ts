@@ -1,4 +1,4 @@
-import type { ApiGoal, ApiGoalShift, ApiMachine, ApiMachineCheckin } from "@/lib/api"
+import type { ApiGoal, ApiGoalShift, ApiMachine, ApiMachineCheckin, ApiOperatorCheckoutEvaluation } from "@/lib/api"
 import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
 import {
   classifyProductionTimestamp,
@@ -14,15 +14,17 @@ import {
 } from "@/lib/early-checkout-policy"
 
 /**
- * Mediciones pesadas de Incidencias (off hasta optimizar / lazy-load).
- * 1) PROD fuera de turno / limpieza  2) Salida anticipada sin meta
+ * Producción fuera de turno sigue off (fase 1).
+ * Salida anticipada / olvido de checkout vienen del backend (lazy-load en la tab).
  */
 export const INCIDENCIAS_OUT_OF_SHIFT_ENABLED = false
-export const INCIDENCIAS_EARLY_LEAVE_ENABLED = false
+/** Legacy flag: early leave ahora usa API; se mantiene true para KPIs/UI. */
+export const INCIDENCIAS_EARLY_LEAVE_ENABLED = true
 
 export type ShiftIncidentKind =
   | "overtime_production"
   | "early_leave_under_goal"
+  | "forgot_checkout_under_goal"
   | "post_cleaning_production"
   | "production_during_cleaning"
 
@@ -48,6 +50,7 @@ export type ShiftIncidentRow = {
 export type ShiftIncidentSummary = {
   overtimeCount: number
   earlyLeaveCount: number
+  forgotCheckoutCount: number
   postCleaningCount: number
   cleaningProductionCount: number
   total: number
@@ -98,6 +101,10 @@ const KIND_META: Record<
   },
   early_leave_under_goal: {
     title: "Salida anticipada sin meta",
+    severity: "incident",
+  },
+  forgot_checkout_under_goal: {
+    title: "Sin checkout / meta no cumplida",
     severity: "incident",
   },
   post_cleaning_production: {
@@ -335,6 +342,7 @@ export function buildShiftIncidentsAnalytics(input: {
   const summary: ShiftIncidentSummary = {
     overtimeCount: incidents.filter((i) => i.kind === "overtime_production").length,
     earlyLeaveCount: incidents.filter((i) => i.kind === "early_leave_under_goal").length,
+    forgotCheckoutCount: incidents.filter((i) => i.kind === "forgot_checkout_under_goal").length,
     postCleaningCount: incidents.filter((i) => i.kind === "post_cleaning_production").length,
     cleaningProductionCount: incidents.filter((i) => i.kind === "production_during_cleaning")
       .length,
@@ -345,7 +353,65 @@ export function buildShiftIncidentsAnalytics(input: {
     `${SHIFT_SCHEDULE.matutino.label}: producción ${SHIFT_SCHEDULE.matutino.windowLabel}. Después de las 16:00 = incidencia.`,
     `${SHIFT_SCHEDULE.vespertino.label}: producción ${SHIFT_SCHEDULE.vespertino.windowLabel}. Después de las 23:30 = incidencia.`,
     EARLY_CHECKOUT_QUOTA_EXEMPTION_NOTE,
+    "Quien no hace checkout y no cumple meta queda como incidencia al cierre nocturno (01:00).",
   ]
 
   return { incidents, summary, scheduleNotes }
+}
+
+/** Mapea evaluaciones precomputadas del backend a filas de Incidencias (sin scan de eventos). */
+export function mapCheckoutEvaluationsToShiftIncidents(
+  rows: ApiOperatorCheckoutEvaluation[],
+): ShiftIncidentsAnalytics {
+  const incidents: ShiftIncidentRow[] = []
+  for (const r of rows) {
+    const kind =
+      r.incidentKind ??
+      (r.isEarlyLeaveIncident
+        ? "early_leave_under_goal"
+        : r.isForgotCheckoutIncident
+          ? "forgot_checkout_under_goal"
+          : null)
+    if (!kind) continue
+    const meta = KIND_META[kind]
+    const target = Math.round(Number(r.dailyGoalTarget) || 0)
+    const actual = Math.round(Number(r.dailyGoalActual) || 0)
+    incidents.push({
+      id: r.id,
+      kind,
+      severity: meta.severity,
+      occurredAt: r.checkedOutAt,
+      day: r.day,
+      shift: r.shift,
+      employeeName: r.employeeName?.trim() || r.operatorCode,
+      employeeCode: r.operatorCode,
+      machineLabel: r.machineLabel || r.machineCode || "—",
+      units: actual,
+      title: meta.title,
+      detail:
+        kind === "forgot_checkout_under_goal"
+          ? `Cierre automático sin checkout. Producción: ${actual.toLocaleString()} / meta ${target.toLocaleString()}.`
+          : `Check-out anticipado. Producción del turno: ${actual.toLocaleString()} / meta ${target.toLocaleString()}.`,
+      goalTarget: target,
+      goalActual: actual,
+    })
+  }
+  incidents.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+  return {
+    incidents,
+    summary: {
+      overtimeCount: 0,
+      earlyLeaveCount: incidents.filter((i) => i.kind === "early_leave_under_goal").length,
+      forgotCheckoutCount: incidents.filter((i) => i.kind === "forgot_checkout_under_goal").length,
+      postCleaningCount: 0,
+      cleaningProductionCount: 0,
+      total: incidents.length,
+    },
+    scheduleNotes: [
+      `${SHIFT_SCHEDULE.matutino.label}: producción ${SHIFT_SCHEDULE.matutino.windowLabel}.`,
+      `${SHIFT_SCHEDULE.vespertino.label}: producción ${SHIFT_SCHEDULE.vespertino.windowLabel}.`,
+      EARLY_CHECKOUT_QUOTA_EXEMPTION_NOTE,
+      "Cierre automático de roster a la 01:00 (America/Mexico_City). Olvidar checkout + sin meta = incidencia.",
+    ],
+  }
 }

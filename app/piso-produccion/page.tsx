@@ -542,7 +542,8 @@ export default function ProductionFloorPage() {
           ),
         )
         toast.success(
-          `Turno reiniciado: ${closed} check-in${closed !== 1 ? "s" : ""} cerrado${closed !== 1 ? "s" : ""}, asignaciones limpiadas.`,
+          `Roster cerrado: ${closed} check-in${closed !== 1 ? "s" : ""} (ops/empacadores). ` +
+            `El cierre automático nocturno es a la 01:00; evita cerrar cerca de las 16:00/23:30.`,
         )
 
         const [freshMachines, apiEmployees, apiCheckins] = await Promise.all([

@@ -874,6 +874,50 @@ export async function getMachineCheckins(
   return parseResponse<ApiMachineCheckin[]>(res)
 }
 
+export type ApiOperatorCheckoutEvaluation = {
+  id: string
+  machineCheckinId: string
+  machineId: string
+  machineCode: string | null
+  machineLabel: string | null
+  operatorCode: string
+  employeeName: string | null
+  checkedOutAt: string
+  day: string
+  shift: "matutino" | "vespertino"
+  dailyGoalTarget: number
+  dailyGoalActual: number
+  dailyGoalMet: boolean
+  isEarlyCheckout: boolean
+  isEarlyLeaveIncident: boolean
+  isForgotCheckoutIncident: boolean
+  source: string
+  evaluatedAt: string
+  incidentKind: "early_leave_under_goal" | "forgot_checkout_under_goal" | null
+}
+
+/**
+ * Último checkout del día por operador (DISTINCT ON en backend).
+ * Para incidencias: incidentsOnly=true.
+ */
+export async function getOperatorCheckoutEvaluations(
+  accessToken: string,
+  params: {
+    from: string
+    to: string
+    incidentsOnly?: boolean
+    shift?: "matutino" | "vespertino"
+  },
+): Promise<ApiOperatorCheckoutEvaluation[]> {
+  const q = new URLSearchParams()
+  q.set("from", params.from)
+  q.set("to", params.to)
+  if (params.incidentsOnly) q.set("incidentsOnly", "true")
+  if (params.shift) q.set("shift", params.shift)
+  const res = await fetchWithAuth(`/operator-checkout-evaluations?${q}`, { accessToken })
+  return parseResponse<ApiOperatorCheckoutEvaluation[]>(res)
+}
+
 export async function getProductionEvents(
   accessToken: string,
   params: { machineId?: string; limit?: number; from?: string; to?: string } = {},
