@@ -3,8 +3,13 @@ import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
 import {
   classifyProductionTimestamp,
   dayKeyFromDate,
+  minutesSinceMidnight,
+  SHIFT_EDGE_TOLERANCE_MINUTES,
   SHIFT_SCHEDULE,
+  shiftEndWithToleranceMinutes,
+  shiftStartWithToleranceMinutes,
   timeLabel,
+  type ShiftProductionZone,
 } from "@/lib/shift-schedule"
 import { productionShiftFromMeasuredAt } from "@/lib/tablero-operator-goal"
 import {
@@ -14,15 +19,17 @@ import {
 } from "@/lib/early-checkout-policy"
 
 /**
- * Producción fuera de turno sigue off (fase 1).
- * Salida anticipada / olvido de checkout vienen del backend (lazy-load en la tab).
+ * Producción fuera de horario: turno asignado ±15 min de tolerancia.
+ * Distingue "antes del turno" vs "después del turno".
+ * Salida anticipada / olvido de checkout vienen del backend.
  */
-export const INCIDENCIAS_OUT_OF_SHIFT_ENABLED = false
+export const INCIDENCIAS_OUT_OF_SHIFT_ENABLED = true
 /** Legacy flag: early leave ahora usa API; se mantiene true para KPIs/UI. */
 export const INCIDENCIAS_EARLY_LEAVE_ENABLED = true
 
 export type ShiftIncidentKind =
   | "overtime_production"
+  | "pre_shift_production"
   | "early_leave_under_goal"
   | "forgot_checkout_under_goal"
   | "post_cleaning_production"
@@ -49,6 +56,7 @@ export type ShiftIncidentRow = {
 
 export type ShiftIncidentSummary = {
   overtimeCount: number
+  preShiftCount: number
   earlyLeaveCount: number
   forgotCheckoutCount: number
   postCleaningCount: number
@@ -62,6 +70,30 @@ export type ShiftIncidentsAnalytics = {
   scheduleNotes: string[]
 }
 
+const OUT_OF_SHIFT_KINDS: ReadonlySet<ShiftIncidentKind> = new Set([
+  "overtime_production",
+  "pre_shift_production",
+  "post_cleaning_production",
+  "production_during_cleaning",
+])
+
+export function isOutOfShiftIncidentKind(kind: ShiftIncidentKind): boolean {
+  return OUT_OF_SHIFT_KINDS.has(kind)
+}
+
+export function summarizeShiftIncidents(incidents: ShiftIncidentRow[]): ShiftIncidentSummary {
+  return {
+    overtimeCount: incidents.filter((i) => i.kind === "overtime_production").length,
+    preShiftCount: incidents.filter((i) => i.kind === "pre_shift_production").length,
+    earlyLeaveCount: incidents.filter((i) => i.kind === "early_leave_under_goal").length,
+    forgotCheckoutCount: incidents.filter((i) => i.kind === "forgot_checkout_under_goal").length,
+    postCleaningCount: incidents.filter((i) => i.kind === "post_cleaning_production").length,
+    cleaningProductionCount: incidents.filter((i) => i.kind === "production_during_cleaning")
+      .length,
+    total: incidents.length,
+  }
+}
+
 type ProductionRow = {
   timestamp: string
   event: string
@@ -71,6 +103,45 @@ type ProductionRow = {
   machineIdRaw: string | null
   sku?: string
   unitsPerBox?: number
+  /** Turno asignado de la operadora (si existe, prioriza sobre el reloj). */
+  shift?: ApiGoalShift
+}
+
+/**
+ * Clasifica producción fuera de horario respecto al turno asignado (±tolerancia).
+ * Antes del inicio efectivo → before_shift; después del fin efectivo → overtime.
+ */
+function classifyAgainstAssignedShift(
+  iso: string,
+  assigned: ApiGoalShift | null | undefined,
+): { shift: ApiGoalShift | null; zone: ShiftProductionZone } {
+  if (!assigned) return classifyProductionTimestamp(iso)
+
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return { shift: assigned, zone: "in_shift" }
+  const m = minutesSinceMidnight(d)
+  const start = shiftStartWithToleranceMinutes(assigned)
+  const end = shiftEndWithToleranceMinutes(assigned)
+
+  if (assigned === "matutino") {
+    if (m >= start && m < end) return { shift: "matutino", zone: "in_shift" }
+    if (m < start) return { shift: "matutino", zone: "before_shift" }
+    return { shift: "matutino", zone: "overtime" }
+  }
+
+  // Vespertino: ventana efectiva (con tolerancia) no cruza medianoche.
+  if (m >= start && m < end) return { shift: "vespertino", zone: "in_shift" }
+  if (m >= end) return { shift: "vespertino", zone: "overtime" }
+  // Antes del inicio (p. ej. madrugada / mañana) = antes del turno, no restos del día anterior.
+  return { shift: "vespertino", zone: "before_shift" }
+}
+
+function zoneToIncidentKind(zone: ShiftProductionZone): ShiftIncidentKind | null {
+  if (zone === "overtime") return "overtime_production"
+  if (zone === "before_shift") return "pre_shift_production"
+  if (zone === "post_cleaning") return "post_cleaning_production"
+  if (zone === "cleaning") return "production_during_cleaning"
+  return null
 }
 
 function buildNameToCode(employees: Array<{ fullName: string; employeeCode?: string | null }>) {
@@ -98,6 +169,10 @@ const KIND_META: Record<
   overtime_production: {
     title: "Producción después del turno",
     severity: "incident",
+  },
+  pre_shift_production: {
+    title: "Producción antes del turno",
+    severity: "warning",
   },
   early_leave_under_goal: {
     title: "Salida anticipada sin meta",
@@ -200,20 +275,20 @@ export function buildShiftIncidentsAnalytics(input: {
 
     if (!needOutOfShift) continue
 
-    const { shift, zone } = classifyProductionTimestamp(r.timestamp)
+    const units = Number(r.count) || 0
+    // Sin unidades reales no aporta: p. ej. BOOT/reconexión clasificados como Producción.
+    if (units <= 0) continue
+
+    const { shift, zone } = classifyAgainstAssignedShift(r.timestamp, r.shift)
     if (!shift || zone === "in_shift") continue
 
-    let kind: ShiftIncidentKind | null = null
-    if (zone === "overtime") kind = "overtime_production"
-    else if (zone === "post_cleaning") kind = "post_cleaning_production"
-    else if (zone === "cleaning") kind = "production_during_cleaning"
+    const kind = zoneToIncidentKind(zone)
     if (!kind) continue
 
     const opName = r.operator?.trim() && r.operator !== "—" ? r.operator : "Sin operador"
     const opCode = nameToCode.get(opName) ?? nameToCode.get(opName.toLowerCase()) ?? null
     const machineKey = String(r.machineIdRaw ?? r.machine_id ?? "—")
     const aggKey = `${kind}|${day}|${shift}|${machineKey}|${opCode ?? opName}`
-    const units = Number(r.count) || 0
     const prev = outOfShiftAgg.get(aggKey)
     if (prev) {
       prev.units += units
@@ -239,20 +314,25 @@ export function buildShiftIncidentsAnalytics(input: {
 
   if (needOutOfShift) {
     for (const [aggKey, bucket] of outOfShiftAgg) {
-      const endLabel =
-        bucket.shift === "matutino"
-          ? timeLabel(SHIFT_SCHEDULE.matutino.productionEnd.hour)
-          : timeLabel(
-              SHIFT_SCHEDULE.vespertino.productionEnd.hour,
-              SHIFT_SCHEDULE.vespertino.productionEnd.minute,
-            )
+      if (bucket.units <= 0) continue
+      const startLabel = timeLabel(
+        SHIFT_SCHEDULE[bucket.shift].productionStart.hour,
+        SHIFT_SCHEDULE[bucket.shift].productionStart.minute,
+      )
+      const endLabel = timeLabel(
+        SHIFT_SCHEDULE[bucket.shift].productionEnd.hour,
+        SHIFT_SCHEDULE[bucket.shift].productionEnd.minute,
+      )
+      const tol = SHIFT_EDGE_TOLERANCE_MINUTES
 
       const detailBase =
         bucket.kind === "overtime_production"
-          ? `Producción registrada después del fin de turno (${endLabel}).`
-          : bucket.kind === "post_cleaning_production"
-            ? `Producción después de la ventana de limpieza (${timeLabel(23, 30)}).`
-            : `Producción durante limpieza de máquinas (${timeLabel(23, 0)}–${timeLabel(23, 30)}).`
+          ? `Producción registrada después del fin de turno (${endLabel}, tolerancia +${tol} min).`
+          : bucket.kind === "pre_shift_production"
+            ? `Producción registrada antes del inicio de turno (${startLabel}, tolerancia −${tol} min).`
+            : bucket.kind === "post_cleaning_production"
+              ? `Producción después de la ventana de limpieza (${timeLabel(23, 30)}).`
+              : `Producción durante limpieza de máquinas (${timeLabel(23, 0)}–${timeLabel(23, 30)}).`
 
       const detail =
         bucket.eventCount > 1
@@ -339,21 +419,13 @@ export function buildShiftIncidentsAnalytics(input: {
 
   incidents.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
 
-  const summary: ShiftIncidentSummary = {
-    overtimeCount: incidents.filter((i) => i.kind === "overtime_production").length,
-    earlyLeaveCount: incidents.filter((i) => i.kind === "early_leave_under_goal").length,
-    forgotCheckoutCount: incidents.filter((i) => i.kind === "forgot_checkout_under_goal").length,
-    postCleaningCount: incidents.filter((i) => i.kind === "post_cleaning_production").length,
-    cleaningProductionCount: incidents.filter((i) => i.kind === "production_during_cleaning")
-      .length,
-    total: incidents.length,
-  }
+  const summary = summarizeShiftIncidents(incidents)
 
   const scheduleNotes = [
-    `${SHIFT_SCHEDULE.matutino.label}: producción ${SHIFT_SCHEDULE.matutino.windowLabel}. Después de las 16:00 = incidencia.`,
-    `${SHIFT_SCHEDULE.vespertino.label}: producción ${SHIFT_SCHEDULE.vespertino.windowLabel}. Después de las 23:30 = incidencia.`,
+    `${SHIFT_SCHEDULE.matutino.label}: producción ${SHIFT_SCHEDULE.matutino.windowLabel} (±${SHIFT_EDGE_TOLERANCE_MINUTES} min).`,
+    `${SHIFT_SCHEDULE.vespertino.label}: producción ${SHIFT_SCHEDULE.vespertino.windowLabel} (±${SHIFT_EDGE_TOLERANCE_MINUTES} min).`,
+    "Antes del inicio = incidencia de antes de turno; después del fin = incidencia de después de turno.",
     EARLY_CHECKOUT_QUOTA_EXEMPTION_NOTE,
-    "Quien no hace checkout y no cumple meta queda como incidencia al cierre nocturno (01:00).",
   ]
 
   return { incidents, summary, scheduleNotes }
@@ -399,19 +471,11 @@ export function mapCheckoutEvaluationsToShiftIncidents(
   incidents.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
   return {
     incidents,
-    summary: {
-      overtimeCount: 0,
-      earlyLeaveCount: incidents.filter((i) => i.kind === "early_leave_under_goal").length,
-      forgotCheckoutCount: incidents.filter((i) => i.kind === "forgot_checkout_under_goal").length,
-      postCleaningCount: 0,
-      cleaningProductionCount: 0,
-      total: incidents.length,
-    },
+    summary: summarizeShiftIncidents(incidents),
     scheduleNotes: [
       `${SHIFT_SCHEDULE.matutino.label}: producción ${SHIFT_SCHEDULE.matutino.windowLabel}.`,
       `${SHIFT_SCHEDULE.vespertino.label}: producción ${SHIFT_SCHEDULE.vespertino.windowLabel}.`,
       EARLY_CHECKOUT_QUOTA_EXEMPTION_NOTE,
-      "Cierre automático de roster a la 01:00 (America/Mexico_City). Olvidar checkout + sin meta = incidencia.",
     ],
   }
 }

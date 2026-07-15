@@ -178,9 +178,12 @@ import {
   buildDailyAlertsByKindSeries,
 } from "@/lib/alert-role-metrics"
 import {
+  buildShiftIncidentsAnalytics,
   INCIDENCIAS_EARLY_LEAVE_ENABLED,
   INCIDENCIAS_OUT_OF_SHIFT_ENABLED,
+  isOutOfShiftIncidentKind,
   mapCheckoutEvaluationsToShiftIncidents,
+  summarizeShiftIncidents,
   type ShiftIncidentRow,
   type ShiftIncidentsAnalytics,
 } from "@/lib/shift-incidents-analytics"
@@ -199,6 +202,7 @@ const EMPTY_SHIFT_INCIDENTS: ShiftIncidentsAnalytics = {
   incidents: [],
   summary: {
     overtimeCount: 0,
+    preShiftCount: 0,
     earlyLeaveCount: 0,
     forgotCheckoutCount: 0,
     postCleaningCount: 0,
@@ -1702,23 +1706,54 @@ export default function MetricsPage() {
     if (activeTab !== "incidencias") {
       return EMPTY_SHIFT_INCIDENTS
     }
-    const built = mapCheckoutEvaluationsToShiftIncidents(checkoutEvalRows)
-    if (shiftFilter === "all") return built
-    const incidents = built.incidents.filter((i) => i.shift === shiftFilter)
-    return {
-      ...built,
-      incidents,
-      summary: {
-        overtimeCount: 0,
-        earlyLeaveCount: incidents.filter((i) => i.kind === "early_leave_under_goal").length,
-        forgotCheckoutCount: incidents.filter((i) => i.kind === "forgot_checkout_under_goal")
-          .length,
-        postCleaningCount: 0,
-        cleaningProductionCount: 0,
-        total: incidents.length,
-      },
+
+    const checkoutBuilt = mapCheckoutEvaluationsToShiftIncidents(checkoutEvalRows)
+
+    const outOfShiftBuilt = INCIDENCIAS_OUT_OF_SHIFT_ENABLED
+      ? buildShiftIncidentsAnalytics({
+          productionRows: productionRowsForIncidents,
+          // Early-leave / forgot-checkout vienen del API; no recalcularlos aquí.
+          checkins: [],
+          machines: machinesLoaded,
+          goals: goalsRows,
+          bonusConfig: bonusConfigData,
+          employees: employeeRows,
+          from: filterStartDate,
+          to: filterEndDate,
+        })
+      : EMPTY_SHIFT_INCIDENTS
+
+    const outOfShiftIncidents = outOfShiftBuilt.incidents.filter((row) =>
+      isOutOfShiftIncidentKind(row.kind),
+    )
+
+    const scheduleNotes = [
+      ...new Set([...checkoutBuilt.scheduleNotes, ...outOfShiftBuilt.scheduleNotes]),
+    ]
+
+    let incidents = [...outOfShiftIncidents, ...checkoutBuilt.incidents]
+    if (shiftFilter !== "all") {
+      incidents = incidents.filter((i) => i.shift === shiftFilter)
     }
-  }, [activeTab, checkoutEvalRows, shiftFilter])
+    incidents.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+
+    return {
+      incidents,
+      summary: summarizeShiftIncidents(incidents),
+      scheduleNotes,
+    }
+  }, [
+    activeTab,
+    bonusConfigData,
+    checkoutEvalRows,
+    employeeRows,
+    filterEndDate,
+    filterStartDate,
+    goalsRows,
+    machinesLoaded,
+    productionRowsForIncidents,
+    shiftFilter,
+  ])
 
   function shiftIncidentRowClass(row: ShiftIncidentRow): string {
     if (row.kind === "post_cleaning_production") {
@@ -2959,7 +2994,7 @@ export default function MetricsPage() {
                 <p className="text-sm text-muted-foreground">Cargando incidencias…</p>
               ) : null}
 
-              {INCIDENCIAS_EARLY_LEAVE_ENABLED && (
+              {(INCIDENCIAS_EARLY_LEAVE_ENABLED || INCIDENCIAS_OUT_OF_SHIFT_ENABLED) && (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <KpiCard
                   title="Total incidencias"
@@ -2967,18 +3002,33 @@ export default function MetricsPage() {
                   icon={AlertTriangle}
                   iconColor="text-red-600"
                 />
-                <KpiCard
-                  title="Salida sin meta"
-                  value={String(shiftIncidentsAnalytics.summary.earlyLeaveCount)}
-                  icon={Users}
-                  iconColor="text-amber-600"
-                />
-                <KpiCard
-                  title="Sin checkout / sin meta"
-                  value={String(shiftIncidentsAnalytics.summary.forgotCheckoutCount)}
-                  icon={Clock}
-                  iconColor="text-orange-600"
-                />
+                {INCIDENCIAS_OUT_OF_SHIFT_ENABLED && (
+                  <KpiCard
+                    title="Fuera de horario"
+                    value={String(
+                      shiftIncidentsAnalytics.summary.overtimeCount +
+                        shiftIncidentsAnalytics.summary.preShiftCount,
+                    )}
+                    icon={Clock}
+                    iconColor="text-red-600"
+                  />
+                )}
+                {INCIDENCIAS_EARLY_LEAVE_ENABLED && (
+                  <>
+                    <KpiCard
+                      title="Salida sin meta"
+                      value={String(shiftIncidentsAnalytics.summary.earlyLeaveCount)}
+                      icon={Users}
+                      iconColor="text-amber-600"
+                    />
+                    <KpiCard
+                      title="Sin checkout / sin meta"
+                      value={String(shiftIncidentsAnalytics.summary.forgotCheckoutCount)}
+                      icon={Clock}
+                      iconColor="text-orange-600"
+                    />
+                  </>
+                )}
               </div>
               )}
 
@@ -2993,7 +3043,7 @@ export default function MetricsPage() {
                 </div>
               ) : null}
 
-              {INCIDENCIAS_EARLY_LEAVE_ENABLED && (
+              {(INCIDENCIAS_EARLY_LEAVE_ENABLED || INCIDENCIAS_OUT_OF_SHIFT_ENABLED) && (
               <>
               <div className="overflow-x-auto rounded-lg border border-border">
                 <Table>
@@ -3012,7 +3062,7 @@ export default function MetricsPage() {
                     {shiftIncidentsAnalytics.incidents.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={7} className="text-center text-muted-foreground py-10">
-                          {checkoutEvalLoading
+                          {checkoutEvalLoading || dataLoading
                             ? "Cargando…"
                             : "Sin incidencias de turno en este periodo."}
                         </TableCell>
@@ -3038,7 +3088,12 @@ export default function MetricsPage() {
                           <TableCell>
                             <Badge
                               variant={
-                                row.kind === "post_cleaning_production" ? "destructive" : "secondary"
+                                row.kind === "post_cleaning_production" ||
+                                row.kind === "overtime_production"
+                                  ? "destructive"
+                                  : row.kind === "pre_shift_production"
+                                    ? "outline"
+                                    : "secondary"
                               }
                               className="font-normal whitespace-nowrap"
                             >
