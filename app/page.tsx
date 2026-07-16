@@ -328,7 +328,7 @@ function extractOperatorCode(payload: Record<string, unknown>): string {
 }
 
 export default function HomePage() {
-  const { getAccessToken } = useAuth()
+  const { getAccessToken, user } = useAuth()
   const [loading, setLoading] = useState(true)
   const [operatorProductionData, setOperatorProductionData] = useState<Record<string, string | number>[]>([])
   const [machines, setMachines] = useState<ApiMachine[]>([])
@@ -717,7 +717,9 @@ export default function HomePage() {
       <div className="space-y-6">
         {/* Welcome Header */}
         <div>
-          <h1 className="text-2xl font-bold text-foreground">¡Bienvenido, Paskal!</h1>
+          <h1 className="text-2xl font-bold text-foreground">
+            ¡Bienvenido, {user?.fullName?.trim() || "Paskal"}!
+          </h1>
           <p className="text-muted-foreground">
             Vista general de producción y estado de máquinas
             {!isViewingToday ? ` · ${selectedDayLabel}` : ""}.
