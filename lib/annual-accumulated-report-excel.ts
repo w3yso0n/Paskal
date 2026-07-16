@@ -101,9 +101,13 @@ function toShiftRows(sourceRows: ProductionShiftReportSourceRow[]) {
     // Turno por operadora: la fila ya viene clasificada (asignado, fallback reloj).
     const shift = row.shift
 
-    const count = Number.isFinite(row.count) ? row.count : 0
+    // `count` = conteo crudo del PLC = PIEZAS (payload.units). Las cajas se derivan:
+    // cajas = piezas / piezas_por_caja. (Antes count se trataba como cajas y se multiplicaba
+    // por upb, inflando "Piezas Totales" ~unitsPerBox veces.)
+    const pieces = Number.isFinite(row.count) ? row.count : 0
     const upb = row.unitsPerBox > 0 ? row.unitsPerBox : 48
-    const totalPieces = count * upb
+    const boxes = upb > 0 ? Math.round((pieces / upb) * 100) / 100 : pieces
+    const totalPieces = Math.round(pieces)
     const p1 = safeName(row.packer_1)
     const p2 = safeName(row.packer_2)
     const hasP1 = p1 !== "—"
@@ -111,12 +115,12 @@ function toShiftRows(sourceRows: ProductionShiftReportSourceRow[]) {
     let p1Boxes = 0
     let p2Boxes = 0
     if (hasP1 && hasP2) {
-      p1Boxes = count / 2
-      p2Boxes = count / 2
+      p1Boxes = boxes / 2
+      p2Boxes = boxes / 2
     } else if (hasP1) {
-      p1Boxes = count
+      p1Boxes = boxes
     } else if (hasP2) {
-      p2Boxes = count
+      p2Boxes = boxes
     }
 
     const data: ShiftRow = {
@@ -126,7 +130,7 @@ function toShiftRows(sourceRows: ProductionShiftReportSourceRow[]) {
       operator1: safeName(row.operator),
       operator2: safeName(row.operator_2),
       item: safeName(row.sku),
-      boxCount: count,
+      boxCount: boxes,
       unitsPerBox: upb,
       totalPieces,
       packer1: p1,
@@ -134,16 +138,16 @@ function toShiftRows(sourceRows: ProductionShiftReportSourceRow[]) {
       packer2: p2,
       packer2Boxes: p2Boxes,
       totalBoxes: p1Boxes + p2Boxes,
-      difference: count - (p1Boxes + p2Boxes),
-      packedPieces1: p1Boxes * upb,
-      packedPieces2: p2Boxes * upb,
+      difference: Math.round((boxes - (p1Boxes + p2Boxes)) * 100) / 100,
+      packedPieces1: Math.round(p1Boxes * upb),
+      packedPieces2: Math.round(p2Boxes * upb),
     }
 
     if (isBendingMachine(row.machine_id)) {
-      data.bending = { boxCount: count, unitsPerBox: upb, totalPieces }
+      data.bending = { boxCount: boxes, unitsPerBox: upb, totalPieces }
     }
     if (isRollerMachine(row.machine_id)) {
-      data.roller = { boxCount: count, unitsPerBox: upb, totalPieces }
+      data.roller = { boxCount: boxes, unitsPerBox: upb, totalPieces }
     }
 
     if (shift === "matutino") matutino.push(data)

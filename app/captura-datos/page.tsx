@@ -45,7 +45,7 @@ import {
   WINDING_MACHINES,
   sourceKeyLabel,
 } from "@/lib/data-capture-config"
-import { isOperatorRole, isPackerRole } from "@/lib/employee-production-role"
+import { isFloorOperatorCandidate, isPackerRole } from "@/lib/employee-production-role"
 import { ClipboardList, Loader2, Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -72,7 +72,7 @@ interface DailyFormState {
 function useProductionStaff(employees: ApiEmployee[]) {
   const operators = useMemo(() => {
     const byRole = employees
-      .filter((e) => e.status === "active" && isOperatorRole(e.primaryRole))
+      .filter((e) => isFloorOperatorCandidate(e))
       .filter((e) => e.employeeCode)
     if (byRole.length > 0) return byRole
     return employees.filter((e) => e.status === "active" && e.employeeCode)

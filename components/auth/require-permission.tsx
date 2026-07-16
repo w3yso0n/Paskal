@@ -53,10 +53,7 @@ export function RequirePermission({
             <ShieldX className="h-6 w-6 text-destructive" />
           </div>
           <CardTitle>Acceso restringido</CardTitle>
-          <CardDescription>
-            No tienes permisos para acceder a esta sección.
-            Contacta al administrador si necesitas acceso.
-          </CardDescription>
+          <CardDescription>Esta sección no está disponible.</CardDescription>
           <Button
             variant="outline"
             className="mt-4"

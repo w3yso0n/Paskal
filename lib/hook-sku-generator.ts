@@ -2,7 +2,9 @@
  * Generación de SKU para productos Hook / Rafía / Embobinado.
  *
  * Formato: [GANCHO][EMBOBINADO][MTS_RAFIA][COLOR][RAFIA_M_KG]
- * Ejemplo: 522pk18+4l-10
+ * Ejemplos:
+ *   522pk18+4l-10          (un color)
+ *   522pk14.5+3.6w4l4-12   (bicolor con metros por color)
  */
 
 export const HOOK_TYPE_CATALOG: Record<string, string> = {
@@ -34,13 +36,23 @@ export const RAFIA_M_KG_CATALOG: Record<number, string> = {
   1500: "-15",
 }
 
+/** Regex laxo del código Hook (permite bicolor y variantes no catalogadas). */
+export const LOOSE_HOOK_SKU_RE =
+  /^(\d{3})([a-z]{2})(\d+(?:\.\d+)?(?:\+\d+(?:\.\d+)?)?)([a-z][a-z0-9./]*)(-\d{2})$/
+
 export type HookSkuInput = {
   hookType: string
   windingType: string
   mainMeters: number
   freeFallMeters?: number
   hasFreeFall: boolean
+  /** Colores en orden de aparición en el código */
   colors: string[]
+  /**
+   * Metros de cada color (clave = nombre del color).
+   * Obligatorio cuando hay 2 o más colores → p.ej. w4l4.
+   */
+  colorMeters?: Record<string, number>
   rafiaMKg: number
 }
 
@@ -121,14 +133,116 @@ export function resolveTwineColorCode(color: string): string | null {
   return TWINE_COLOR_CATALOG[normKey(color)] ?? null
 }
 
-export function buildColorCode(colors: string[]): string {
+/**
+ * Un color → solo la letra (`l`).
+ * Dos o más → letra + metros por color concatenados (`w4l4`), sin `/`.
+ */
+export function buildColorCode(
+  colors: string[],
+  colorMeters?: Record<string, number>,
+): string {
   if (!colors.length) throw new Error("Selecciona al menos un color de rafia.")
-  const codes = colors.map((c) => {
+
+  const resolved = colors.map((c) => {
     const code = resolveTwineColorCode(c)
     if (!code) throw new Error(`Color de rafia no reconocido: ${c}`)
-    return code
+    return { color: c, code }
   })
-  return codes.join("/")
+
+  if (resolved.length === 1) {
+    const meters = colorMeters?.[resolved[0].color]
+    if (meters != null && Number.isFinite(meters) && meters > 0) {
+      return `${resolved[0].code}${formatMeterSegment(meters)}`
+    }
+    return resolved[0].code
+  }
+
+  return resolved
+    .map(({ color, code }) => {
+      const meters = colorMeters?.[color]
+      if (meters == null || !Number.isFinite(meters) || meters <= 0) {
+        throw new Error(
+          `Indica metros de rafia para cada color (falta: ${color}).`,
+        )
+      }
+      return `${code}${formatMeterSegment(meters)}`
+    })
+    .join("")
+}
+
+export type LooseHookSkuParts = {
+  hookTypeCode: string
+  windingTypeCode: string
+  metersCode: string
+  colorCode: string
+  rafiaCode: string
+}
+
+/** Parsea un código Hook con estructura laxa (constructor o entrada libre). */
+export function parseLooseHookSku(raw: string): LooseHookSkuParts | null {
+  const normalized = raw.trim().toLowerCase().replace(/\s+/g, "")
+  const m = LOOSE_HOOK_SKU_RE.exec(normalized)
+  if (!m) return null
+  return {
+    hookTypeCode: m[1],
+    windingTypeCode: m[2],
+    metersCode: m[3],
+    colorCode: m[4],
+    rafiaCode: m[5],
+  }
+}
+
+export type FreeformSkuValidation =
+  | { ok: true; normalized: string; parts: LooseHookSkuParts }
+  | { ok: false; normalized: string; message: string }
+
+/**
+ * Validación mínima para código libre: rechaza basura tipo "asdf" / "123456",
+ * pero admite variantes no contempladas en el constructor (p.ej. bicolor w4l4).
+ */
+export function validateFreeformHookSku(raw: string): FreeformSkuValidation {
+  const normalized = raw.trim().toLowerCase().replace(/\s+/g, "")
+
+  if (!normalized) {
+    return { ok: false, normalized: "", message: "Escribe un código SKU." }
+  }
+
+  if (normalized.length < 8 || normalized.length > 48) {
+    return {
+      ok: false,
+      normalized,
+      message: "El código debe tener entre 8 y 48 caracteres.",
+    }
+  }
+
+  if (!/^[a-z0-9.+\-/]+$/.test(normalized)) {
+    return {
+      ok: false,
+      normalized,
+      message: "Solo se permiten letras, números, +, -, . y /.",
+    }
+  }
+
+  if (/^[a-z]+$/.test(normalized) || /^\d+$/.test(normalized)) {
+    return {
+      ok: false,
+      normalized,
+      message:
+        "El código debe combinar gancho, embobinado, metros, color y rafia.",
+    }
+  }
+
+  const parts = parseLooseHookSku(normalized)
+  if (!parts) {
+    return {
+      ok: false,
+      normalized,
+      message:
+        "Formato esperado: [gancho][embobinado][metros][color][rafia]. Ej: 522pk14.5+3.6w4l4-12",
+    }
+  }
+
+  return { ok: true, normalized, parts }
 }
 
 export function resolveRafiaCode(rafiaMKg: number): string | null {
@@ -174,7 +288,7 @@ export function generateHookSku(
     input.hasFreeFall,
   )
 
-  const colorCode = buildColorCode(input.colors)
+  const colorCode = buildColorCode(input.colors, input.colorMeters)
 
   const rafiaCode = resolveRafiaCode(input.rafiaMKg)
   if (!rafiaCode) {

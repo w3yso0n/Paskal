@@ -21,7 +21,9 @@ type CapabilityDef = {
   label: string
   detail?: string
   /** Acceso si el rol tiene cualquiera de estos módulos. */
-  modules: readonly PlatformModule[]
+  modules?: readonly PlatformModule[]
+  /** Roles explícitos (p. ej. escritura de empleados fuera de MODULE_ACCESS). */
+  rolesAllowed?: readonly UserRole[]
 }
 
 /**
@@ -70,11 +72,17 @@ const CAPABILITIES: readonly CapabilityDef[] = [
 
   // —— Empleados ——
   {
-    id: "emp:crud",
+    id: "emp:view",
     section: "Empleados",
-    label: "Ver, agregar, editar y eliminar empleados",
-    detail: "Directorio completo (CRUD)",
+    label: "Ver directorio de empleados",
     modules: ["empleados_gestionar"],
+  },
+  {
+    id: "emp:write",
+    section: "Empleados",
+    label: "Agregar, editar y dar de baja empleados",
+    detail: "Solo RH, Director y Droven",
+    rolesAllowed: ["rh", "director", "droven"],
   },
   {
     id: "emp:nfc",
@@ -198,6 +206,12 @@ function roleHasAnyModule(role: UserRole, modules: readonly PlatformModule[]): b
   return modules.some((module) => MODULE_ACCESS[module]?.includes(role) ?? false)
 }
 
+function roleHasCapability(role: UserRole, cap: CapabilityDef): boolean {
+  if (cap.rolesAllowed) return cap.rolesAllowed.includes(role)
+  if (cap.modules?.length) return roleHasAnyModule(role, cap.modules)
+  return false
+}
+
 function rowForCapability(cap: CapabilityDef): AccessMatrixRow {
   return {
     id: cap.id,
@@ -205,7 +219,7 @@ function rowForCapability(cap: CapabilityDef): AccessMatrixRow {
     label: cap.label,
     detail: cap.detail,
     roles: Object.fromEntries(
-      USER_ROLES.map((role) => [role, roleHasAnyModule(role, cap.modules)]),
+      USER_ROLES.map((role) => [role, roleHasCapability(role, cap)]),
     ) as Record<UserRole, boolean>,
   }
 }

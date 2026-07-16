@@ -70,7 +70,7 @@ export default function GestionUsuariosPage() {
   const canCreateUsers = hasPermission(user, "users.create")
   const canUpdateUsers = hasPermission(user, "users.update")
   const canDeleteUsers = hasPermission(user, "users.delete")
-  const canViewRoleMatrix = user?.role === "droven" || user?.isPlatformAdmin === true
+  const canViewRoleMatrix = hasPermission(user, "roles.matrix")
 
   const [users, setUsers] = useState<ApiUser[]>([])
   const [loading, setLoading] = useState(true)
@@ -217,7 +217,7 @@ export default function GestionUsuariosPage() {
         { label: "Gestión de usuarios" },
       ]}
     >
-      <RequirePermission permissions={["users.list"]}>
+      <RequirePermission permissions={["users.list"]} showFallback={false}>
       <div className="space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -243,172 +243,173 @@ export default function GestionUsuariosPage() {
           </TabsList>
 
           <TabsContent value="usuarios" className="space-y-6">
-
-        {(canCreateUsers || canUpdateUsers) && (
-          <Dialog open={dialogOpen} onOpenChange={handleDialogChange}>
-            <DialogContent className="sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle>
-                  {editingUser ? "Editar usuario" : "Nuevo usuario"}
-                </DialogTitle>
-              </DialogHeader>
-              <div className="grid gap-4 py-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="user-email">Email</Label>
-                  <Input
-                    id="user-email"
-                    type="email"
-                    placeholder="usuario@ejemplo.com"
-                    value={form.email}
-                    onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="user-password">
-                    Contraseña{editingUser ? " (opcional)" : ""}
-                  </Label>
-                  <Input
-                    id="user-password"
-                    type="password"
-                    placeholder={editingUser ? "Sin cambios" : "Mínimo 8 caracteres"}
-                    value={form.password}
-                    onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="user-fullName">Nombre completo</Label>
-                  <Input
-                    id="user-fullName"
-                    placeholder="Nombre y apellidos"
-                    value={form.fullName}
-                    onChange={(e) => setForm((f) => ({ ...f, fullName: e.target.value }))}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label>Rol</Label>
-                  <Select
-                    value={form.role}
-                    onValueChange={(v) => setForm((f) => ({ ...f, role: v as UserRole }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ROLE_OPTIONS.map((opt) => (
-                        <SelectItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-2">
-                  <Label>Estado</Label>
-                  <Select
-                    value={form.status}
-                    onValueChange={(v) => setForm((f) => ({ ...f, status: v }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {STATUS_OPTIONS.map((opt) => (
-                        <SelectItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <div className="flex justify-end gap-2">
-                <Button variant="outline" onClick={() => handleDialogChange(false)}>
-                  Cancelar
-                </Button>
-                <Button onClick={handleSubmit} disabled={submitting}>
-                  {submitting ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Guardando…
-                    </>
-                  ) : editingUser ? (
-                    "Guardar cambios"
-                  ) : (
-                    "Crear usuario"
-                  )}
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
-        )}
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Usuarios</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
-            ) : users.length === 0 ? (
-              <p className="py-8 text-center text-sm text-muted-foreground">
-                No hay usuarios. Crea uno con &quot;Nuevo usuario&quot;.
-              </p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="pb-3 text-left font-medium text-muted-foreground">Email</th>
-                      <th className="pb-3 text-left font-medium text-muted-foreground">Nombre</th>
-                      <th className="pb-3 text-left font-medium text-muted-foreground">Rol</th>
-                      <th className="pb-3 text-left font-medium text-muted-foreground">Estado</th>
-                      <th className="pb-3 text-right font-medium text-muted-foreground">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {users.map((u) => (
-                      <tr key={u.id} className="border-b border-border/50">
-                        <td className="py-3 font-medium">{u.email}</td>
-                        <td className="py-3 text-muted-foreground">{u.fullName}</td>
-                        <td className="py-3">{ROLE_OPTIONS.find((r) => r.value === u.role)?.label ?? u.role}</td>
-                        <td className="py-3 capitalize">
-                          {STATUS_OPTIONS.find((s) => s.value === u.status)?.label ?? u.status}
-                        </td>
-                        <td className="py-3 text-right">
-                          <div className="flex justify-end gap-1">
-                            {canUpdateUsers && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => openEditDialog(u)}
-                                title="Editar usuario"
-                              >
-                                <Pencil className="h-4 w-4" />
-                              </Button>
-                            )}
-                            {canDeleteUsers && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="text-destructive hover:text-destructive"
-                                onClick={() => handleDelete(u.id, u.email)}
-                                title="Eliminar usuario"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+            {(canCreateUsers || canUpdateUsers) && (
+              <Dialog open={dialogOpen} onOpenChange={handleDialogChange}>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>
+                      {editingUser ? "Editar usuario" : "Nuevo usuario"}
+                    </DialogTitle>
+                  </DialogHeader>
+                  <div className="grid gap-4 py-4">
+                    <div className="grid gap-2">
+                      <Label htmlFor="user-email">Email</Label>
+                      <Input
+                        id="user-email"
+                        type="email"
+                        placeholder="usuario@ejemplo.com"
+                        value={form.email}
+                        onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="user-password">
+                        Contraseña{editingUser ? " (opcional)" : ""}
+                      </Label>
+                      <Input
+                        id="user-password"
+                        type="password"
+                        placeholder={editingUser ? "Sin cambios" : "Mínimo 8 caracteres"}
+                        value={form.password}
+                        onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="user-fullName">Nombre completo</Label>
+                      <Input
+                        id="user-fullName"
+                        placeholder="Nombre y apellidos"
+                        value={form.fullName}
+                        onChange={(e) => setForm((f) => ({ ...f, fullName: e.target.value }))}
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Rol</Label>
+                      <Select
+                        value={form.role}
+                        onValueChange={(v) => setForm((f) => ({ ...f, role: v as UserRole }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ROLE_OPTIONS.map((opt) => (
+                            <SelectItem key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid gap-2">
+                      <Label>Estado</Label>
+                      <Select
+                        value={form.status}
+                        onValueChange={(v) => setForm((f) => ({ ...f, status: v }))}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {STATUS_OPTIONS.map((opt) => (
+                            <SelectItem key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={() => handleDialogChange(false)}>
+                      Cancelar
+                    </Button>
+                    <Button onClick={handleSubmit} disabled={submitting}>
+                      {submitting ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Guardando…
+                        </>
+                      ) : editingUser ? (
+                        "Guardar cambios"
+                      ) : (
+                        "Crear usuario"
+                      )}
+                    </Button>
+                  </div>
+                </DialogContent>
+              </Dialog>
             )}
-          </CardContent>
-        </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Usuarios</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {loading ? (
+                  <div className="flex items-center justify-center py-12">
+                    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                  </div>
+                ) : users.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    No hay usuarios. Crea uno con &quot;Nuevo usuario&quot;.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="pb-3 text-left font-medium text-muted-foreground">Email</th>
+                          <th className="pb-3 text-left font-medium text-muted-foreground">Nombre</th>
+                          <th className="pb-3 text-left font-medium text-muted-foreground">Rol</th>
+                          <th className="pb-3 text-left font-medium text-muted-foreground">Estado</th>
+                          <th className="pb-3 text-right font-medium text-muted-foreground">Acciones</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {users.map((u) => (
+                          <tr key={u.id} className="border-b border-border/50">
+                            <td className="py-3 font-medium">{u.email}</td>
+                            <td className="py-3 text-muted-foreground">{u.fullName}</td>
+                            <td className="py-3">
+                              {ROLE_OPTIONS.find((r) => r.value === u.role)?.label ?? u.role}
+                            </td>
+                            <td className="py-3 capitalize">
+                              {STATUS_OPTIONS.find((s) => s.value === u.status)?.label ?? u.status}
+                            </td>
+                            <td className="py-3 text-right">
+                              <div className="flex justify-end gap-1">
+                                {canUpdateUsers && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => openEditDialog(u)}
+                                    title="Editar usuario"
+                                  >
+                                    <Pencil className="h-4 w-4" />
+                                  </Button>
+                                )}
+                                {canDeleteUsers && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="text-destructive hover:text-destructive"
+                                    onClick={() => handleDelete(u.id, u.email)}
+                                    title="Eliminar usuario"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {canViewRoleMatrix && (

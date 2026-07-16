@@ -26,9 +26,10 @@ import { filterFloorMachines } from "@/lib/machine-floor"
 import {
   buildOperatorShiftByCode,
   countsAsOperatorProduction,
+  eventCodesForOperatorGoalCredit,
   type OperatorShiftByCode,
 } from "@/lib/production-goal-events"
-import { isFloorOperatorCandidate } from "@/lib/employee-production-role"
+import { isOperatorRole } from "@/lib/employee-production-role"
 import { bonusConfigToGoalDefinitions } from "@/lib/bonus-goals-bridge"
 import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
 import {
@@ -271,11 +272,17 @@ function resolveOperatorMachineFromCheckin(
   unitsPerBox: number | null
 } {
   const codeLower = operatorCode.trim().toLowerCase()
-  const ch = checkins.find(
-    (c) =>
-      c.operatorCode?.trim().toLowerCase() === codeLower ||
-      c.operator2Code?.trim().toLowerCase() === codeLower,
-  )
+  const ch = checkins.find((c) => {
+    const slots = [
+      c.operatorCode,
+      c.operator2Code,
+      c.packager1Code,
+      c.packager2Code,
+      c.packager3Code,
+      c.packager4Code,
+    ]
+    return slots.some((s) => s?.trim().toLowerCase() === codeLower)
+  })
   if (!ch?.machineId) {
     return { machine: "Sin asignar", machineId: null, machineCode: "", machineName: "", unitsPerBox: null }
   }
@@ -566,14 +573,28 @@ function buildOperatorRanking(
     }
   >()
 
+  const employeeByCodeLower = new Map<string, ApiEmployee>()
+  for (const emp of employees) {
+    const code = emp.employeeCode?.trim()
+    if (code) employeeByCodeLower.set(code.toLowerCase(), emp)
+  }
+
   for (const e of shiftEvents) {
     if (!isProductionIncrementEvent(e)) continue
     const count = getEventCount(e)
     if (count <= 0) continue
 
     const payload = e.payload ?? {}
-    const { code: opCode } = getOperatorCodeForProductionEvent(e, machineIdx)
-    if (!opCode.trim() || opCode === "SIN_OPERADOR") continue
+    const creditCodes = eventCodesForOperatorGoalCredit(e)
+    const codesToCredit = new Set<string>()
+    for (const code of creditCodes) {
+      const emp = employeeByCodeLower.get(code.trim().toLowerCase())
+      // La ranura temporal no cambia la meta: solo primaryRole=operator entra aquí.
+      if (emp?.status === "active" && isOperatorRole(emp.primaryRole)) {
+        codesToCredit.add(code)
+      }
+    }
+    if (codesToCredit.size === 0) continue
 
     const eventMid = getEventMachineId(e)
     const machineRaw = String(
@@ -603,36 +624,33 @@ function buildOperatorRanking(
     const machineName = machineEntity?.name?.trim() || ""
     const unitsPerBox = machineEntity?.unitsPerBox ?? null
 
-    const current = productionByCode.get(opCode) ?? {
-      units: 0,
-      machine,
-      machineId: catalogMachineId,
-      machineCode,
-      machineName,
-      unitsPerBox,
+    for (const opCode of codesToCredit) {
+      const current = productionByCode.get(opCode) ?? {
+        units: 0,
+        machine,
+        machineId: catalogMachineId,
+        machineCode,
+        machineName,
+        unitsPerBox,
+      }
+      const nextMachineId = catalogMachineId ?? current.machineId
+      const nextMachine = machinesById.get(nextMachineId ?? "")
+      productionByCode.set(opCode, {
+        units: current.units + count,
+        machine: pickMoreReadableMachineLabel(current.machine, machine),
+        machineId: nextMachineId,
+        machineCode: nextMachine?.code?.trim() || current.machineCode || machineCode,
+        machineName: nextMachine?.name?.trim() || current.machineName || machineName,
+        unitsPerBox: nextMachine?.unitsPerBox ?? current.unitsPerBox ?? unitsPerBox,
+      })
     }
-    const nextMachineId = catalogMachineId ?? current.machineId
-    const nextMachine = machinesById.get(nextMachineId ?? "")
-    productionByCode.set(opCode, {
-      units: current.units + count,
-      machine: pickMoreReadableMachineLabel(current.machine, machine),
-      machineId: nextMachineId,
-      machineCode: nextMachine?.code?.trim() || current.machineCode || machineCode,
-      machineName: nextMachine?.name?.trim() || current.machineName || machineName,
-      unitsPerBox: nextMachine?.unitsPerBox ?? current.unitsPerBox ?? unitsPerBox,
-    })
   }
 
   const operatorCodes = new Set<string>()
-  const employeeByCodeLower = new Map<string, ApiEmployee>()
-  for (const emp of employees) {
-    const code = emp.employeeCode?.trim()
-    if (code) employeeByCodeLower.set(code.toLowerCase(), emp)
-  }
 
   const shiftNum = shiftFilter === "matutino" ? 1 : 2
   for (const emp of employees) {
-    if (!isFloorOperatorCandidate(emp)) continue
+    if (emp.status !== "active" || !isOperatorRole(emp.primaryRole)) continue
     if (emp.shift !== shiftNum) continue
     const code = emp.employeeCode?.trim()
     if (code) operatorCodes.add(code)
@@ -640,7 +658,7 @@ function buildOperatorRanking(
   for (const code of productionByCode.keys()) {
     const emp = employeeByCodeLower.get(code.trim().toLowerCase())
     // Sin empleado en catálogo (p. ej. NFC de pruebas borrados) o no es operadora activa → no listar.
-    if (!emp || !isFloorOperatorCandidate(emp)) continue
+    if (!emp || emp.status !== "active" || !isOperatorRole(emp.primaryRole)) continue
     operatorCodes.add(code)
   }
 

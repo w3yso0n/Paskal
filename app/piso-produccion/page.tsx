@@ -96,7 +96,7 @@ function validateMachinePersonnelRoles(
       const emp = byName.get(name)
       if (!emp) return `Máquina "${m.name}": no se encontró al empleado "${name}".`
       if (!isFloorOperatorCandidate(emp)) {
-        return `Máquina "${m.name}": "${name}" no puede ser operador (solo empleados activos con rol primario Operador).`
+        return `Máquina "${m.name}": "${name}" no puede ser operador (debe ser operador de base o empacador con rol temporal Operador).`
       }
       return null
     }
