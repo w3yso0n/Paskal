@@ -67,7 +67,7 @@ export function getApiErrorMessage(error: unknown): string {
         "Servicio no disponible. Si creas usuarios, el backend necesita Firebase Admin configurado."
       )
     }
-    if (code === 403) return "No tienes permiso para esta acción."
+    if (code === 403) return "Acción no disponible."
     if (code === 401) return "Sesión no válida o expirada."
     if (code === 400) return "Datos inválidos o email ya registrado."
     if (code === 409) return "Conflicto: el recurso ya existe."
@@ -950,6 +950,7 @@ export interface ApiManualDataCapture {
   recordMonth: number | null
   shift: string | null
   sku: string | null
+  machineCode: string | null
   operatorCode: string | null
   packagerCode: string | null
   productionQty: number | null
@@ -967,6 +968,7 @@ export interface CreateManualDataCapturePayload {
   recordMonth?: number | null
   shift?: string | null
   sku?: string | null
+  machineCode?: string | null
   operatorCode?: string | null
   packagerCode?: string | null
   productionQty?: number | null

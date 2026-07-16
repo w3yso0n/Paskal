@@ -393,7 +393,7 @@ function EmployeeFormFields({
 export default function EmployeesPage() {
   const { user, getAccessToken } = useAuth()
   const allowedTabs = useMemo(() => visibleEmpleadosTabs(user), [user])
-  const canManageEmployees = hasPermission(user, "employees.manage")
+  const canWriteEmployees = hasPermission(user, "employees.write")
   const [employeeTab, setEmployeeTab] = useState("employees")
 
   useEffect(() => {
@@ -645,16 +645,14 @@ export default function EmployeesPage() {
   }, [employees, searchQuery])
 
   const openCreateEmployee = () => {
-    if (!canManageEmployees) {
-      toast.error("No tienes permiso para agregar empleados.")
-      return
-    }
+    if (!canWriteEmployees) return
     setEditingEmployee(null)
     setEmployeeForm(EMPTY_EMPLOYEE_FORM)
     setIsEmployeeDialogOpen(true)
   }
 
   const openEditEmployee = (employee: ApiEmployee) => {
+    if (!canWriteEmployees) return
     setEditingEmployee(employee)
     setEmployeeForm(employeeToForm(employee))
     setIsEmployeeDialogOpen(true)
@@ -664,10 +662,7 @@ export default function EmployeesPage() {
     const fullName = employeeForm.fullName.trim()
     const nfcCardUid = employeeForm.nfcCardUid.trim()
     if (!user) return
-    if (!canManageEmployees) {
-      toast.error("No tienes permiso para crear o editar empleados.")
-      return
-    }
+    if (!canWriteEmployees) return
     if (!fullName || !nfcCardUid || (employeeForm.shift !== "1" && employeeForm.shift !== "2")) {
       toast.error("Nombre, código NFC y turno son obligatorios.")
       return
@@ -713,10 +708,7 @@ export default function EmployeesPage() {
   }
 
   const handleDeleteEmployee = async (employee: ApiEmployee) => {
-    if (!canManageEmployees) {
-      toast.error("No tienes permiso para dar de baja empleados.")
-      return
-    }
+    if (!canWriteEmployees) return
     const ok = window.confirm(
       `¿Dar de baja a ${employee.fullName}?\n\n` +
         `Se conserva su historial de producción (sus reportes seguirán mostrando su nombre), ` +
@@ -954,6 +946,7 @@ export default function EmployeesPage() {
         "empleados_paros_vacaciones_rol_secundario",
         "metricas_asistencia_rotacion_bono",
       ]}
+      showFallback={false}
     >
     <DashboardLayout
       breadcrumbs={[
@@ -974,14 +967,12 @@ export default function EmployeesPage() {
               </p>
             </div>
           </div>
-          <Button
-            className="gap-2 shrink-0"
-            onClick={openCreateEmployee}
-            disabled={!canManageEmployees}
-          >
-            <Plus className="h-4 w-4" />
-            Agregar empleado
-          </Button>
+          {canWriteEmployees && (
+            <Button className="gap-2 shrink-0" onClick={openCreateEmployee}>
+              <Plus className="h-4 w-4" />
+              Agregar empleado
+            </Button>
+          )}
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -1170,7 +1161,7 @@ export default function EmployeesPage() {
                             </Badge>
                           ) : null}
                         </div>
-                        {canManageEmployees ? (
+                        {canWriteEmployees ? (
                         <div className="flex border-t border-border">
                           <Button
                             variant="ghost"
@@ -1680,50 +1671,54 @@ export default function EmployeesPage() {
         </Tabs>
       </div>
 
-      {/* Crear / editar empleado */}
-      <Dialog
-        open={isEmployeeDialogOpen}
-        onOpenChange={(open) => {
-          setIsEmployeeDialogOpen(open)
-          if (!open) {
-            setEditingEmployee(null)
-            setEmployeeForm(EMPTY_EMPLOYEE_FORM)
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>
-              {editingEmployee ? "Editar empleado" : "Agregar empleado"}
-            </DialogTitle>
-            <DialogDescription>
-              {editingEmployee
-                ? "Actualiza los datos del empleado. Nombre, NFC y turno son obligatorios."
-                : "Registra un nuevo empleado. Nombre, código NFC y turno son obligatorios."}
-            </DialogDescription>
-          </DialogHeader>
-          <EmployeeFormFields
-            form={employeeForm}
-            onChange={setEmployeeForm}
-            idPrefix={editingEmployee ? "edit" : "new"}
-          />
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" onClick={() => setIsEmployeeDialogOpen(false)}>
-              Cancelar
-            </Button>
-            <Button
-              onClick={handleSaveEmployee}
-              disabled={savingEmployee || !isEmployeeFormComplete}
-            >
-              {savingEmployee
-                ? "Guardando…"
-                : editingEmployee
-                  ? "Guardar cambios"
-                  : "Agregar empleado"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {canWriteEmployees && (
+        <>
+          {/* Crear / editar empleado */}
+          <Dialog
+            open={isEmployeeDialogOpen}
+            onOpenChange={(open) => {
+              setIsEmployeeDialogOpen(open)
+              if (!open) {
+                setEditingEmployee(null)
+                setEmployeeForm(EMPTY_EMPLOYEE_FORM)
+              }
+            }}
+          >
+            <DialogContent className="sm:max-w-lg">
+              <DialogHeader>
+                <DialogTitle>
+                  {editingEmployee ? "Editar empleado" : "Agregar empleado"}
+                </DialogTitle>
+                <DialogDescription>
+                  {editingEmployee
+                    ? "Actualiza los datos del empleado. Nombre, NFC y turno son obligatorios."
+                    : "Registra un nuevo empleado. Nombre, código NFC y turno son obligatorios."}
+                </DialogDescription>
+              </DialogHeader>
+              <EmployeeFormFields
+                form={employeeForm}
+                onChange={setEmployeeForm}
+                idPrefix={editingEmployee ? "edit" : "new"}
+              />
+              <DialogFooter className="gap-2 sm:gap-0">
+                <Button variant="outline" onClick={() => setIsEmployeeDialogOpen(false)}>
+                  Cancelar
+                </Button>
+                <Button
+                  onClick={handleSaveEmployee}
+                  disabled={savingEmployee || !isEmployeeFormComplete}
+                >
+                  {savingEmployee
+                    ? "Guardando…"
+                    : editingEmployee
+                      ? "Guardar cambios"
+                      : "Agregar empleado"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </>
+      )}
 
       {/* Registrar ausencia */}
       <Dialog

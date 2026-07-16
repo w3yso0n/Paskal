@@ -110,7 +110,7 @@ export const MODULE_ACCESS: Record<PlatformModule, readonly UserRole[]> = {
     "droven",
   ],
   gestion_usuarios: ["droven"],
-  /** Alta / consulta / edición / baja del directorio de empleados. */
+  /** Consulta del directorio de empleados. La escritura se controla con employees.write. */
   empleados_gestionar: [
     "supervisor",
     "jefe_produccion",

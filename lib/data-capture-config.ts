@@ -18,6 +18,12 @@ export const ROLLER_MACHINES = [
 
 export const SCRAP_SOURCE_KEY = "scrap-total"
 
+export const ALL_MACHINES = [
+  ...WINDING_MACHINES,
+  ...BENDING_MACHINES,
+  ...ROLLER_MACHINES,
+] as const
+
 export const SCRAP_MATERIALS = [
   { key: "scrap-metal", label: "Metal" },
   { key: "scrap-twine", label: "Twine / Rafia" },

@@ -32,7 +32,8 @@ export function CreateSkuDialog({
         <DialogHeader>
           <DialogTitle>Nuevo SKU Hook / Rafía</DialogTitle>
           <DialogDescription>
-            Formato: [gancho][embobinado][metros][color][rafia]. Ej: 522pk18+4l-10
+            Formato: [gancho][embobinado][metros][color][rafia]. Ej: 522pk18+4l-10 · bicolor:
+            522pk14.5+3.6w4l4-12
           </DialogDescription>
         </DialogHeader>
 

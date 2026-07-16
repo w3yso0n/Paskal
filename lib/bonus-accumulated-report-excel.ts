@@ -29,6 +29,7 @@ import {
   shouldShowNaForRoleContext,
   type BonusEmployeePrimaryRole,
   type BonusEmployeeRoleEvent,
+  type BonusSectionRole,
 } from "@/lib/bonus-role-context"
 import type { EmployeeSecondaryRole } from "@/lib/employee-production-role"
 
@@ -83,9 +84,7 @@ const BONUS_HEADER_FILL = {
   NA_FILL: "FFFFFFFF",
 } as const
 
-type SectionRole = "operator" | "packer" | "bending" | "roller"
-
-type DayRoleTotals = Record<SectionRole, number>
+type DayRoleTotals = Record<BonusSectionRole, number>
 
 type WeekBlock = {
   startCol: number
@@ -333,15 +332,15 @@ function applyNaStyle(cell: import("exceljs").Cell) {
 }
 
 function emptyDayRoleTotals(): DayRoleTotals {
-  return { operator: 0, packer: 0, bending: 0, roller: 0 }
+  return { operator: 0, packer: 0, bending: 0, roller: 0, maintenance: 0 }
 }
 
 function totalRoleProduction(roles: DayRoleTotals): number {
-  return roles.operator + roles.packer + roles.bending + roles.roller
+  return roles.operator + roles.packer + roles.bending + roles.roller + roles.maintenance
 }
 
-function workedInOtherRoles(roles: DayRoleTotals, sectionRole: SectionRole): boolean {
-  return (Object.keys(roles) as SectionRole[]).some(
+function workedInOtherRoles(roles: DayRoleTotals, sectionRole: BonusSectionRole): boolean {
+  return (Object.keys(roles) as BonusSectionRole[]).some(
     (role) => role !== sectionRole && roles[role] > 0,
   )
 }
@@ -411,7 +410,7 @@ function mergeManualCapturesIntoRoleProduction(
   for (const cap of manualCaptures ?? []) {
     if (!manualCaptureMatchesShift(cap.shift, shiftNumber)) continue
     if (!dayIsos.includes(cap.recordDate)) continue
-    const role: SectionRole = cap.category === "bending" ? "bending" : "roller"
+    const role: BonusSectionRole = cap.category === "bending" ? "bending" : "roller"
     const name = normalizeOperatorName(resolvePersonFromCode(cap.operatorCode))
     if (!name) continue
     const qty = Number(cap.productionQty) || 0
@@ -539,7 +538,7 @@ function aggregateRoleProductionByDay(
     names: string[],
     dayIso: string,
     count: number,
-    role: SectionRole,
+    role: BonusSectionRole,
   ) => {
     const valid = names
       .map((n) => normalizeOperatorName(n))
@@ -569,7 +568,7 @@ function aggregateRoleProductionByDay(
     const isBending = machineIncludesAny(machine, ["bend", "bending", "doblado", "dobladora"])
     const isRoller = machineIncludesAny(machine, ["roll", "roller", "rodillo"])
 
-    const operatorRole: SectionRole = isBending ? "bending" : isRoller ? "roller" : "operator"
+    const operatorRole: BonusSectionRole = isBending ? "bending" : isRoller ? "roller" : "operator"
     addToRole([row.operator, row.operator_2], dayBound.dayIso, count, operatorRole)
     addToRole([row.packer_1, row.packer_2], dayBound.dayIso, count, "packer")
   }
@@ -749,10 +748,10 @@ function writeSectionDataRows(
   dayRecordsByPerson: Map<string, Map<string, EmployeeDayRecordType>>,
   dayIsos: string[],
   holidayIsos: Set<string>,
-  sectionRole: SectionRole,
+  sectionRole: BonusSectionRole,
   shiftNumber: 1 | 2,
   productionConfig: BonusProductionConfigData,
-  primaryRoleByPerson: Map<string, SectionRole>,
+  primaryRoleByPerson: Map<string, BonusSectionRole>,
   defaultSecondaryByPerson: Map<string, EmployeeSecondaryRole>,
   tempSecondaryByPersonDay: Map<string, Map<string, EmployeeSecondaryRole>>,
 ): number {
@@ -859,16 +858,16 @@ function writeSectionDataRows(
     sheet.getCell(row, 25).value = { formula: `SUM(Q${row}:U${row})` }
     sheet.getCell(row, 26).value = { formula: `SUM(V${row}:Y${row})` }
     sheet.getCell(row, 27).value = {
-      formula: personWorkingDays > 0 ? `Z${row}/${personWorkingDays}` : 0,
+      formula: personWorkingDays > 0 ? `Z${row}/${personWorkingDays}` : "0",
     }
-    sheet.getCell(row, 28).value = { formula: `Z${row}/(AH${row}/${meta110Factor})/100` }
+    sheet.getCell(row, 28).value = { formula: `Z${row}/(AH${row}/${meta110Factor})` }
     sheet.getCell(row, 29).value = personWorkingDays
     sheet.getCell(row, 30).value = personMeta.dailyMeta100
     sheet.getCell(row, 31).value = personMeta.dailyMeta110
     sheet.getCell(row, 32).value = monthlyMeta100
     sheet.getCell(row, 33).value = personMeta.combinedMeta100
     sheet.getCell(row, 34).value = personMeta.combinedMeta110
-    sheet.getCell(row, 35).value = { formula: `Z${row}--AG${row}` }
+    sheet.getCell(row, 35).value = { formula: `Z${row}-AG${row}` }
     sheet.getCell(row, 36).value = { formula: `Z${row}-AH${row}` }
     sheet.getCell(row, 37).value = rules.baseBonus100
     sheet.getCell(row, 38).value = { formula: `AI${row}*${rules.machineOver100Rate}` }

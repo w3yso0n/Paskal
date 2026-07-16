@@ -85,6 +85,8 @@ export function resolveEmployeeProductionRole(
 /**
  * ¿El empleado se puede asignar como **operador**? Solo cuenta su rol primordial:
  * un operador es quien tiene `primaryRole = operator`.
+ * Su meta diaria también sigue al rol primordial: si un día trabaja como empacadora
+ * (secondaryRole), esa producción cuenta hacia la misma meta de operadora.
  */
 export function isOperatorRole(
   primaryRole: EmployeeProductionRole | null | undefined,

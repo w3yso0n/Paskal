@@ -25,6 +25,8 @@ export type Permission =
   | "production.edit-threshold"
   | "production.esp-idle-config"
   | "employees.manage"
+  | "employees.write"
+  | "roles.matrix"
   | "data-capture.manage"
   | "bonus-config.manage"
   | "business-rules.manage"
@@ -95,6 +97,18 @@ export function hasPermission(
   // Borrar todas las alertas: solo Droven / admin de plataforma.
   if (permission === "alerts.clear") {
     return user.isPlatformAdmin === true || user.role === "droven"
+  }
+  // Matriz de permisos por rol: solo Droven / admin de plataforma.
+  if (permission === "roles.matrix") {
+    return user.isPlatformAdmin === true || user.role === "droven"
+  }
+  if (permission === "employees.write") {
+    return (
+      user.isPlatformAdmin === true ||
+      user.role === "droven" ||
+      user.role === "director" ||
+      user.role === "rh"
+    )
   }
   if (user.isPlatformAdmin || user.role === "droven") return true
   return ROLE_PERMISSIONS[user.role]?.includes(permission) ?? false

@@ -53,9 +53,9 @@ export function HookSkuBuilder({
   const [mainMeters, setMainMeters] = useState(String(DEFAULT_INPUT.mainMeters))
   const [freeFallMeters, setFreeFallMeters] = useState(String(DEFAULT_INPUT.freeFallMeters ?? 4))
   const [hasFreeFall, setHasFreeFall] = useState(DEFAULT_INPUT.hasFreeFall)
-  const [selectedColors, setSelectedColors] = useState<Set<string>>(
-    () => new Set(DEFAULT_INPUT.colors),
-  )
+  /** Orden de selección = orden en el código (p.ej. w luego l → w4l4). */
+  const [selectedColors, setSelectedColors] = useState<string[]>(() => [...DEFAULT_INPUT.colors])
+  const [colorMeters, setColorMeters] = useState<Record<string, string>>({})
   const [rafiaMKg, setRafiaMKg] = useState(String(DEFAULT_INPUT.rafiaMKg))
   const [genError, setGenError] = useState<string | null>(null)
 
@@ -66,9 +66,18 @@ export function HookSkuBuilder({
     if (initial.mainMeters != null) setMainMeters(String(initial.mainMeters))
     if (initial.freeFallMeters != null) setFreeFallMeters(String(initial.freeFallMeters))
     if (initial.hasFreeFall != null) setHasFreeFall(initial.hasFreeFall)
-    if (initial.colors) setSelectedColors(new Set(initial.colors))
+    if (initial.colors) setSelectedColors([...initial.colors])
+    if (initial.colorMeters) {
+      const next: Record<string, string> = {}
+      for (const [k, v] of Object.entries(initial.colorMeters)) {
+        next[k] = String(v)
+      }
+      setColorMeters(next)
+    }
     if (initial.rafiaMKg != null) setRafiaMKg(String(initial.rafiaMKg))
   }, [initial])
+
+  const multiColor = selectedColors.length >= 2
 
   const input = useMemo((): HookSkuInput | null => {
     const main = Number(mainMeters)
@@ -77,14 +86,26 @@ export function HookSkuBuilder({
     if (!Number.isFinite(main) || main <= 0) return null
     if (hasFreeFall && (!Number.isFinite(ff) || ff <= 0)) return null
     if (!Number.isFinite(rafia)) return null
-    if (selectedColors.size === 0) return null
+    if (selectedColors.length === 0) return null
+
+    let metersMap: Record<string, number> | undefined
+    if (multiColor) {
+      metersMap = {}
+      for (const color of selectedColors) {
+        const n = Number(colorMeters[color])
+        if (!Number.isFinite(n) || n <= 0) return null
+        metersMap[color] = n
+      }
+    }
+
     return {
       hookType,
       windingType,
       mainMeters: main,
       freeFallMeters: hasFreeFall ? ff : undefined,
       hasFreeFall,
-      colors: [...selectedColors],
+      colors: selectedColors,
+      colorMeters: metersMap,
       rafiaMKg: rafia,
     }
   }, [
@@ -94,12 +115,18 @@ export function HookSkuBuilder({
     freeFallMeters,
     hasFreeFall,
     selectedColors,
+    colorMeters,
+    multiColor,
     rafiaMKg,
   ])
 
   const result = useMemo((): HookSkuResult | null => {
     if (!input) {
-      setGenError(null)
+      setGenError(
+        multiColor && selectedColors.some((c) => !colorMeters[c] || Number(colorMeters[c]) <= 0)
+          ? "Indica metros de rafia para cada color seleccionado."
+          : null,
+      )
       return null
     }
     try {
@@ -109,7 +136,7 @@ export function HookSkuBuilder({
       setGenError(e instanceof Error ? e.message : "Error al generar SKU")
       return null
     }
-  }, [input, quantityRules])
+  }, [input, quantityRules, multiColor, selectedColors, colorMeters])
 
   useEffect(() => {
     onResultChange?.(result, input)
@@ -117,11 +144,23 @@ export function HookSkuBuilder({
 
   const toggleColor = (color: string, checked: boolean) => {
     setSelectedColors((prev) => {
-      const next = new Set(prev)
-      if (checked) next.add(color)
-      else next.delete(color)
-      return next
+      if (checked) {
+        if (prev.includes(color)) return prev
+        return [...prev, color]
+      }
+      return prev.filter((c) => c !== color)
     })
+    if (!checked) {
+      setColorMeters((prev) => {
+        const next = { ...prev }
+        delete next[color]
+        return next
+      })
+    }
+  }
+
+  const setColorMeter = (color: string, value: string) => {
+    setColorMeters((prev) => ({ ...prev, [color]: value }))
   }
 
   return (
@@ -195,19 +234,52 @@ export function HookSkuBuilder({
 
         <div className="space-y-2 sm:col-span-2">
           <Label>Color(es) de rafia</Label>
-          <div className="flex flex-wrap gap-3 rounded-lg border border-border p-3">
-            {TWINE_COLOR_OPTIONS.map((c) => (
-              <label key={c.value} className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={selectedColors.has(c.value)}
-                  onCheckedChange={(v) => toggleColor(c.value, v === true)}
-                />
-                <span>
-                  {c.label}{" "}
-                  <span className="font-mono text-muted-foreground">({c.code})</span>
-                </span>
-              </label>
-            ))}
+          <div className="space-y-3 rounded-lg border border-border p-3">
+            <div className="flex flex-wrap gap-3">
+              {TWINE_COLOR_OPTIONS.map((c) => (
+                <label key={c.value} className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={selectedColors.includes(c.value)}
+                    onCheckedChange={(v) => toggleColor(c.value, v === true)}
+                  />
+                  <span>
+                    {c.label}{" "}
+                    <span className="font-mono text-muted-foreground">({c.code})</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            {multiColor && (
+              <div className="space-y-2 border-t border-border pt-3">
+                <p className="text-xs text-muted-foreground">
+                  Bicolor / multicolor: indica metros de cada color (orden de selección). Ej: white 4 +
+                  blue 4 → <span className="font-mono">w4l4</span>
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {selectedColors.map((color) => {
+                    const opt = TWINE_COLOR_OPTIONS.find((c) => c.value === color)
+                    return (
+                      <div key={color} className="flex items-center gap-2">
+                        <Label className="w-28 shrink-0 font-normal">
+                          {opt?.label ?? color}{" "}
+                          <span className="font-mono text-muted-foreground">({opt?.code})</span>
+                        </Label>
+                        <Input
+                          type="number"
+                          min={0.1}
+                          step={0.1}
+                          value={colorMeters[color] ?? ""}
+                          onChange={(e) => setColorMeter(color, e.target.value)}
+                          placeholder="Metros"
+                          className="max-w-32"
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

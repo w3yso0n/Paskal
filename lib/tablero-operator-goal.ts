@@ -8,6 +8,7 @@ import { goalComplianceDateRange, isGoalActive } from "@/lib/goal-compliance-ran
 import { getPartsInTimeZone, makeZonedDate } from "@/lib/shift-timezone"
 import {
   countsAsOperatorProduction,
+  eventCreditsPersonForOperatorGoal,
   normalizeSku,
   productionShiftForEvent,
   productionUnitsFromEvent,
@@ -336,7 +337,7 @@ export function aggregateOperatorDailyProduction(
   useBoxes: boolean,
   skuById: Map<string, string>,
   upbById: Map<string, number>,
-  resolveOperatorCode: (e: ApiProductionEvent) => string,
+  _resolveOperatorCode: (e: ApiProductionEvent) => string,
 ): number {
   const codeLower = operatorCode.trim().toLowerCase()
   if (!codeLower || codeLower === "sin_operador") return 0
@@ -344,8 +345,8 @@ export function aggregateOperatorDailyProduction(
   let total = 0
   for (const e of events) {
     if (!countsAsOperatorProduction(e)) continue
-    const op = resolveOperatorCode(e).trim().toLowerCase()
-    if (op !== codeLower) continue
+    // Incluye producción como empacadora: la meta sigue siendo la de operadora.
+    if (!eventCreditsPersonForOperatorGoal(e, codeLower)) continue
     total += useBoxes
       ? getEventBoxCount(e)
       : productionUnitsFromEvent(e, upbById)

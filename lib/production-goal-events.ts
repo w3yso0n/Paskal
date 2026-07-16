@@ -179,6 +179,54 @@ export function eventPrimaryOperatorCode(event: ApiProductionEvent): string | nu
   return null
 }
 
+function codesFromPayloadArray(payload: Record<string, unknown>, key: string): string[] {
+  const raw = payload[key]
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((v) => String(v ?? "").trim())
+    .filter((v) => Boolean(v) && v.toLowerCase() !== "null" && v !== "undefined")
+}
+
+/**
+ * Códigos que reciben crédito de producción para meta de operadora:
+ * operadores del evento + empacadores (una operadora de base puede estar en empaque
+ * por rol secundario y su producción debe contar igual).
+ */
+export function eventCodesForOperatorGoalCredit(event: ApiProductionEvent): string[] {
+  const payload = event.payload ?? {}
+  const out: string[] = []
+  const seen = new Set<string>()
+  const push = (code: string | null | undefined) => {
+    const c = code?.trim()
+    if (!c) return
+    const key = c.toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(c)
+  }
+
+  for (const c of codesFromPayloadArray(payload, "operators")) push(c)
+  push(payloadString(payload, "OPERATOR_1", "operator_1", "OPERATOR", "operator"))
+  push(payloadString(payload, "OPERATOR_2", "operator_2"))
+
+  for (const c of codesFromPayloadArray(payload, "packagers")) push(c)
+  push(payloadString(payload, "PACKAGER_1", "packager_1", "PACKAGER1", "packager1"))
+  push(payloadString(payload, "PACKAGER_2", "packager_2", "PACKAGER2", "packager2"))
+  push(payloadString(payload, "PACKAGER_3", "packager_3", "PACKAGER3", "packager3"))
+  push(payloadString(payload, "PACKAGER_4", "packager_4", "PACKAGER4", "packager4"))
+
+  return out
+}
+
+export function eventCreditsPersonForOperatorGoal(
+  event: ApiProductionEvent,
+  personCode: string,
+): boolean {
+  const codeLower = personCode.trim().toLowerCase()
+  if (!codeLower) return false
+  return eventCodesForOperatorGoalCredit(event).some((c) => c.toLowerCase() === codeLower)
+}
+
 /**
  * Turno al que pertenece la producción de un evento (regla de negocio 2026-07-15):
  * manda el turno ASIGNADO de la operadora con check-in al momento de producir;

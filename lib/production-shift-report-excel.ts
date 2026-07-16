@@ -389,13 +389,20 @@ function aggregateMachineRows(
     if (packer1 === "—") packer1 = events.find((e) => e.packer_1 !== "—")?.packer_1 ?? "—"
     if (packer2 === "—") packer2 = events.find((e) => e.packer_2 !== "—")?.packer_2 ?? "—"
 
+    let totalPieces = 0
     let boxQty = 0
     let packer1Boxes = 0
     let packer2Boxes = 0
     let piecesPerBox = 48
 
     for (const e of events) {
-      const boxes = Number.isFinite(e.count) ? e.count : 0
+      // `count` es el conteo crudo del PLC = PIEZAS (payload.units). Las cajas se derivan:
+      // cajas = piezas / piezas_por_caja. (Antes se trataba count como cajas y se multiplicaba
+      // por piezas/caja, inflando "Piezas Totales" ~unitsPerBox veces → el "millón de piezas".)
+      const pieces = Number.isFinite(e.count) ? e.count : 0
+      const upb = e.unitsPerBox > 0 ? e.unitsPerBox : piecesPerBox
+      const boxes = upb > 0 ? pieces / upb : 0
+      totalPieces += pieces
       boxQty += boxes
       if (e.unitsPerBox > 0) piecesPerBox = e.unitsPerBox
 
@@ -417,7 +424,7 @@ function aggregateMachineRows(
       packer2Boxes = Math.max(0, boxQty - packer1Boxes)
     }
 
-    const totalPieces = Math.round(boxQty * piecesPerBox)
+    const totalPiecesRounded = Math.round(totalPieces)
     const totalPackerBoxes = packer1Boxes + packer2Boxes
     const difference = Math.round((boxQty - totalPackerBoxes) * 100) / 100
     const packer1Pieces = Math.round(packer1Boxes * piecesPerBox)
@@ -430,7 +437,7 @@ function aggregateMachineRows(
       item: dominantSku(events),
       boxQty: Math.round(boxQty * 100) / 100,
       piecesPerBox,
-      totalPieces,
+      totalPieces: totalPiecesRounded,
       packer1,
       packer1Boxes: Math.round(packer1Boxes * 100) / 100,
       packer2,
@@ -645,7 +652,6 @@ function buildDayWorksheet(
     writeFormula(sheet, mainTotalsRow, 7, `SUM(G${mainDataStart}:G${mainDataEnd})`)
     writeFormula(sheet, mainTotalsRow, 14, `SUM(N${mainDataStart}:N${mainDataEnd})`)
     writeFormula(sheet, mainTotalsRow, 15, `SUM(O${mainDataStart}:O${mainDataEnd})`)
-    writeFormula(sheet, mainTotalsRow, 16, `O${mainTotalsRow}+N${mainTotalsRow}`)
     styleRect(sheet, mainTotalsRow, 1, mainTotalsRow, 15, "total")
   }
 
@@ -670,7 +676,7 @@ function buildDayWorksheet(
     bannerRow,
     9,
     14,
-    0,
+    "",
     "bannerGreen",
   )
 
