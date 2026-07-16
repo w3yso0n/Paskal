@@ -43,10 +43,26 @@ function pad2(n: number): string {
 }
 
 /** Día calendario en zona de planta (no la del navegador) — evita que un turno se parta distinto. */
-function dayKeyFromDate(d: Date): string {
+export function dayKeyFromDate(d: Date): string {
   const p = getPartsInTimeZone(d, PLANT_TIMEZONE)
   return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`
 }
+
+/** Orden preferido de causas (coincide con el filtro del centro de alertas) — compartido por
+ * todas las vistas que apilan/ordenan por tipo, para que el orden nunca diverja entre ellas. */
+export const ALERT_KIND_PREFERRED_ORDER: ApiAlertKind[] = [
+  "idle",
+  "no_checkin",
+  "no_packager",
+  "overtime_hours",
+  "no_checkout",
+  "checkin_blocked",
+  "plant_outage",
+  "counter_not_zero",
+  "counter_reset",
+  "device_down",
+  "other",
+]
 
 /** Suma/resta días calendario a un `YYYY-MM-DD`, en zona de planta (p. ej. rango "últimos N días"). */
 export function addPlantDays(dayKey: string, days: number): string {
@@ -92,21 +108,8 @@ export function buildDailyAlertsByKindSeries(
   ).filter((k) => (kindTotals.get(k) ?? 0) > 0)
 
   // Preferir el orden de filtro del centro de alertas cuando esté presente.
-  const preferredOrder: ApiAlertKind[] = [
-    "idle",
-    "no_checkin",
-    "no_packager",
-    "overtime_hours",
-    "no_checkout",
-    "checkin_blocked",
-    "plant_outage",
-    "counter_not_zero",
-    "counter_reset",
-    "device_down",
-    "other",
-  ]
   kindsInRange.sort(
-    (a, b) => preferredOrder.indexOf(a) - preferredOrder.indexOf(b),
+    (a, b) => ALERT_KIND_PREFERRED_ORDER.indexOf(a) - ALERT_KIND_PREFERRED_ORDER.indexOf(b),
   )
 
   const series: AlertsByKindDailyRow[] = [...dailyAgg.entries()]

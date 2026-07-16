@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react"
 import {
   Bell,
   AlertTriangle,
@@ -20,6 +20,9 @@ import {
   StickyNote,
   MoreHorizontal,
   CalendarDays,
+  Timer,
+  ListOrdered,
+  Gauge,
 } from "lucide-react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
@@ -41,7 +44,7 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart"
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts"
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts"
 import {
   Dialog,
   DialogContent,
@@ -65,7 +68,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import {
   type Alert,
@@ -106,9 +109,18 @@ import {
 } from "@/lib/alert-ui"
 import {
   addPlantDays,
+  ALERT_KIND_CHART_COLORS,
   buildAlertsByKindChartConfig,
   buildDailyAlertsByKindSeries,
 } from "@/lib/alert-role-metrics"
+import {
+  buildAlertRangeSummary,
+  buildHourKindHeatmap,
+  buildIdleMinutesByDay,
+  buildMachineAlertPareto,
+  formatMinutesShort,
+  type HourKindHeatmap,
+} from "@/lib/alert-analytics"
 import {
   isFloorOperatorCandidate,
   isFloorPackerCandidate,
@@ -197,6 +209,59 @@ function isAttributableOrphanAlert(a: Alert): boolean {
   return isOperatorOrphanProductionAlert(a) || isPackagerOrphanProductionAlert(a)
 }
 
+const HEATMAP_HOURS = Array.from({ length: 24 }, (_, i) => i)
+
+/** Un solo tono (azul, ya usado en el panel para "Sin leer"), más opaco = más alertas —
+ * escala secuencial, nunca arcoíris. La causa va en la etiqueta de fila, no en el color. */
+function heatCellBackground(count: number, maxCount: number): string {
+  if (count === 0) return "transparent"
+  const intensity = maxCount > 0 ? count / maxCount : 0
+  const alpha = 0.12 + intensity * 0.78
+  return `rgba(37, 99, 235, ${alpha.toFixed(2)})`
+}
+
+/** Heatmap hora (TZ planta) × causa. Grid simple en vez de un componente de gráficas — no hay
+ * un tipo "heatmap" nativo en recharts y esto es más liviano que forzarlo con un scatter. */
+function AlertHourHeatmap({ heatmap }: { heatmap: HourKindHeatmap }) {
+  return (
+    <div className="overflow-x-auto">
+      <div
+        className="grid min-w-[680px] gap-[2px]"
+        style={{ gridTemplateColumns: "104px repeat(24, minmax(22px, 1fr))" }}
+      >
+        <div />
+        {HEATMAP_HOURS.map((h) => (
+          <div key={h} className="pb-1 text-center text-[9px] text-muted-foreground">
+            {h % 3 === 0 ? `${h}h` : ""}
+          </div>
+        ))}
+        {heatmap.kindsInRange.map((kind) => (
+          <Fragment key={kind}>
+            <div className="flex items-center truncate pr-2 text-xs text-muted-foreground">
+              {ALERT_KIND_LABELS[kind]}
+            </div>
+            {HEATMAP_HOURS.map((h) => {
+              const count = heatmap.counts[h]?.[kind] ?? 0
+              return (
+                <div
+                  key={h}
+                  title={`${ALERT_KIND_LABELS[kind]} · ${h}:00–${h}:59 (TZ planta) · ${count}`}
+                  className="aspect-square rounded-sm"
+                  style={{ backgroundColor: heatCellBackground(count, heatmap.maxCount) }}
+                />
+              )
+            })}
+          </Fragment>
+        ))}
+      </div>
+      <p className="mt-2 text-[10px] text-muted-foreground">
+        Hora del día en zona de planta · más oscuro = más alertas (pasa el cursor por una celda
+        para ver el número exacto; máximo {heatmap.maxCount} en una sola celda)
+      </p>
+    </div>
+  )
+}
+
 // --- Component ---
 
 export default function AlertasClient() {
@@ -212,9 +277,10 @@ export default function AlertasClient() {
   const [searchQuery, setSearchQuery] = useState("")
   const [activeTab, setActiveTab] = useState("all")
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
-  // Rango de la gráfica "Alertas por día": independiente del filtro de día de la tabla (ese es
-  // para operar hoy; la gráfica es para ver tendencia de los últimos días).
+  // Rango del análisis (gráfica + KPIs + Pareto + heatmap + minutos de paro): independiente
+  // del filtro de día de la tabla (ese es para operar hoy; esto es para ver tendencia).
   const [chartRangeDays, setChartRangeDays] = useState(14)
+  const [analysisView, setAnalysisView] = useState("daily")
 
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [apiAlertsById, setApiAlertsById] = useState<Map<string, ApiAlert>>(new Map())
@@ -347,15 +413,51 @@ export default function AlertasClient() {
   // sin fetch adicional — con el poll de 30 s queda casi en vivo.
   const apiAlerts = useMemo(() => [...apiAlertsById.values()], [apiAlertsById])
 
-  const alertsByKindDaily = useMemo(() => {
+  // Un solo rango para TODO el análisis (gráfica diaria + KPIs + Pareto + heatmap + minutos de
+  // paro): un solo control arriba, todas las vistas contra el mismo corte de fechas.
+  const analysisRange = useMemo(() => {
     const endDay = todayPlantDayKey()
-    const startDay = addPlantDays(endDay, -(chartRangeDays - 1))
-    return buildDailyAlertsByKindSeries(apiAlerts, startDay, endDay)
-  }, [apiAlerts, chartRangeDays])
+    return { startDay: addPlantDays(endDay, -(chartRangeDays - 1)), endDay }
+  }, [chartRangeDays])
+
+  const alertsByKindDaily = useMemo(
+    () => buildDailyAlertsByKindSeries(apiAlerts, analysisRange.startDay, analysisRange.endDay),
+    [apiAlerts, analysisRange],
+  )
 
   const alertsByKindChartConfig = useMemo(
     () => buildAlertsByKindChartConfig(alertsByKindDaily.kindsInRange),
     [alertsByKindDaily.kindsInRange],
+  )
+
+  const rangeSummary = useMemo(
+    () => buildAlertRangeSummary(apiAlerts, analysisRange.startDay, analysisRange.endDay),
+    [apiAlerts, analysisRange],
+  )
+
+  const machinePareto = useMemo(
+    () =>
+      buildMachineAlertPareto(
+        apiAlerts,
+        analysisRange.startDay,
+        analysisRange.endDay,
+        machineCodeById,
+      ),
+    [apiAlerts, analysisRange, machineCodeById],
+  )
+  const machineParetoConfig = useMemo(
+    () => buildAlertsByKindChartConfig(machinePareto.kindsInRange),
+    [machinePareto.kindsInRange],
+  )
+
+  const hourHeatmap = useMemo(
+    () => buildHourKindHeatmap(apiAlerts, analysisRange.startDay, analysisRange.endDay),
+    [apiAlerts, analysisRange],
+  )
+
+  const idleMinutesDaily = useMemo(
+    () => buildIdleMinutesByDay(apiAlerts, analysisRange.startDay, analysisRange.endDay),
+    [apiAlerts, analysisRange],
   )
 
   const unreadCount = alerts.filter((a) => !a.isRead).length
@@ -717,15 +819,14 @@ export default function AlertasClient() {
         </div>
 
         <Card>
-          <CardContent className="p-4">
-            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <CardContent className="space-y-4 p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h3 className="text-sm font-semibold text-foreground">Alertas por día</h3>
+                <h3 className="text-sm font-semibold text-foreground">Análisis de alertas</h3>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  Cantidad diaria apilada por tipo de alerta
                   {alertsByKindDaily.total > 0
-                    ? ` · ${alertsByKindDaily.total} en el rango`
-                    : ""}
+                    ? `${alertsByKindDaily.total} alertas en el rango`
+                    : "Sin alertas en el rango seleccionado"}
                 </p>
               </div>
               <Select
@@ -742,37 +843,187 @@ export default function AlertasClient() {
                 </SelectContent>
               </Select>
             </div>
-            {alertsByKindDaily.series.length === 0 ? (
-              <p className="py-10 text-center text-sm text-muted-foreground">
-                Sin alertas en el rango seleccionado.
-              </p>
-            ) : (
-              <ChartContainer
-                className="h-[280px] w-full aspect-auto"
-                config={alertsByKindChartConfig}
-              >
-                <BarChart data={alertsByKindDaily.series} margin={{ left: 8, right: 8 }}>
-                  <CartesianGrid vertical={false} />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <ChartLegend content={<ChartLegendContent />} />
-                  {alertsByKindDaily.kindsInRange.map((kind, idx) => (
-                    <Bar
-                      key={kind}
-                      dataKey={kind}
-                      stackId="alerts"
-                      fill={`var(--color-${kind})`}
-                      radius={
-                        idx === alertsByKindDaily.kindsInRange.length - 1
-                          ? [4, 4, 0, 0]
-                          : [0, 0, 0, 0]
-                      }
-                    />
-                  ))}
-                </BarChart>
-              </ChartContainer>
-            )}
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <ListOrdered className="h-3.5 w-3.5" />
+                  <span className="text-[10px] font-medium uppercase tracking-wide">
+                    En el rango
+                  </span>
+                </div>
+                <p className="mt-1 text-xl font-semibold text-foreground">
+                  {rangeSummary.total}
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Timer className="h-3.5 w-3.5" />
+                  <span className="text-[10px] font-medium uppercase tracking-wide">
+                    Mediana a resolución
+                  </span>
+                </div>
+                <p className="mt-1 text-xl font-semibold text-foreground">
+                  {rangeSummary.medianResolutionMinutes != null
+                    ? formatMinutesShort(rangeSummary.medianResolutionMinutes)
+                    : "—"}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {rangeSummary.closedCount} cerradas en el rango
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Gauge className="h-3.5 w-3.5" />
+                  <span className="text-[10px] font-medium uppercase tracking-wide">
+                    Backlog activo
+                  </span>
+                </div>
+                <p className="mt-1 text-xl font-semibold text-foreground">
+                  {rangeSummary.activeBacklogCount}
+                </p>
+                <p className="text-[10px] text-muted-foreground">ahora mismo, no solo el rango</p>
+              </div>
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  <span className="text-[10px] font-medium uppercase tracking-wide">
+                    Más vieja del backlog
+                  </span>
+                </div>
+                <p className="mt-1 text-xl font-semibold text-foreground">
+                  {rangeSummary.oldestBacklogAgeMinutes != null
+                    ? formatMinutesShort(rangeSummary.oldestBacklogAgeMinutes)
+                    : "—"}
+                </p>
+              </div>
+            </div>
+
+            <Tabs value={analysisView} onValueChange={setAnalysisView}>
+              <TabsList>
+                <TabsTrigger value="daily">Por día</TabsTrigger>
+                <TabsTrigger value="machines">Por máquina</TabsTrigger>
+                <TabsTrigger value="hours">Por hora</TabsTrigger>
+                <TabsTrigger value="idle-minutes">Minutos de paro</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="daily" className="mt-3">
+                {alertsByKindDaily.series.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-muted-foreground">
+                    Sin alertas en el rango seleccionado.
+                  </p>
+                ) : (
+                  <ChartContainer
+                    className="h-[280px] w-full aspect-auto"
+                    config={alertsByKindChartConfig}
+                  >
+                    <BarChart data={alertsByKindDaily.series} margin={{ left: 8, right: 8 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <ChartLegend content={<ChartLegendContent />} />
+                      {alertsByKindDaily.kindsInRange.map((kind, idx) => (
+                        <Bar
+                          key={kind}
+                          dataKey={kind}
+                          stackId="alerts"
+                          fill={`var(--color-${kind})`}
+                          radius={
+                            idx === alertsByKindDaily.kindsInRange.length - 1
+                              ? [4, 4, 0, 0]
+                              : [0, 0, 0, 0]
+                          }
+                        />
+                      ))}
+                    </BarChart>
+                  </ChartContainer>
+                )}
+              </TabsContent>
+
+              <TabsContent value="machines" className="mt-3">
+                {machinePareto.rows.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-muted-foreground">
+                    Sin alertas con máquina asociada en el rango seleccionado.
+                  </p>
+                ) : (
+                  <ChartContainer
+                    className="h-[280px] w-full aspect-auto"
+                    config={machineParetoConfig}
+                  >
+                    <BarChart
+                      data={machinePareto.rows}
+                      layout="vertical"
+                      margin={{ left: 8, right: 8 }}
+                    >
+                      <CartesianGrid horizontal={false} />
+                      <XAxis type="number" allowDecimals={false} tick={{ fontSize: 12 }} />
+                      <YAxis
+                        type="category"
+                        dataKey="machineCode"
+                        tick={{ fontSize: 12 }}
+                        width={64}
+                      />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <ChartLegend content={<ChartLegendContent />} />
+                      {machinePareto.kindsInRange.map((kind, idx) => (
+                        <Bar
+                          key={kind}
+                          dataKey={kind}
+                          stackId="alerts"
+                          fill={`var(--color-${kind})`}
+                          radius={
+                            idx === machinePareto.kindsInRange.length - 1
+                              ? [0, 4, 4, 0]
+                              : [0, 0, 0, 0]
+                          }
+                        />
+                      ))}
+                    </BarChart>
+                  </ChartContainer>
+                )}
+              </TabsContent>
+
+              <TabsContent value="hours" className="mt-3">
+                {hourHeatmap.kindsInRange.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-muted-foreground">
+                    Sin alertas en el rango seleccionado.
+                  </p>
+                ) : (
+                  <AlertHourHeatmap heatmap={hourHeatmap} />
+                )}
+              </TabsContent>
+
+              <TabsContent value="idle-minutes" className="mt-3">
+                {idleMinutesDaily.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-muted-foreground">
+                    Sin paros (idle) cerrados en el rango seleccionado.
+                  </p>
+                ) : (
+                  <ChartContainer
+                    className="h-[240px] w-full aspect-auto"
+                    config={{
+                      minutes: { label: "Minutos de paro", color: ALERT_KIND_CHART_COLORS.idle },
+                    }}
+                  >
+                    <AreaChart data={idleMinutesDaily} margin={{ left: 8, right: 8 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <Area
+                        type="monotone"
+                        dataKey="minutes"
+                        stroke="var(--color-minutes)"
+                        fill="var(--color-minutes)"
+                        fillOpacity={0.15}
+                        strokeWidth={2}
+                      />
+                    </AreaChart>
+                  </ChartContainer>
+                )}
+              </TabsContent>
+            </Tabs>
           </CardContent>
         </Card>
 
