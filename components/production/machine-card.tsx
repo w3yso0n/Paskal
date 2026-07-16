@@ -70,6 +70,10 @@ export function MachineCard({
     status === "waiting" && (waitingReason === "sin_sku" || waitingReason === "contador")
   const statusLabel =
     status === "waiting" && waitingReason ? waitingLabels[waitingReason] : statusLabels[status]
+  // Como en la tira física: en producción (verde/amarillo), sin empacadora los 2 LEDs
+  // centrales se apagan → aquí el foquito se muestra como dona (centro apagado).
+  const inProduction = status === "active" || status === "waiting"
+  const packerGap = inProduction && !packer
   return (
     <TooltipProvider>
       <Tooltip delayDuration={200}>
@@ -84,12 +88,15 @@ export function MachineCard({
               isSelected && "bg-accent ring-2 ring-primary ring-offset-2"
             )}
           >
-            {/* Status indicator — parpadea igual que el LED del equipo (falta SKU o reset) */}
+            {/* Status indicator — parpadea igual que el LED del equipo (falta SKU o reset);
+                dona (centro apagado) = sin empacadora, como el hueco central de la tira */}
             <div className={cn(
-              "absolute -top-1 -right-1 z-10 h-4 w-4 rounded-full border-2 border-white shadow-md",
+              "absolute -top-1 -right-1 z-10 flex h-4 w-4 items-center justify-center rounded-full border-2 border-white shadow-md",
               statusColors[status],
               blinking && "animate-pulse"
-            )} />
+            )}>
+              {packerGap && <div className="h-1.5 w-1.5 rounded-full bg-white" />}
+            </div>
             
             {/* Machine image */}
             <div className="flex flex-col items-center">
@@ -130,7 +137,13 @@ export function MachineCard({
         >
           <div className="space-y-2 p-1">
             <div className="flex items-center gap-2">
-              <div className={cn("h-2.5 w-2.5 rounded-full", statusColors[status], blinking && "animate-pulse")} />
+              <div className={cn(
+                "flex h-2.5 w-2.5 items-center justify-center rounded-full",
+                statusColors[status],
+                blinking && "animate-pulse"
+              )}>
+                {packerGap && <div className="h-1 w-1 rounded-full bg-card" />}
+              </div>
               <span className="font-semibold text-card-foreground">{name}</span>
               <span className={cn(
                 "text-xs px-1.5 py-0.5 rounded",
@@ -159,6 +172,12 @@ export function MachineCard({
                 <div className="flex justify-between gap-4">
                   <span>Empacador:</span>
                   <span className="font-medium text-card-foreground">{packer}</span>
+                </div>
+              )}
+              {packerGap && (
+                <div className="flex justify-between gap-4">
+                  <span>Empacador:</span>
+                  <span className="font-medium text-amber-700">sin marcar (centro apagado)</span>
                 </div>
               )}
               {production !== undefined && (

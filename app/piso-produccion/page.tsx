@@ -825,6 +825,10 @@ export default function ProductionFloorPage() {
   const inactiveCount = machineData.filter(m => m.status === "inactive").length
   const maintenanceCount = machineData.filter(m => m.status === "maintenance").length
   const assignedCount = machineData.filter(m => m.sku).length
+  // Como el hueco central de la tira física: en producción (verde/amarillo) sin empacadora.
+  const noPackerCount = machineData.filter(
+    m => (m.status === "active" || m.status === "waiting") && !m.packers?.length,
+  ).length
 
   const sortedMachines = useMemo(() => {
     const byNumericName = (value: string) => {
@@ -1048,6 +1052,14 @@ export default function ProductionFloorPage() {
             <div className="flex items-center gap-2">
               <div className="h-3 w-3 rounded-full bg-blue-500" />
               <span className="text-sm text-muted-foreground">Mantenimiento ({maintenanceCount})</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex h-3 w-3 items-center justify-center rounded-full bg-green-500">
+                <div className="h-1 w-1 rounded-full bg-background" />
+              </div>
+              <span className="text-sm text-muted-foreground">
+                Centro apagado = sin empacadora ({noPackerCount})
+              </span>
             </div>
           </div>
         </div>
