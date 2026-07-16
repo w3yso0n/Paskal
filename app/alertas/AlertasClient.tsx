@@ -4,9 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react"
 import {
   Bell,
   AlertTriangle,
-  AlertCircle,
   Info,
-  CheckCircle2,
   Users,
   Monitor,
   Filter,
@@ -23,6 +21,8 @@ import {
   Timer,
   ListOrdered,
   Gauge,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
@@ -70,10 +70,7 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
-import {
-  type Alert,
-  type AlertType,
-} from "@/lib/types"
+import { type Alert } from "@/lib/types"
 import { useAuth } from "@/contexts/auth-context"
 import { hasPermission } from "@/lib/permissions"
 import {
@@ -100,10 +97,13 @@ import {
 } from "@/lib/production-goal-events"
 import {
   mapApiAlertToUi,
-  severityRank,
   ALERTS_POLL_MS,
   ALERT_KIND_LABELS,
   ALERT_KIND_FILTER_ORDER,
+  ALERT_KIND_ICONS,
+  ALERT_KIND_EXPLAINERS,
+  ALERT_SEVERITY_STYLES,
+  ALERT_SEVERITY_RANK,
   isOperatorOrphanAlertKind,
   isPackagerOrphanAlertKind,
 } from "@/lib/alert-ui"
@@ -135,22 +135,6 @@ import {
   PLANT_TIMEZONE,
   productionShiftFromMeasuredAt,
 } from "@/lib/tablero-operator-goal"
-
-// --- Constants ---
-
-const typeIcons: Record<AlertType, typeof AlertCircle> = {
-  error: AlertCircle,
-  warning: AlertTriangle,
-  info: Info,
-  success: CheckCircle2,
-}
-
-const typeColors: Record<AlertType, { bg: string; text: string; border: string }> = {
-  error: { bg: "bg-red-50", text: "text-red-600", border: "border-red-200" },
-  warning: { bg: "bg-amber-50", text: "text-amber-600", border: "border-amber-200" },
-  info: { bg: "bg-blue-50", text: "text-blue-600", border: "border-blue-200" },
-  success: { bg: "bg-green-50", text: "text-green-600", border: "border-green-200" },
-}
 
 // --- Helpers ---
 
@@ -539,8 +523,11 @@ export default function AlertasClient() {
         const bUnread = !b.isRead ? 1 : 0
         if (aUnread !== bUnread) return bUnread - aUnread
 
-        if (severityRank[a.type] !== severityRank[b.type])
-          return severityRank[b.type] - severityRank[a.type]
+        // Gravedad REAL, no el bucket visual — antes un overtime_hours (siempre "critical" en
+        // el backend) podía ordenar por debajo de un idle "alto" porque el bucket los agrupaba
+        // distinto; con la gravedad cruda ya no pasa.
+        if (ALERT_SEVERITY_RANK[a.severity] !== ALERT_SEVERITY_RANK[b.severity])
+          return ALERT_SEVERITY_RANK[b.severity] - ALERT_SEVERITY_RANK[a.severity]
 
         return b.timestamp.getTime() - a.timestamp.getTime()
       }),
@@ -1157,6 +1144,28 @@ export default function AlertasClient() {
                 </Select>
               </div>
             </div>
+
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-border pt-3 text-xs text-muted-foreground">
+              <span className="font-medium">Gravedad:</span>
+              {(Object.keys(ALERT_SEVERITY_STYLES) as Array<keyof typeof ALERT_SEVERITY_STYLES>).map(
+                (sev) => {
+                  const style = ALERT_SEVERITY_STYLES[sev]
+                  return (
+                    <span
+                      key={sev}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 font-medium",
+                        style.chipBg,
+                        style.chipText,
+                      )}
+                    >
+                      <span className={cn("h-1.5 w-1.5 rounded-full", style.dot)} />
+                      {style.label}
+                    </span>
+                  )
+                },
+              )}
+            </div>
           </CardHeader>
           <CardContent className="px-0 pb-0 sm:px-0">
             {alertsLoading ? (
@@ -1195,8 +1204,8 @@ export default function AlertasClient() {
                   </TableHeader>
                   <TableBody>
                     {sortedAlerts.map((alert) => {
-                      const TypeIcon = typeIcons[alert.type]
-                      const colors = typeColors[alert.type]
+                      const KindIcon = ALERT_KIND_ICONS[alert.kind]
+                      const sevStyle = ALERT_SEVERITY_STYLES[alert.severity]
                       const apiAlert = apiAlertsById.get(alert.id)
                       const noteCtx = apiAlert
                         ? buildDowntimeNoteContextFromAlert(apiAlert)
@@ -1222,18 +1231,17 @@ export default function AlertasClient() {
                           key={alert.id}
                           className={cn(
                             "align-top",
-                            !alert.isRead && colors.bg,
+                            !alert.isRead && sevStyle.rowTint,
                           )}
                         >
-                          <TableCell className="px-3 py-2">
+                          <TableCell
+                            className={cn("border-l-4 py-2 pl-2 pr-3", sevStyle.border)}
+                          >
                             <div
-                              className={cn(
-                                "flex h-8 w-8 items-center justify-center rounded-full",
-                                colors.bg,
-                              )}
-                              title={alert.type}
+                              className="flex h-8 w-8 items-center justify-center rounded-full bg-muted"
+                              title={ALERT_KIND_LABELS[alert.kind]}
                             >
-                              <TypeIcon className={cn("h-4 w-4", colors.text)} />
+                              <KindIcon className="h-4 w-4 text-foreground/70" />
                             </div>
                           </TableCell>
                           <TableCell className="py-2 tabular-nums text-xs">
@@ -1269,13 +1277,23 @@ export default function AlertasClient() {
                             <span className="text-xs font-medium text-foreground">
                               {ALERT_KIND_LABELS[alert.kind]}
                             </span>
-                            {alert.actionRequired && !alert.isRead && (
-                              <div className="mt-1">
-                                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                            <div className="mt-1 flex flex-wrap items-center gap-1">
+                              <span
+                                className={cn(
+                                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                                  sevStyle.chipBg,
+                                  sevStyle.chipText,
+                                )}
+                              >
+                                <span className={cn("h-1.5 w-1.5 rounded-full", sevStyle.dot)} />
+                                {sevStyle.label}
+                              </span>
+                              {alert.actionRequired && !alert.isRead && (
+                                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
                                   Acción
                                 </span>
-                              </div>
-                            )}
+                              )}
+                            </div>
                           </TableCell>
                           <TableCell className="py-2">
                             <button
@@ -1309,6 +1327,14 @@ export default function AlertasClient() {
                                       {alert.message}
                                     </p>
                                   ) : null}
+                                  {expanded && (
+                                    <div className="mt-1.5 flex items-start gap-1.5 rounded bg-muted/60 px-2 py-1.5">
+                                      <Info className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+                                      <p className="text-xs text-muted-foreground">
+                                        {ALERT_KIND_EXPLAINERS[alert.kind]}
+                                      </p>
+                                    </div>
+                                  )}
                                   {expanded && alertNote ? (
                                     <p className="mt-1.5 rounded border border-border bg-muted/50 px-2 py-1 text-xs">
                                       <span className="font-medium text-foreground">Nota:</span>{" "}
@@ -1317,9 +1343,22 @@ export default function AlertasClient() {
                                   ) : null}
                                   {expanded ? (
                                     <p className="mt-1 text-[10px] text-muted-foreground">
-                                      {formatDateTime(alert.timestamp)} · clic para comprimir
+                                      {formatDateTime(alert.timestamp)}
                                     </p>
                                   ) : null}
+                                  <p className="mt-1 flex items-center gap-0.5 text-[10px] font-medium text-primary">
+                                    {expanded ? (
+                                      <>
+                                        <ChevronUp className="h-3 w-3" />
+                                        Menos info
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ChevronDown className="h-3 w-3" />
+                                        Más info
+                                      </>
+                                    )}
+                                  </p>
                                 </div>
                               </div>
                             </button>

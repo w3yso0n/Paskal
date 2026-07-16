@@ -2,7 +2,7 @@
  * Tipos usados en la plataforma. Los datos reales vienen del backend / PLC.
  */
 
-import type { ApiAlertKind } from "@/lib/api"
+import type { ApiAlertKind, ApiAlertSeverity } from "@/lib/api"
 
 export type MachineStatus = "active" | "waiting" | "inactive" | "maintenance"
 
@@ -46,6 +46,8 @@ export interface Alert {
   type: AlertType
   /** Causa de negocio (coincide con `ApiAlert.type` del backend). */
   kind: AlertKind
+  /** Gravedad cruda del backend — separada de `type` (que es un bucket visual derivado). */
+  severity: ApiAlertSeverity
   category: AlertCategory
   title: string
   message: string
