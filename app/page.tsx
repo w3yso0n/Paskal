@@ -702,13 +702,15 @@ export default function HomePage() {
   const machineStatusCounts = useMemo(() => {
     let activas = 0
     let esperando = 0
+    let mantenimiento = 0
     let inactivas = 0
     for (const m of machines) {
       if (m.status === "green") activas++
       else if (m.status === "yellow") esperando++
+      else if (m.status === "blue") mantenimiento++
       else inactivas++
     }
-    return { activas, esperando, inactivas, total: machines.length }
+    return { activas, esperando, mantenimiento, inactivas, total: machines.length }
   }, [machines])
 
   const shiftLabel = selectedShift === "shift1" ? "Turno 1" : "Turno 2"
@@ -770,6 +772,12 @@ export default function HomePage() {
                       value: machineStatusCounts.esperando,
                       dotClass: "bg-yellow-500",
                       valueClass: "text-yellow-700",
+                    },
+                    {
+                      label: "Mantenimiento",
+                      value: machineStatusCounts.mantenimiento,
+                      dotClass: "bg-blue-500",
+                      valueClass: "text-blue-700",
                     },
                     {
                       label: "Inactivas",
