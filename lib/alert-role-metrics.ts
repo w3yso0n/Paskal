@@ -1,5 +1,7 @@
 import type { ApiAlert, ApiAlertKind } from "@/lib/api"
 import { ALERT_KIND_LABELS, resolveAlertKind } from "@/lib/alert-ui"
+import { getPartsInTimeZone, makeZonedDate, plantDateOnlyRangeToIso } from "@/lib/shift-timezone"
+import { PLANT_TIMEZONE } from "@/lib/tablero-operator-goal"
 
 export type AlertPersonnelRole = "operator" | "packager" | "other"
 
@@ -40,8 +42,25 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0")
 }
 
+/** Día calendario en zona de planta (no la del navegador) — evita que un turno se parta distinto. */
 function dayKeyFromDate(d: Date): string {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+  const p = getPartsInTimeZone(d, PLANT_TIMEZONE)
+  return `${p.year}-${pad2(p.month)}-${pad2(p.day)}`
+}
+
+/** Suma/resta días calendario a un `YYYY-MM-DD`, en zona de planta (p. ej. rango "últimos N días"). */
+export function addPlantDays(dayKey: string, days: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey.trim())
+  if (!m) return dayKey
+  const [, y, mo, d] = m
+  const anchor = makeZonedDate(Number(y), Number(mo), Number(d), 12, 0, PLANT_TIMEZONE)
+  const shifted = new Date(anchor.getTime() + days * 24 * 60 * 60 * 1000)
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: PLANT_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(shifted)
 }
 
 /**
@@ -82,6 +101,7 @@ export function buildDailyAlertsByKindSeries(
     "checkin_blocked",
     "plant_outage",
     "counter_not_zero",
+    "counter_reset",
     "device_down",
     "other",
   ]
@@ -167,14 +187,16 @@ export function filterAlertsInDateRange(
   startDate: string,
   endDate: string,
 ): ApiAlert[] {
-  const start = new Date(`${startDate}T00:00:00`)
-  const end = new Date(`${endDate}T23:59:59.999`)
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return alerts
+  const bounds = plantDateOnlyRangeToIso(startDate, endDate, PLANT_TIMEZONE)
+  if (!bounds) return alerts
+  const startMs = new Date(bounds.from).getTime()
+  const endExclusiveMs = new Date(bounds.toExclusive).getTime()
 
   return alerts.filter((a) => {
     const created = new Date(a.createdAt)
     if (Number.isNaN(created.getTime())) return false
-    return created >= start && created <= end
+    const t = created.getTime()
+    return t >= startMs && t < endExclusiveMs
   })
 }
 

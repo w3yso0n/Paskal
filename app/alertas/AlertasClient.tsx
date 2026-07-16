@@ -35,6 +35,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "@/components/ui/chart"
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts"
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -96,6 +104,11 @@ import {
   isOperatorOrphanAlertKind,
   isPackagerOrphanAlertKind,
 } from "@/lib/alert-ui"
+import {
+  addPlantDays,
+  buildAlertsByKindChartConfig,
+  buildDailyAlertsByKindSeries,
+} from "@/lib/alert-role-metrics"
 import {
   isFloorOperatorCandidate,
   isFloorPackerCandidate,
@@ -199,6 +212,9 @@ export default function AlertasClient() {
   const [searchQuery, setSearchQuery] = useState("")
   const [activeTab, setActiveTab] = useState("all")
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  // Rango de la gráfica "Alertas por día": independiente del filtro de día de la tabla (ese es
+  // para operar hoy; la gráfica es para ver tendencia de los últimos días).
+  const [chartRangeDays, setChartRangeDays] = useState(14)
 
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [apiAlertsById, setApiAlertsById] = useState<Map<string, ApiAlert>>(new Map())
@@ -326,6 +342,21 @@ export default function AlertasClient() {
       .map(([id, code]) => ({ id, code }))
       .sort((a, b) => a.code.localeCompare(b.code, "es"))
   }, [machineRows, alerts, machineCodeById])
+
+  // Array crudo (no el modelo UI mapeado) para la gráfica: ya está cargado por reloadAlerts,
+  // sin fetch adicional — con el poll de 30 s queda casi en vivo.
+  const apiAlerts = useMemo(() => [...apiAlertsById.values()], [apiAlertsById])
+
+  const alertsByKindDaily = useMemo(() => {
+    const endDay = todayPlantDayKey()
+    const startDay = addPlantDays(endDay, -(chartRangeDays - 1))
+    return buildDailyAlertsByKindSeries(apiAlerts, startDay, endDay)
+  }, [apiAlerts, chartRangeDays])
+
+  const alertsByKindChartConfig = useMemo(
+    () => buildAlertsByKindChartConfig(alertsByKindDaily.kindsInRange),
+    [alertsByKindDaily.kindsInRange],
+  )
 
   const unreadCount = alerts.filter((a) => !a.isRead).length
   const actionRequiredCount = alerts.filter((a) => a.actionRequired && !a.isRead).length
@@ -684,6 +715,66 @@ export default function AlertasClient() {
             </CardContent>
           </Card>
         </div>
+
+        <Card>
+          <CardContent className="p-4">
+            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Alertas por día</h3>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Cantidad diaria apilada por tipo de alerta
+                  {alertsByKindDaily.total > 0
+                    ? ` · ${alertsByKindDaily.total} en el rango`
+                    : ""}
+                </p>
+              </div>
+              <Select
+                value={String(chartRangeDays)}
+                onValueChange={(v) => setChartRangeDays(Number(v))}
+              >
+                <SelectTrigger className="h-8 w-40">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="7">Últimos 7 días</SelectItem>
+                  <SelectItem value="14">Últimos 14 días</SelectItem>
+                  <SelectItem value="30">Últimos 30 días</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {alertsByKindDaily.series.length === 0 ? (
+              <p className="py-10 text-center text-sm text-muted-foreground">
+                Sin alertas en el rango seleccionado.
+              </p>
+            ) : (
+              <ChartContainer
+                className="h-[280px] w-full aspect-auto"
+                config={alertsByKindChartConfig}
+              >
+                <BarChart data={alertsByKindDaily.series} margin={{ left: 8, right: 8 }}>
+                  <CartesianGrid vertical={false} />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
+                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <ChartLegend content={<ChartLegendContent />} />
+                  {alertsByKindDaily.kindsInRange.map((kind, idx) => (
+                    <Bar
+                      key={kind}
+                      dataKey={kind}
+                      stackId="alerts"
+                      fill={`var(--color-${kind})`}
+                      radius={
+                        idx === alertsByKindDaily.kindsInRange.length - 1
+                          ? [4, 4, 0, 0]
+                          : [0, 0, 0, 0]
+                      }
+                    />
+                  ))}
+                </BarChart>
+              </ChartContainer>
+            )}
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader className="gap-4 space-y-0 pb-4">
