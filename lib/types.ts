@@ -51,6 +51,8 @@ export interface Alert {
   category: AlertCategory
   title: string
   message: string
+  /** Detalle estructurado por causa, del backend (`ApiAlert.metadata`) — ver `buildAlertDetailRows`. */
+  metadata: Record<string, unknown> | null
   timestamp: Date
   isRead: boolean
   machineId?: string

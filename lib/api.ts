@@ -719,6 +719,9 @@ export interface ApiAlert {
   type: ApiAlertKind | null;
   title: string;
   message: string | null;
+  /** Detalle estructurado por causa (check-in, límites, quién quedó asignado, etc.), separado
+   * del mensaje de texto libre — forma varía según `type`, ver `buildAlertDetailRows`. */
+  metadata: Record<string, unknown> | null;
   severity: ApiAlertSeverity;
   status: ApiAlertStatus;
   createdAt: string;

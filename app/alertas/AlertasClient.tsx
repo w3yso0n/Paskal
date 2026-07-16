@@ -104,6 +104,7 @@ import {
   ALERT_KIND_EXPLAINERS,
   ALERT_SEVERITY_STYLES,
   ALERT_SEVERITY_RANK,
+  buildAlertDetailRows,
   isOperatorOrphanAlertKind,
   isPackagerOrphanAlertKind,
 } from "@/lib/alert-ui"
@@ -1198,7 +1199,7 @@ export default function AlertasClient() {
                       <TableHead className="w-[88px]">Turno</TableHead>
                       <TableHead className="w-[100px]">Máquina</TableHead>
                       <TableHead className="w-[150px]">Causa</TableHead>
-                      <TableHead>Detalle</TableHead>
+                      <TableHead className="w-[260px]">Detalle</TableHead>
                       <TableHead className="w-[1%] whitespace-nowrap text-right">Acciones</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1225,6 +1226,7 @@ export default function AlertasClient() {
                       const machineCode = alert.machineId
                         ? (machineCodeById.get(alert.machineId) ?? "—")
                         : "—"
+                      const detailRows = buildAlertDetailRows(alert.kind, alert.metadata)
 
                       return (
                         <TableRow
@@ -1317,35 +1319,47 @@ export default function AlertasClient() {
                                   >
                                     {alert.title}
                                   </p>
-                                  {alert.message ? (
-                                    <p
-                                      className={cn(
-                                        "mt-0.5 text-xs text-muted-foreground",
-                                        !expanded && "line-clamp-1",
-                                      )}
-                                    >
-                                      {alert.message}
-                                    </p>
-                                  ) : null}
                                   {expanded && (
-                                    <div className="mt-1.5 flex items-start gap-1.5 rounded bg-muted/60 px-2 py-1.5">
-                                      <Info className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
-                                      <p className="text-xs text-muted-foreground">
-                                        {ALERT_KIND_EXPLAINERS[alert.kind]}
+                                    <>
+                                      {alert.message ? (
+                                        <p className="mt-0.5 text-xs text-muted-foreground">
+                                          {alert.message}
+                                        </p>
+                                      ) : null}
+                                      {detailRows.length > 0 && (
+                                        <dl className="mt-1.5 space-y-0.5 rounded border border-border bg-background px-2 py-1.5">
+                                          {detailRows.map((row, i) => (
+                                            <div
+                                              key={`${row.label}-${i}`}
+                                              className="flex items-baseline gap-1.5 text-xs"
+                                            >
+                                              <dt className="shrink-0 font-medium text-foreground">
+                                                {row.label}:
+                                              </dt>
+                                              <dd className="min-w-0 text-muted-foreground">
+                                                {row.value}
+                                              </dd>
+                                            </div>
+                                          ))}
+                                        </dl>
+                                      )}
+                                      <div className="mt-1.5 flex items-start gap-1.5 rounded bg-muted/60 px-2 py-1.5">
+                                        <Info className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+                                        <p className="text-xs text-muted-foreground">
+                                          {ALERT_KIND_EXPLAINERS[alert.kind]}
+                                        </p>
+                                      </div>
+                                      {alertNote ? (
+                                        <p className="mt-1.5 rounded border border-border bg-muted/50 px-2 py-1 text-xs">
+                                          <span className="font-medium text-foreground">Nota:</span>{" "}
+                                          {alertNote}
+                                        </p>
+                                      ) : null}
+                                      <p className="mt-1 text-[10px] text-muted-foreground">
+                                        {formatDateTime(alert.timestamp)}
                                       </p>
-                                    </div>
+                                    </>
                                   )}
-                                  {expanded && alertNote ? (
-                                    <p className="mt-1.5 rounded border border-border bg-muted/50 px-2 py-1 text-xs">
-                                      <span className="font-medium text-foreground">Nota:</span>{" "}
-                                      {alertNote}
-                                    </p>
-                                  ) : null}
-                                  {expanded ? (
-                                    <p className="mt-1 text-[10px] text-muted-foreground">
-                                      {formatDateTime(alert.timestamp)}
-                                    </p>
-                                  ) : null}
                                   <p className="mt-1 flex items-center gap-0.5 text-[10px] font-medium text-primary">
                                     {expanded ? (
                                       <>

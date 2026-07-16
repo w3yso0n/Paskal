@@ -17,6 +17,7 @@ import {
   parsePendingUnitsFromAlertMessage,
   sumOrphanPendingForAlert,
 } from "@/lib/production-goal-events"
+import { PLANT_TIMEZONE } from "@/lib/tablero-operator-goal"
 
 const KNOWN_ALERT_KINDS = new Set<ApiAlertKind>([
   "no_checkin",
@@ -197,11 +198,150 @@ export function mapApiAlertToUi(
     category,
     title: a.title,
     message: a.message ?? "",
+    metadata: a.metadata ?? null,
     timestamp: Number.isNaN(timestamp.getTime()) ? new Date() : timestamp,
     isRead,
     machineId: a.machineId ?? undefined,
     actionRequired,
   }
+}
+
+// --- Detalle estructurado por causa (metadata) ------------------------------
+
+/** Hora en zona de planta, "HH:mm". Null si el ISO no es válido. */
+function formatPlantTime(iso: unknown): string | null {
+  if (typeof iso !== "string" || !iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleTimeString("es-MX", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: PLANT_TIMEZONE,
+  })
+}
+
+/** "1 h 13 min" a partir de minutos. Null si no es un número usable. */
+function formatMinutesLabel(minutes: unknown): string | null {
+  if (typeof minutes !== "number" || !Number.isFinite(minutes)) return null
+  const total = Math.max(0, Math.round(minutes))
+  const h = Math.floor(total / 60)
+  const m = total % 60
+  if (h === 0) return `${m} min`
+  if (m === 0) return `${h} h`
+  return `${h} h ${m} min`
+}
+
+function asString(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null
+}
+
+function asStringArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim() !== "") : []
+}
+
+export type AlertDetailRow = { label: string; value: string }
+
+/**
+ * Filas de detalle estructurado, específicas de cada causa — lo que se muestra al expandir
+ * una alerta ("a qué hora hizo check-in", "quién quedó asignado", etc.), separado del mensaje
+ * de texto libre. Defensivo: `metadata` es JSON crudo del backend, puede faltar o venir viejo
+ * (alertas creadas antes de esta migración no tienen metadata).
+ */
+export function buildAlertDetailRows(
+  kind: ApiAlertKind,
+  metadata: Record<string, unknown> | null | undefined,
+): AlertDetailRow[] {
+  if (!metadata) return []
+  const rows: AlertDetailRow[] = []
+
+  switch (kind) {
+    case "idle": {
+      const operator = asString(metadata.operator)
+      const operator2 = asString(metadata.operator2)
+      if (operator) rows.push({ label: "Operador", value: operator })
+      if (operator2) rows.push({ label: "2º operador", value: operator2 })
+      const sku = asString(metadata.sku)
+      if (sku) rows.push({ label: "SKU", value: sku })
+      const checkedInAt = formatPlantTime(metadata.checkedInAt)
+      if (checkedInAt) rows.push({ label: "Check-in", value: checkedInAt })
+      const lastProductionAt = formatPlantTime(metadata.lastProductionAt)
+      if (lastProductionAt) rows.push({ label: "Última producción", value: lastProductionAt })
+      const idleMinutes = formatMinutesLabel(metadata.idleMinutes)
+      if (idleMinutes) rows.push({ label: "Tiempo sin producir", value: idleMinutes })
+      break
+    }
+    case "no_checkout": {
+      const personnel = asStringArray(metadata.personnel)
+      if (personnel.length) rows.push({ label: "Personal asignado", value: personnel.join(", ") })
+      const checkedInAt = formatPlantTime(metadata.checkedInAt)
+      if (checkedInAt) rows.push({ label: "Check-in", value: checkedInAt })
+      const lastSeenAt = formatPlantTime(metadata.lastSeenAt)
+      if (lastSeenAt) rows.push({ label: "Última señal", value: lastSeenAt })
+      break
+    }
+    case "plant_outage": {
+      const machineCodes = asStringArray(metadata.machineCodes)
+      if (machineCodes.length) rows.push({ label: "Máquinas afectadas", value: machineCodes.join(", ") })
+      if (typeof metadata.totalOfflineNow === "number") {
+        rows.push({ label: "Total caídas ahora", value: String(metadata.totalOfflineNow) })
+      }
+      break
+    }
+    case "checkin_blocked": {
+      const role = asString(metadata.role)
+      if (role) rows.push({ label: "Rol", value: role })
+      const rejectedName = asString(metadata.rejectedName)
+      if (rejectedName) rows.push({ label: "Tap rechazado", value: rejectedName })
+      const occupyingName = asString(metadata.occupyingName)
+      if (occupyingName) rows.push({ label: "Sigue registrado", value: occupyingName })
+      break
+    }
+    case "overtime_hours": {
+      const violators = Array.isArray(metadata.violators) ? metadata.violators : []
+      for (const raw of violators) {
+        if (typeof raw !== "object" || raw === null) continue
+        const v = raw as Record<string, unknown>
+        const name = asString(v.name) ?? asString(v.code) ?? "—"
+        const checkedInAt = formatPlantTime(v.checkedInAt)
+        const worked = formatMinutesLabel(v.workedMinutes)
+        const limit = formatMinutesLabel(v.limitMinutes)
+        const shiftLabel = asString(v.shiftLabel)
+        const parts: string[] = []
+        if (checkedInAt) parts.push(`check-in ${checkedInAt}`)
+        if (worked) parts.push(`lleva ${worked}`)
+        if (limit) parts.push(`límite ${limit}${shiftLabel ? ` (turno ${shiftLabel})` : ""}`)
+        if (v.pastShiftEnd) parts.push("después de su turno")
+        rows.push({ label: name, value: parts.join(" · ") || "—" })
+      }
+      break
+    }
+    case "counter_not_zero": {
+      const operatorCode = asString(metadata.operatorCode)
+      if (operatorCode) rows.push({ label: "Operador", value: operatorCode })
+      const checkedInAt = formatPlantTime(metadata.checkedInAt)
+      if (checkedInAt) rows.push({ label: "Check-in", value: checkedInAt })
+      if (typeof metadata.countAtCheckin === "number") {
+        rows.push({ label: "Contador al check-in", value: String(metadata.countAtCheckin) })
+      }
+      if (typeof metadata.countAtCheckout === "number") {
+        rows.push({ label: "Contador al check-out anterior", value: String(metadata.countAtCheckout) })
+      }
+      break
+    }
+    case "counter_reset": {
+      if (typeof metadata.from === "number" && typeof metadata.to === "number") {
+        rows.push({ label: "De → a", value: `${metadata.from} → ${metadata.to}` })
+      }
+      const operators = asStringArray(metadata.operators)
+      if (operators.length) rows.push({ label: "Operador(es)", value: operators.join(", ") })
+      break
+    }
+    default:
+      break
+  }
+
+  return rows
 }
 
 export const ALERTS_POLL_MS = 30_000
