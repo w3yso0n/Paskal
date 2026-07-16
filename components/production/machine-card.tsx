@@ -95,7 +95,7 @@ export function MachineCard({
               statusColors[status],
               blinking && "animate-pulse"
             )}>
-              {packerGap && <div className="h-1.5 w-1.5 rounded-full bg-white" />}
+              {packerGap && <div className="h-1.5 w-1.5 rounded-full bg-black" />}
             </div>
             
             {/* Machine image */}
@@ -142,7 +142,7 @@ export function MachineCard({
                 statusColors[status],
                 blinking && "animate-pulse"
               )}>
-                {packerGap && <div className="h-1 w-1 rounded-full bg-card" />}
+                {packerGap && <div className="h-1 w-1 rounded-full bg-black" />}
               </div>
               <span className="font-semibold text-card-foreground">{name}</span>
               <span className={cn(
