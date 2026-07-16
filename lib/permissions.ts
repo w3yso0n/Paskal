@@ -92,9 +92,12 @@ export function hasPermission(
   permission: Permission,
 ): boolean {
   if (!user) return false
-  // Borrar todas las alertas: solo Droven / admin de plataforma.
+  // Borrar todas las alertas: exclusivo del equipo de Droven. Se checa el rol directamente
+  // (no `isPlatformAdmin`, que en teoría podría marcarse en una cuenta con otro rol, p. ej.
+  // por una edición manual desde /datos) para que esta acción irreversible dependa únicamente
+  // de la señal inequívoca de "es Droven".
   if (permission === "alerts.clear") {
-    return user.isPlatformAdmin === true || user.role === "droven"
+    return user.role === "droven"
   }
   if (user.isPlatformAdmin || user.role === "droven") return true
   return ROLE_PERMISSIONS[user.role]?.includes(permission) ?? false
