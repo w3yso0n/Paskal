@@ -1,8 +1,13 @@
 /** Rol primordial en piso — alineado con secciones del acumulado de bono (+ mantenimiento NFC). */
 export type EmployeeProductionRole = "operator" | "packer" | "bending" | "roller" | "maintenance"
 
-/** Rol secundario (desde operador: empaque, roller, bending o auxiliar). */
-export type EmployeeSecondaryRole = "packer" | "roller" | "bending" | "auxiliary"
+/** Rol temporal; la meta siempre permanece ligada al rol primordial. */
+export type EmployeeSecondaryRole =
+  | "operator"
+  | "packer"
+  | "roller"
+  | "bending"
+  | "auxiliary"
 
 export const EMPLOYEE_PRODUCTION_ROLE_LABELS: Record<EmployeeProductionRole, string> = {
   operator: "Operador",
@@ -13,6 +18,7 @@ export const EMPLOYEE_PRODUCTION_ROLE_LABELS: Record<EmployeeProductionRole, str
 }
 
 export const EMPLOYEE_SECONDARY_ROLE_LABELS: Record<EmployeeSecondaryRole, string> = {
+  operator: "Operador",
   packer: "Empaque",
   roller: "Roller",
   bending: "Bending",
@@ -28,6 +34,7 @@ export const PRIMARY_ROLES: EmployeeProductionRole[] = [
 ]
 
 export const SECONDARY_ROLES: EmployeeSecondaryRole[] = [
+  "operator",
   "packer",
   "roller",
   "bending",
@@ -68,6 +75,7 @@ export function isEmployeeProductionRole(value: string): value is EmployeeProduc
 
 export function isEmployeeSecondaryRole(value: string): value is EmployeeSecondaryRole {
   return (
+    value === "operator" ||
     value === "packer" ||
     value === "roller" ||
     value === "bending" ||
@@ -108,9 +116,17 @@ export function isPackerRole(
 
 /** Empleado activo que puede asignarse como operador en piso de producción. */
 export function isFloorOperatorCandidate(
-  emp: { status?: string; primaryRole: EmployeeProductionRole | null | undefined },
+  emp: {
+    status?: string
+    primaryRole: EmployeeProductionRole | null | undefined
+    secondaryRole?: EmployeeSecondaryRole | null
+  },
 ): boolean {
-  return emp.status === "active" && isOperatorRole(emp.primaryRole)
+  return (
+    emp.status === "active" &&
+    (isOperatorRole(emp.primaryRole) ||
+      (emp.primaryRole === "packer" && emp.secondaryRole === "operator"))
+  )
 }
 
 /** Empleado activo que puede asignarse como empacador en piso de producción. */
@@ -142,7 +158,7 @@ export function resolveEffectiveBonusRole(
   if (primaryRole === "maintenance") return null
   const primary = resolveEmployeeProductionRole(primaryRole)
   if (!primary) return null
-  if (primary === "operator" && secondaryRole) {
+  if ((primary === "operator" || primary === "packer") && secondaryRole) {
     return secondaryRole === "auxiliary" ? "auxiliary" : secondaryRole
   }
   return primary

@@ -29,7 +29,7 @@ import {
   eventCodesForOperatorGoalCredit,
   type OperatorShiftByCode,
 } from "@/lib/production-goal-events"
-import { isFloorOperatorCandidate } from "@/lib/employee-production-role"
+import { isOperatorRole } from "@/lib/employee-production-role"
 import { bonusConfigToGoalDefinitions } from "@/lib/bonus-goals-bridge"
 import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
 import {
@@ -585,16 +585,14 @@ function buildOperatorRanking(
     if (count <= 0) continue
 
     const payload = e.payload ?? {}
-    const { code: primaryOpCode } = getOperatorCodeForProductionEvent(e, machineIdx)
     const creditCodes = eventCodesForOperatorGoalCredit(e)
     const codesToCredit = new Set<string>()
-    if (primaryOpCode.trim() && primaryOpCode !== "SIN_OPERADOR") {
-      codesToCredit.add(primaryOpCode)
-    }
     for (const code of creditCodes) {
       const emp = employeeByCodeLower.get(code.trim().toLowerCase())
-      // Solo operadoras de base: empacadoras puras no entran al ranking de meta de operadora.
-      if (emp && isFloorOperatorCandidate(emp)) codesToCredit.add(code)
+      // La ranura temporal no cambia la meta: solo primaryRole=operator entra aquí.
+      if (emp?.status === "active" && isOperatorRole(emp.primaryRole)) {
+        codesToCredit.add(code)
+      }
     }
     if (codesToCredit.size === 0) continue
 
@@ -652,7 +650,7 @@ function buildOperatorRanking(
 
   const shiftNum = shiftFilter === "matutino" ? 1 : 2
   for (const emp of employees) {
-    if (!isFloorOperatorCandidate(emp)) continue
+    if (emp.status !== "active" || !isOperatorRole(emp.primaryRole)) continue
     if (emp.shift !== shiftNum) continue
     const code = emp.employeeCode?.trim()
     if (code) operatorCodes.add(code)
@@ -660,7 +658,7 @@ function buildOperatorRanking(
   for (const code of productionByCode.keys()) {
     const emp = employeeByCodeLower.get(code.trim().toLowerCase())
     // Sin empleado en catálogo (p. ej. NFC de pruebas borrados) o no es operadora activa → no listar.
-    if (!emp || !isFloorOperatorCandidate(emp)) continue
+    if (!emp || emp.status !== "active" || !isOperatorRole(emp.primaryRole)) continue
     operatorCodes.add(code)
   }
 

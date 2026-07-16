@@ -576,6 +576,46 @@ function aggregateRoleProductionByDay(
   return out
 }
 
+/**
+ * Reagrupa por rol primordial: si una operadora cubre empaque, o una empacadora
+ * cubre operación, toda la producción del día conserva la misma meta primordial.
+ */
+function productionForPrimaryRoleSection(
+  sectionRole: BonusSectionRole,
+  roleProductionByPersonDay: Map<string, Map<string, DayRoleTotals>>,
+  primaryRoleByPerson: Map<string, BonusSectionRole>,
+  fallbackPeople: string[],
+  fallbackProductionByPersonDay: Map<string, Map<string, number>>,
+): {
+  people: string[]
+  productionByPersonDay: Map<string, Map<string, number>>
+} {
+  const people: string[] = []
+  const productionByPersonDay = new Map<string, Map<string, number>>()
+  // Datos históricos sin empleado en catálogo conservan su sección observada.
+  for (const person of fallbackPeople) {
+    if (primaryRoleByPerson.has(person)) continue
+    people.push(person)
+    const fallback = fallbackProductionByPersonDay.get(person)
+    if (fallback) productionByPersonDay.set(person, new Map(fallback))
+  }
+  for (const [person, primaryRole] of primaryRoleByPerson) {
+    if (primaryRole !== sectionRole) continue
+    people.push(person)
+    const rolesByDay = roleProductionByPersonDay.get(person)
+    if (!rolesByDay) continue
+    const totalsByDay = new Map<string, number>()
+    for (const [dayIso, roles] of rolesByDay) {
+      totalsByDay.set(dayIso, totalRoleProduction(roles))
+    }
+    productionByPersonDay.set(person, totalsByDay)
+  }
+  return {
+    people: people.sort((a, b) => a.localeCompare(b, "es")),
+    productionByPersonDay,
+  }
+}
+
 function dateToIsoInTimeZone(date: Date, timeZone: string): string {
   const p = getPartsInTimeZone(date, timeZone)
   const mm = String(p.month).padStart(2, "0")
@@ -1019,6 +1059,17 @@ function configureTemplateSheet(
       dayShiftBounds,
       section.extractPeople,
     )
+    if (section.sectionRole === "operator" || section.sectionRole === "packer") {
+      const primaryProduction = productionForPrimaryRoleSection(
+        section.sectionRole,
+        roleProductionByPersonDay,
+        primaryRoleByPerson,
+        people,
+        productionByPersonDay,
+      )
+      people = primaryProduction.people
+      productionByPersonDay = primaryProduction.productionByPersonDay
+    }
     if (section.sectionRole === "bending" || section.sectionRole === "roller") {
       const merged = mergeManualIntoSectionProduction(
         section.sectionRole,

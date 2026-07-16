@@ -283,7 +283,16 @@ function EmployeeFormFields({
             onChange({
               ...form,
               primaryRole,
-              secondaryRole: primaryRole === "operator" ? form.secondaryRole : "",
+              secondaryRole:
+                primaryRole === "packer"
+                  ? form.secondaryRole === "operator"
+                    ? "operator"
+                    : ""
+                  : primaryRole === "operator"
+                    ? form.secondaryRole === "operator"
+                      ? ""
+                      : form.secondaryRole
+                    : "",
             })
           }}
         >
@@ -327,7 +336,7 @@ function EmployeeFormFields({
           Turno en cuya gráfica del inicio cuenta su producción.
         </p>
       </div>
-      {form.primaryRole === "operator" ? (
+      {form.primaryRole === "operator" || form.primaryRole === "packer" ? (
         <div className="space-y-2">
           <Label>Rol secundario (opcional)</Label>
           <Select
@@ -344,7 +353,11 @@ function EmployeeFormFields({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="none">Sin rol secundario</SelectItem>
-              {SELECTABLE_SECONDARY_ROLES.map((role) => (
+              {SELECTABLE_SECONDARY_ROLES.filter((role) =>
+                form.primaryRole === "packer"
+                  ? role === "operator"
+                  : role !== "operator",
+              ).map((role) => (
                 <SelectItem key={role} value={role}>
                   {EMPLOYEE_SECONDARY_ROLE_LABELS[role]}
                 </SelectItem>
@@ -358,8 +371,9 @@ function EmployeeFormFields({
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Solo aplica si el rol primordial es operador. Los eventos del mes pueden cambiarlo
-            temporalmente.
+            Opcional. El rol primordial y su meta no cambian. Déjalo vacío si no hay cobertura
+            temporal; solo asígnarlo el día que una operadora cubra otro puesto o una empacadora
+            cubra operación.
           </p>
         </div>
       ) : (
@@ -610,12 +624,27 @@ export default function EmployeesPage() {
     }
   }, [employees])
 
-  const operatorEmployees = useMemo(
+  const roleChangeEmployees = useMemo(
     () =>
       employees.filter(
-        (e) => (e.primaryRole ?? "operator") === "operator" && e.status !== "terminated",
+        (e) =>
+          ((e.primaryRole ?? "operator") === "operator" || e.primaryRole === "packer") &&
+          e.status !== "terminated",
       ),
     [employees],
+  )
+
+  const selectedRoleEventEmployee = useMemo(
+    () => roleChangeEmployees.find((e) => e.id === newRoleEvent.employeeId),
+    [newRoleEvent.employeeId, roleChangeEmployees],
+  )
+
+  const roleEventSecondaryOptions = useMemo(
+    () =>
+      selectedRoleEventEmployee?.primaryRole === "packer"
+        ? (["operator"] as ApiEmployeeSecondaryRole[])
+        : SELECTABLE_SECONDARY_ROLES.filter((role) => role !== "operator"),
+    [selectedRoleEventEmployee],
   )
 
   const isEmployeeFormComplete = useMemo(() => {
@@ -679,10 +708,18 @@ export default function EmployeesPage() {
         rfc: employeeForm.rfc.trim() || null,
         imss: employeeForm.imss.trim() || null,
         primaryRole: employeeForm.primaryRole,
-        secondaryRole:
-          employeeForm.primaryRole === "operator" && employeeForm.secondaryRole
-            ? employeeForm.secondaryRole
-            : null,
+        // Segundo rol siempre opcional. Solo se envía si hay valor válido para el primario.
+        secondaryRole: (() => {
+          const secondary = employeeForm.secondaryRole
+          if (!secondary) return null
+          if (employeeForm.primaryRole === "operator" && secondary !== "operator") {
+            return secondary
+          }
+          if (employeeForm.primaryRole === "packer" && secondary === "operator") {
+            return secondary
+          }
+          return null
+        })(),
         shift: Number(employeeForm.shift),
         hiredAt: employeeForm.hiredAt.trim() || null,
       }
@@ -1579,11 +1616,11 @@ export default function EmployeesPage() {
                   <div>
                     <h2 className="text-lg font-semibold">Eventos de cambio de rol secundario</h2>
                     <p className="text-sm text-muted-foreground mt-1">
-                      Solo para operadores: registra cuando cubren empaque o auxiliar.
-                      El rol primordial no cambia; los reportes de bono usan el rol secundario del día.
+                      Registra cuando una operadora cubre otro puesto o una empacadora cubre
+                      operación. El rol primordial y su meta no cambian; la producción del puesto
+                      temporal se acredita a esa misma meta primordial.
                       Al cierre del turno (23:35) el rol secundario se quita automáticamente; al día
-                      siguiente hay que registrar de nuevo si aplica. En secciones que no correspondan
-                      aparece <span className="font-semibold text-red-600">n/a</span>.
+                      siguiente hay que registrar de nuevo si aplica.
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1987,27 +2024,35 @@ export default function EmployeesPage() {
           <DialogHeader>
             <DialogTitle>Cambio de rol secundario</DialogTitle>
             <DialogDescription>
-              Solo operadores. El rol primordial permanece; este evento define el rol secundario del
-              día para reportes de bono.
+              El rol primordial y su meta permanecen. Este evento solo define el puesto temporal
+              del día.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>Operador</Label>
+              <Label>Empleado</Label>
               <Select
                 value={newRoleEvent.employeeId}
-                onValueChange={(v) => setNewRoleEvent({ ...newRoleEvent, employeeId: v })}
+                onValueChange={(v) => {
+                  const employee = roleChangeEmployees.find((e) => e.id === v)
+                  setNewRoleEvent({
+                    ...newRoleEvent,
+                    employeeId: v,
+                    secondaryRole:
+                      employee?.primaryRole === "packer" ? "operator" : "packer",
+                  })
+                }}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Seleccionar…" />
                 </SelectTrigger>
                 <SelectContent>
-                  {operatorEmployees.length === 0 ? (
+                  {roleChangeEmployees.length === 0 ? (
                     <SelectItem value="__none" disabled>
-                      No hay operadores registrados
+                      No hay operadores ni empacadores registrados
                     </SelectItem>
                   ) : (
-                    operatorEmployees.map((emp) => (
+                    roleChangeEmployees.map((emp) => (
                       <SelectItem key={emp.id} value={emp.id}>
                         {emp.fullName}
                         {emp.employeeCode ? ` (${emp.employeeCode})` : ""}
@@ -2065,7 +2110,7 @@ export default function EmployeesPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {SELECTABLE_SECONDARY_ROLES.map((role) => (
+                  {roleEventSecondaryOptions.map((role) => (
                     <SelectItem key={role} value={role}>
                       {EMPLOYEE_SECONDARY_ROLE_LABELS[role]}
                     </SelectItem>

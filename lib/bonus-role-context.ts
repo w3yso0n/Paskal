@@ -54,7 +54,13 @@ export function buildDefaultSecondaryRoleByPerson(
   for (const emp of employees) {
     const name = normalizePersonName(emp.fullName)
     const primary = resolveEmployeeProductionRole(emp.primaryRole)
-    if (!name || primary !== "operator" || !emp.secondaryRole) continue
+    if (
+      !name ||
+      (primary !== "operator" && primary !== "packer") ||
+      !emp.secondaryRole
+    ) {
+      continue
+    }
     out.set(name, emp.secondaryRole)
   }
   return out
@@ -82,7 +88,7 @@ function resolveEffectiveRole(
   eventSecondary: EmployeeSecondaryRole | undefined,
 ): BonusEffectiveRole | undefined {
   if (!primary) return undefined
-  if (primary !== "operator") return primary
+  if (primary !== "operator" && primary !== "packer") return primary
   const secondary = eventSecondary ?? defaultSecondary
   if (!secondary) return primary
   return secondary === "auxiliary" ? "auxiliary" : secondary
@@ -116,7 +122,7 @@ export function collectSectionPeople(
 
   for (const [person, primary] of primaryRoleByPerson) {
     if (primary === sectionRole) set.add(person)
-    if (primary === "operator") {
+    if (primary === "operator" || primary === "packer") {
       const defaultSecondary = defaultSecondaryByPerson.get(person)
       if (defaultSecondary && defaultSecondary !== "auxiliary" && defaultSecondary === sectionRole) {
         set.add(person)
@@ -126,7 +132,7 @@ export function collectSectionPeople(
 
   for (const [person, byDay] of tempSecondaryByPersonDay) {
     const primary = primaryRoleByPerson.get(person)
-    if (primary !== "operator") continue
+    if (primary !== "operator" && primary !== "packer") continue
     for (const day of dayIsos) {
       const secondary = byDay.get(day)
       if (secondary && secondary !== "auxiliary" && secondary === sectionRole) {
@@ -159,6 +165,12 @@ export function shouldShowNaForRoleContext(
   amountInSection: number,
   dayRoles: DayRoleTotals,
 ): boolean {
+  // La producción y la meta siempre pertenecen al rol primordial. El rol temporal
+  // solo indica en qué ranura trabajó ese día; no mueve su producción a otra meta.
+  if (primaryRole && totalRoleProduction(dayRoles) > 0) {
+    return sectionRole !== primaryRole
+  }
+
   if (effectiveRole === "auxiliary") {
     return sectionRole !== "operator" || amountInSection > 0
   }
