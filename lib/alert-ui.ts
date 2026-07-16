@@ -130,8 +130,11 @@ export function mapApiAlertToUi(
   const timestamp = new Date(a.createdAt)
   const isOperatorOrphan = kind === "no_checkin"
   const isPackagerOrphan = kind === "no_packager"
+  // no_checkin: suma real por eventos ORPHAN_PROD cuando hay `productionEvents` a mano; si no
+  // (p. ej. la campana de notificaciones, que ya no descarga 1500 eventos solo para esto), cae
+  // al mismo mensaje que ya trae el total ("N piezas huérfanas pendientes de atribuir").
   const orphanPending = isOperatorOrphan
-    ? sumOrphanPendingForAlert(productionEvents, a.id)
+    ? sumOrphanPendingForAlert(productionEvents, a.id) || parsePendingUnitsFromAlertMessage(a.message)
     : isPackagerOrphan && a.status === "open"
       ? parsePendingUnitsFromAlertMessage(a.message)
       : 0
