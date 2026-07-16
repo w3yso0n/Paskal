@@ -360,7 +360,9 @@ export function computeDailyGoalProgress(
 ): { percentage: number; remaining: number } {
   if (target <= 0) return { percentage: 0, remaining: 0 }
   const remaining = Math.max(0, target - actual)
-  const percentage = Math.min(100, Math.round((actual / target) * 100))
+  // 1 decimal TRUNCADO (no redondeado): 2990/3000 se muestra 99.6%, no 100% —
+  // el 100 solo aparece con la meta realmente cumplida.
+  const percentage = Math.min(100, Math.floor((actual / target) * 1000) / 10)
   return { percentage, remaining }
 }
 

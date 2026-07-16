@@ -23,8 +23,6 @@ import {
 } from "@/components/ui/table"
 import {
   ChartContainer,
-  ChartLegend,
-  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart"
@@ -172,11 +170,7 @@ import {
   buildMachineActivitySummary,
   formatDurationMinutes,
 } from "@/lib/machine-activity-analytics"
-import {
-  buildAlertRoleCounts,
-  buildAlertsByKindChartConfig,
-  buildDailyAlertsByKindSeries,
-} from "@/lib/alert-role-metrics"
+import { buildAlertRoleCounts } from "@/lib/alert-role-metrics"
 import {
   buildShiftIncidentsAnalytics,
   INCIDENCIAS_EARLY_LEAVE_ENABLED,
@@ -1547,22 +1541,6 @@ export default function MetricsPage() {
     [activeTab, alertsLoaded, filterStartDate, filterEndDate, scopedProductionRows],
   )
 
-  const alertsByKindDaily = useMemo(() => {
-    if (activeTab !== "produccion") {
-      return { series: [], kindsInRange: [], total: 0 }
-    }
-    return buildDailyAlertsByKindSeries(
-      alertsLoaded,
-      filterStartDate,
-      filterEndDate,
-    )
-  }, [activeTab, alertsLoaded, filterStartDate, filterEndDate])
-
-  const alertsByKindChartConfig = useMemo(
-    () => buildAlertsByKindChartConfig(alertsByKindDaily.kindsInRange),
-    [alertsByKindDaily.kindsInRange],
-  )
-
   const hourlyProductionData = useMemo(() => {
     if (activeTab !== "produccion") return []
     // Use the last day with real production data in the range.
@@ -2721,51 +2699,6 @@ export default function MetricsPage() {
                     icon={Package}
                     iconColor="text-violet-600"
                   />
-                </div>
-
-                <div className="rounded-xl border border-border bg-background p-4">
-                  <div className="mb-3">
-                    <h3 className="text-sm font-semibold text-foreground">
-                      Alertas por día
-                    </h3>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      Cantidad diaria apilada por tipo de alerta
-                      {alertsByKindDaily.total > 0
-                        ? ` · ${alertsByKindDaily.total} en el rango`
-                        : ""}
-                    </p>
-                  </div>
-                  {alertsByKindDaily.series.length === 0 ? (
-                    <p className="py-12 text-center text-sm text-muted-foreground">
-                      Sin alertas en el rango seleccionado.
-                    </p>
-                  ) : (
-                    <ChartContainer
-                      className="h-[320px] w-full aspect-auto"
-                      config={alertsByKindChartConfig}
-                    >
-                      <BarChart data={alertsByKindDaily.series} margin={{ left: 8, right: 8 }}>
-                        <CartesianGrid vertical={false} />
-                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                        <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
-                        <ChartTooltip content={<ChartTooltipContent />} />
-                        <ChartLegend content={<ChartLegendContent />} />
-                        {alertsByKindDaily.kindsInRange.map((kind, idx) => (
-                          <Bar
-                            key={kind}
-                            dataKey={kind}
-                            stackId="alerts"
-                            fill={`var(--color-${kind})`}
-                            radius={
-                              idx === alertsByKindDaily.kindsInRange.length - 1
-                                ? [4, 4, 0, 0]
-                                : [0, 0, 0, 0]
-                            }
-                          />
-                        ))}
-                      </BarChart>
-                    </ChartContainer>
-                  )}
                 </div>
 
                 <div className="rounded-xl border border-border bg-background p-4">

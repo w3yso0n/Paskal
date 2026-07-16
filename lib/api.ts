@@ -31,6 +31,8 @@ export interface RequestUser {
   email: string;
   role: UserRole;
   isPlatformAdmin: boolean;
+  /** Nombre completo desde BD (lo agrega `/auth/me`); null si el backend aún no lo expone. */
+  fullName?: string | null;
 }
 
 export interface AuthTokens {

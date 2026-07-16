@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
-import { MachineCard } from "@/components/production/machine-card"
+import { MachineCard, type MachineWaitingReason } from "@/components/production/machine-card"
+import {
+  MachineStatusDot,
+  machineStatusShortLabel,
+} from "@/components/production/machine-status-dot"
 import type { Machine } from "@/lib/types"
 import {
   closeAllMachineCheckins,
@@ -31,7 +35,7 @@ import { TextAutocomplete, type TextAutocompleteOption } from "@/components/ui/t
 import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Checkbox } from "@/components/ui/checkbox"
-import { AlertTriangle, Check, Eraser, Maximize2, Minimize2, Plus, RotateCcw, Settings2, X } from "lucide-react"
+import { AlertTriangle, Eraser, Maximize2, Minimize2, Plus, RotateCcw, Settings2, X } from "lucide-react"
 import { toast } from "sonner"
 import {
   Tooltip,
@@ -151,6 +155,8 @@ interface MachineData extends Machine {
   inMaintenance?: boolean
   /** Amarilla SOLO porque el contador no se ha reseteado a 0 (ya tiene SKU + operador). */
   needsCounterReset?: boolean
+  /** Motivo del amarillo (espeja el LED físico): fijo=sin operadora; parpadeo=falta SKU o reset. */
+  waitingReason?: MachineWaitingReason
 }
 
 function machineNumberFromName(name: string): number {
@@ -207,6 +213,17 @@ function buildMachineData(
       // Amarilla solo por falta de reset: ya tiene SKU + operador y está en línea, sin mantenimiento.
       needsCounterReset:
         Boolean(sku) && Boolean(operator) && !offline && !inMaintenance && !m.counterReady,
+      // Motivo del amarillo, en orden de resolución: operadora → SKU → reset del contador.
+      waitingReason:
+        offline || inMaintenance
+          ? undefined
+          : !operator
+            ? ("sin_operadora" as const)
+            : !sku
+              ? ("sin_sku" as const)
+              : !m.counterReady
+                ? ("contador" as const)
+                : undefined,
     }
   })
 }
@@ -805,9 +822,16 @@ export default function ProductionFloorPage() {
   // Stats
   const activeCount = machineData.filter(m => m.status === "active").length
   const waitingCount = machineData.filter(m => m.status === "waiting").length
+  const waitingNoOperatorCount = machineData.filter(m => m.waitingReason === "sin_operadora").length
+  const waitingNoSkuCount = machineData.filter(m => m.waitingReason === "sin_sku").length
+  const waitingCounterCount = machineData.filter(m => m.waitingReason === "contador").length
   const inactiveCount = machineData.filter(m => m.status === "inactive").length
   const maintenanceCount = machineData.filter(m => m.status === "maintenance").length
   const assignedCount = machineData.filter(m => m.sku).length
+  // Como el hueco central de la tira física: en producción (verde/amarillo) sin empacadora.
+  const machineHasPackerGap = (m: MachineData) =>
+    (m.status === "active" || m.status === "waiting") && !m.packers?.length
+  const noPackerCount = machineData.filter(machineHasPackerGap).length
 
   const sortedMachines = useMemo(() => {
     const byNumericName = (value: string) => {
@@ -912,7 +936,7 @@ export default function ProductionFloorPage() {
                         : undefined
                     }
                     production={machine.production}
-                    needsCounterReset={machine.needsCounterReset}
+                    waitingReason={machine.waitingReason}
                     onClick={() => handleMachineClick(machine)}
                     isSelected={focusedMachineId === machine.id}
                   />
@@ -954,27 +978,76 @@ export default function ProductionFloorPage() {
           </div>
         )}
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+        {/* Stats Cards — todos los casos posibles, con el mismo foquito del diagrama */}
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
           <div className="rounded-lg border border-border bg-card p-4">
             <p className="text-xs font-medium uppercase text-muted-foreground">Total Máquinas</p>
-            <p className="text-2xl font-bold text-card-foreground">{machineData.length}</p>
+            <p className="mt-1 text-2xl font-bold text-card-foreground">{machineData.length}</p>
+            <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+              En el diagrama de planta
+            </p>
           </div>
           <div className="rounded-lg border border-green-200 bg-green-50 p-4">
-            <p className="text-xs font-medium uppercase text-green-600">Activas</p>
-            <p className="text-2xl font-bold text-green-700">{activeCount}</p>
+            <div className="flex items-center gap-1.5">
+              <MachineStatusDot status="active" />
+              <p className="text-xs font-medium uppercase text-green-600">Activas</p>
+            </div>
+            <p className="mt-1 text-2xl font-bold text-green-700">{activeCount}</p>
+            <p className="mt-1 text-[11px] leading-snug text-green-700/80">
+              SKU + operadora + contador en 0
+            </p>
           </div>
           <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
-            <p className="text-xs font-medium uppercase text-yellow-600">Esperando</p>
-            <p className="text-2xl font-bold text-yellow-700">{waitingCount}</p>
+            <div className="flex items-center gap-1.5">
+              <MachineStatusDot status="waiting" />
+              <p className="text-xs font-medium uppercase text-yellow-600">Esperando</p>
+            </div>
+            <p className="mt-1 text-2xl font-bold text-yellow-700">{waitingCount}</p>
+            <div className="mt-1 space-y-1 text-[11px] leading-snug text-yellow-800">
+              <p className="flex items-center gap-1.5">
+                <MachineStatusDot status="waiting" className="h-2 w-2" />
+                <span>Sin operadora · <b>{waitingNoOperatorCount}</b></span>
+              </p>
+              <p className="flex items-center gap-1.5">
+                <MachineStatusDot status="waiting" blinking className="h-2 w-2" />
+                <span>Falta SKU · <b>{waitingNoSkuCount}</b></span>
+              </p>
+              <p className="flex items-center gap-1.5">
+                <MachineStatusDot status="waiting" blinking className="h-2 w-2" />
+                <span>Contador ≠ 0 · <b>{waitingCounterCount}</b></span>
+              </p>
+            </div>
           </div>
           <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-            <p className="text-xs font-medium uppercase text-red-600">Inactivas</p>
-            <p className="text-2xl font-bold text-red-700">{inactiveCount}</p>
+            <div className="flex items-center gap-1.5">
+              <MachineStatusDot status="inactive" />
+              <p className="text-xs font-medium uppercase text-red-600">Apagadas</p>
+            </div>
+            <p className="mt-1 text-2xl font-bold text-red-700">{inactiveCount}</p>
+            <p className="mt-1 text-[11px] leading-snug text-red-700/80">
+              Sin señal del equipo (&gt;2 min)
+            </p>
           </div>
           <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
-            <p className="text-xs font-medium uppercase text-blue-600">Mantenimiento</p>
-            <p className="text-2xl font-bold text-blue-700">{maintenanceCount}</p>
+            <div className="flex items-center gap-1.5">
+              <MachineStatusDot status="maintenance" />
+              <p className="text-xs font-medium uppercase text-blue-600">Mantenimiento</p>
+            </div>
+            <p className="mt-1 text-2xl font-bold text-blue-700">{maintenanceCount}</p>
+            <p className="mt-1 text-[11px] leading-snug text-blue-700/80">
+              Sesión de mantenimiento activa
+            </p>
+          </div>
+          <div className="rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center gap-1.5">
+              <MachineStatusDot status="active" packerGap />
+              <MachineStatusDot status="waiting" packerGap />
+              <p className="text-xs font-medium uppercase text-muted-foreground">Sin empacadora</p>
+            </div>
+            <p className="mt-1 text-2xl font-bold text-card-foreground">{noPackerCount}</p>
+            <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+              Centro apagado: produce (verde o amarilla) sin empacadora marcada
+            </p>
           </div>
         </div>
 
@@ -1008,23 +1081,45 @@ export default function ProductionFloorPage() {
 
           {renderDiagram("h-[610px] pt-1")}
 
-          {/* Legend */}
-          <div className="mt-8 flex flex-wrap items-center justify-center gap-6 border-t border-border pt-6">
+          {/* Legend — mismos foquitos que el diagrama, un caso por elemento */}
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 border-t border-border pt-6">
             <div className="flex items-center gap-2">
-              <div className="h-3 w-3 rounded-full bg-green-500" />
+              <MachineStatusDot status="active" className="h-3.5 w-3.5" />
               <span className="text-sm text-muted-foreground">Activa ({activeCount})</span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="h-3 w-3 rounded-full bg-yellow-500" />
-              <span className="text-sm text-muted-foreground">Esperando ({waitingCount})</span>
+              <MachineStatusDot status="waiting" className="h-3.5 w-3.5" />
+              <span className="text-sm text-muted-foreground">
+                Sin operadora ({waitingNoOperatorCount})
+              </span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="h-3 w-3 rounded-full bg-red-500" />
-              <span className="text-sm text-muted-foreground">Inactiva ({inactiveCount})</span>
+              <MachineStatusDot status="waiting" blinking className="h-3.5 w-3.5" />
+              <span className="text-sm text-muted-foreground">
+                <span className="font-medium text-yellow-700">Parpadea:</span> falta SKU (
+                {waitingNoSkuCount}) o contador ≠ 0 ({waitingCounterCount})
+              </span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="h-3 w-3 rounded-full bg-blue-500" />
-              <span className="text-sm text-muted-foreground">Mantenimiento ({maintenanceCount})</span>
+              <MachineStatusDot status="inactive" className="h-3.5 w-3.5" />
+              <span className="text-sm text-muted-foreground">
+                Apagada / sin señal ({inactiveCount})
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <MachineStatusDot status="maintenance" className="h-3.5 w-3.5" />
+              <span className="text-sm text-muted-foreground">
+                Mantenimiento ({maintenanceCount})
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="flex items-center gap-1">
+                <MachineStatusDot status="active" packerGap className="h-3.5 w-3.5" centerClassName="h-1.5 w-1.5" />
+                <MachineStatusDot status="waiting" packerGap className="h-3.5 w-3.5" centerClassName="h-1.5 w-1.5" />
+              </span>
+              <span className="text-sm text-muted-foreground">
+                Centro apagado = sin empacadora ({noPackerCount})
+              </span>
             </div>
           </div>
         </div>
@@ -1234,8 +1329,8 @@ export default function ProductionFloorPage() {
                 <TableHead>Op.</TableHead>
                 <TableHead>Emp.</TableHead>
                 <TableHead className="w-16">+</TableHead>
-                <TableHead className="w-10" aria-label="Listo">
-                  <Check className="mx-auto h-4 w-4 text-muted-foreground" />
+                <TableHead className="w-14 text-center text-xs" aria-label="Estado">
+                  Estado
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -1599,12 +1694,18 @@ export default function ProductionFloorPage() {
                       )}
                     </TableCell>
                     <TableCell className="text-center">
-                      <span
-                        className={cn(
-                          "inline-block h-2.5 w-2.5 rounded-full",
-                          ok ? "bg-green-500" : "bg-amber-500",
-                        )}
-                        aria-label={ok ? "Listo" : "Incompleto"}
+                      {/* Mismo foquito que el diagrama: color + parpadeo + centro apagado */}
+                      <MachineStatusDot
+                        status={m.status}
+                        blinking={
+                          m.waitingReason === "sin_sku" || m.waitingReason === "contador"
+                        }
+                        packerGap={machineHasPackerGap(m)}
+                        className="h-3 w-3"
+                        title={
+                          machineStatusShortLabel(m.status, m.waitingReason) +
+                          (machineHasPackerGap(m) ? " · sin empacadora" : "")
+                        }
                       />
                     </TableCell>
                   </TableRow>
@@ -1664,16 +1765,34 @@ export default function ProductionFloorPage() {
             <div className="rounded-lg bg-muted/50 p-3">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Estado actual:</span>
-                <span className={`font-medium px-2 py-0.5 rounded ${
-                  selectedMachine?.status === "active" 
-                    ? "bg-green-100 text-green-700" 
-                    : selectedMachine?.status === "waiting"
-                    ? "bg-yellow-100 text-yellow-700"
-                    : "bg-red-100 text-red-700"
-                }`}>
-                  {selectedMachine?.status === "active" && "Activa"}
-                  {selectedMachine?.status === "waiting" && "Esperando"}
-                  {selectedMachine?.status === "inactive" && "Inactiva"}
+                <span className="flex items-center gap-1.5">
+                  {selectedMachine && (
+                    <MachineStatusDot
+                      status={selectedMachine.status}
+                      blinking={
+                        selectedMachine.waitingReason === "sin_sku" ||
+                        selectedMachine.waitingReason === "contador"
+                      }
+                      packerGap={machineHasPackerGap(selectedMachine)}
+                      className="h-2.5 w-2.5"
+                    />
+                  )}
+                  <span className={`font-medium px-2 py-0.5 rounded ${
+                    selectedMachine?.status === "active"
+                      ? "bg-green-100 text-green-700"
+                      : selectedMachine?.status === "waiting"
+                        ? "bg-yellow-100 text-yellow-700"
+                        : selectedMachine?.status === "maintenance"
+                          ? "bg-blue-100 text-blue-700"
+                          : "bg-red-100 text-red-700"
+                  }`}>
+                    {selectedMachine
+                      ? machineStatusShortLabel(
+                          selectedMachine.status,
+                          selectedMachine.waitingReason,
+                        )
+                      : ""}
+                  </span>
                 </span>
               </div>
               {selectedMachine?.production !== undefined && (
@@ -1682,10 +1801,41 @@ export default function ProductionFloorPage() {
                   <span className="font-medium text-foreground">{selectedMachine.production} unidades</span>
                 </div>
               )}
+              {/* Por qué está en este estado — nota por caso, como la del contador */}
+              {selectedMachine?.status === "inactive" && (
+                <div className="mt-2 flex items-center gap-2 rounded-md bg-red-100 px-2 py-1.5 text-xs font-medium text-red-800">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span>Sin señal del equipo (&gt;2 min): apagada o sin WiFi.</span>
+                </div>
+              )}
+              {selectedMachine?.status === "maintenance" && (
+                <div className="mt-2 flex items-center gap-2 rounded-md bg-blue-100 px-2 py-1.5 text-xs font-medium text-blue-800">
+                  <Settings2 className="h-4 w-4 shrink-0" />
+                  <span>Sesión de mantenimiento activa — vuelve a su estado al cerrarla.</span>
+                </div>
+              )}
+              {selectedMachine?.waitingReason === "sin_operadora" && (
+                <div className="mt-2 flex items-center gap-2 rounded-md bg-amber-100 px-2 py-1.5 text-xs font-medium text-amber-800">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span>Sin operadora — falta el tap de entrada con tarjeta en el equipo.</span>
+                </div>
+              )}
+              {selectedMachine?.waitingReason === "sin_sku" && (
+                <div className="mt-2 flex items-center gap-2 rounded-md bg-amber-100 px-2 py-1.5 text-xs font-medium text-amber-800">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span>Operadora presente sin SKU — asígnalo aquí abajo para pasar a verde.</span>
+                </div>
+              )}
               {selectedMachine?.needsCounterReset && (
                 <div className="mt-2 flex items-center gap-2 rounded-md bg-amber-100 px-2 py-1.5 text-xs font-medium text-amber-800">
                   <AlertTriangle className="h-4 w-4 shrink-0" />
                   <span>El contador no está en 0 — resetéalo para que la máquina pase a verde.</span>
+                </div>
+              )}
+              {selectedMachine && machineHasPackerGap(selectedMachine) && (
+                <div className="mt-2 flex items-center gap-2 rounded-md bg-muted px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                  <span className="shrink-0">◉</span>
+                  <span>Produciendo sin empacadora marcada (centro apagado en el foquito).</span>
                 </div>
               )}
             </div>

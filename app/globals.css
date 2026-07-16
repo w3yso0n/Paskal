@@ -184,3 +184,20 @@
     transform: rotate(8deg);
   }
 }
+
+/* Parpadeo duro tipo LED (encendido/apagado) — más notorio que animate-pulse.
+   Lo usan los foquitos de estado del piso de producción (falta SKU / contador ≠ 0). */
+@keyframes led-blink {
+  0%,
+  54% {
+    opacity: 1;
+  }
+  55%,
+  100% {
+    opacity: 0.12;
+  }
+}
+
+.led-blink {
+  animation: led-blink 0.9s linear infinite;
+}

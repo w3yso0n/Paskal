@@ -36,7 +36,12 @@ export function KpiCard({
         <div className="flex-1 min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</p>
           {breakdown && breakdown.length > 0 ? (
-            <div className="mt-2 grid grid-cols-3 gap-2">
+            <div
+              className={cn(
+                "mt-2 grid gap-2",
+                breakdown.length >= 4 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3",
+              )}
+            >
               {breakdown.map((item) => (
                 <div key={item.label} className="min-w-0">
                   <div className="flex items-center gap-1.5">
