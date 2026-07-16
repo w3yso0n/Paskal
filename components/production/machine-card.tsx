@@ -3,6 +3,7 @@
 import Image from "next/image"
 import { cn } from "@/lib/utils"
 import type { MachineStatus } from "@/lib/types"
+import { MachineStatusDot } from "@/components/production/machine-status-dot"
 import {
   Tooltip,
   TooltipContent,
@@ -24,13 +25,6 @@ interface MachineCardProps {
   waitingReason?: MachineWaitingReason
   onClick?: () => void
   isSelected?: boolean
-}
-
-const statusColors = {
-  active: "bg-green-500",
-  waiting: "bg-yellow-500",
-  inactive: "bg-red-500",
-  maintenance: "bg-blue-500",
 }
 
 const statusLabels = {
@@ -90,13 +84,13 @@ export function MachineCard({
           >
             {/* Status indicator — parpadea igual que el LED del equipo (falta SKU o reset);
                 dona (centro apagado) = sin empacadora, como el hueco central de la tira */}
-            <div className={cn(
-              "absolute -top-1 -right-1 z-10 flex h-4 w-4 items-center justify-center rounded-full border-2 border-white shadow-md",
-              statusColors[status],
-              blinking && "animate-pulse"
-            )}>
-              {packerGap && <div className="h-1.5 w-1.5 rounded-full bg-black" />}
-            </div>
+            <MachineStatusDot
+              status={status}
+              blinking={blinking}
+              packerGap={packerGap}
+              className="absolute -top-1 -right-1 z-10 h-4 w-4 border-2 border-white shadow-md"
+              centerClassName="h-1.5 w-1.5"
+            />
             
             {/* Machine image */}
             <div className="flex flex-col items-center">
@@ -137,13 +131,12 @@ export function MachineCard({
         >
           <div className="space-y-2 p-1">
             <div className="flex items-center gap-2">
-              <div className={cn(
-                "flex h-2.5 w-2.5 items-center justify-center rounded-full",
-                statusColors[status],
-                blinking && "animate-pulse"
-              )}>
-                {packerGap && <div className="h-1 w-1 rounded-full bg-black" />}
-              </div>
+              <MachineStatusDot
+                status={status}
+                blinking={blinking}
+                packerGap={packerGap}
+                className="h-2.5 w-2.5"
+              />
               <span className="font-semibold text-card-foreground">{name}</span>
               <span className={cn(
                 "text-xs px-1.5 py-0.5 rounded",
@@ -187,14 +180,35 @@ export function MachineCard({
                 </div>
               )}
             </div>
-            {waitingReason === "contador" && (
+            {/* Por qué está en este estado — cada caso con su explicación */}
+            {status === "inactive" && (
+              <p className="rounded bg-red-100 px-1.5 py-1 text-xs font-medium text-red-800">
+                ⚠ Sin señal del equipo (&gt;2 min): apagada o sin WiFi.
+              </p>
+            )}
+            {status === "maintenance" && (
+              <p className="rounded bg-blue-100 px-1.5 py-1 text-xs font-medium text-blue-800">
+                🔧 Sesión de mantenimiento activa — vuelve a su estado al cerrarla.
+              </p>
+            )}
+            {waitingReason === "sin_operadora" && (
               <p className="rounded bg-amber-100 px-1.5 py-1 text-xs font-medium text-amber-800">
-                ⚠ El contador no está en 0 — resetéalo para pasar a verde.
+                ⚠ Sin operadora — falta el tap de entrada con tarjeta.
               </p>
             )}
             {waitingReason === "sin_sku" && (
               <p className="rounded bg-amber-100 px-1.5 py-1 text-xs font-medium text-amber-800">
-                ⚠ Operadora presente sin SKU — asígnalo para pasar a verde.
+                ⚠ Operadora presente sin SKU — asígnalo para pasar a verde. Por eso parpadea.
+              </p>
+            )}
+            {waitingReason === "contador" && (
+              <p className="rounded bg-amber-100 px-1.5 py-1 text-xs font-medium text-amber-800">
+                ⚠ El contador no está en 0 — resetéalo para pasar a verde. Por eso parpadea.
+              </p>
+            )}
+            {packerGap && (
+              <p className="rounded bg-muted px-1.5 py-1 text-xs font-medium text-muted-foreground">
+                ◉ Centro apagado: produciendo sin empacadora marcada.
               </p>
             )}
             <p className="text-xs text-muted-foreground pt-1 border-t border-border">
