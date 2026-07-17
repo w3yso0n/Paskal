@@ -613,19 +613,24 @@ export default function AlertasClient() {
 
   const orphanUnitsForAlert = (alert: Alert | null): number => {
     if (!alert) return 0
+    const api = apiAlertsById.get(alert.id)
     if (isOperatorOrphanProductionAlert(alert)) {
-      const fromEvents = sumOrphanPendingForAlert(productionEvents, alert.id)
-      if (fromEvents > 0) return fromEvents
+      // Se confía en la suma real de eventos ORPHAN_PROD ligados a esta alerta — incluyendo un
+      // 0 real (ya atribuida) — nunca en el mensaje de texto, que NO se limpia al cerrar la
+      // alerta (antes un 0 real caía a un regex sobre el mensaje viejo y una alerta ya
+      // atribuida resucitaba con "Asignar" para las mismas piezas: bug reportado en M-016). Un
+      // episodio cerrado por límite de turno con piezas reales aún sin atribuir (quedan
+      // ligadas a la alerta cerrada, ver `closeOrphanEpisode`) se sigue detectando igual, porque
+      // la suma es sobre eventos reales, no sobre el status de la alerta.
+      return sumOrphanPendingForAlert(productionEvents, alert.id)
     }
     if (isPackagerOrphanProductionAlert(alert)) {
-      const api = apiAlertsById.get(alert.id)
-      const fromMessage = parsePendingUnitsFromAlertMessage(api?.message ?? alert.message)
-      if (fromMessage > 0) return fromMessage
+      // El acumulado de empacador no tiene un respaldo por evento — solo el mensaje. Una vez
+      // cerrada la alerta (atribuida, o descartada por cambio de día) no queda nada pendiente.
+      if (api && api.status !== "open") return 0
+      return parsePendingUnitsFromAlertMessage(api?.message ?? alert.message)
     }
-    const api = apiAlertsById.get(alert.id)
-    const msg = api?.message ?? alert.message ?? ""
-    const m = msg.match(/(\d+)\s*piezas/i)
-    return m ? Number(m[1]) : 0
+    return 0
   }
 
   const openAssign = (alert: Alert) => {

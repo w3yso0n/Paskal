@@ -179,11 +179,22 @@ export function mapApiAlertToUi(
   const timestamp = new Date(a.createdAt)
   const isOperatorOrphan = kind === "no_checkin"
   const isPackagerOrphan = kind === "no_packager"
-  // no_checkin: suma real por eventos ORPHAN_PROD cuando hay `productionEvents` a mano; si no
-  // (p. ej. la campana de notificaciones, que ya no descarga 1500 eventos solo para esto), cae
-  // al mismo mensaje que ya trae el total ("N piezas huérfanas pendientes de atribuir").
+  // no_checkin: suma real por eventos ORPHAN_PROD cuando hay `productionEvents` a mano — se
+  // CONFIA en ese cálculo tal cual, incluyendo un 0 real (alerta ya atribuida, o cerrada por
+  // límite de turno sin nada pendiente): el mensaje de texto NUNCA se limpia al cerrar la
+  // alerta, así que antes un 0 real caía por `||` al mensaje viejo y una alerta ya atribuida
+  // resucitaba como pendiente (bug reportado: M-016 seguía ofreciendo "Asignar" para piezas ya
+  // atribuidas). Solo se cae al mensaje cuando NO se cargaron eventos (p. ej. la campana de
+  // notificaciones, que ya no descarga 1500 eventos solo para esto) y la alerta sigue activa —
+  // un episodio cerrado por límite de turno puede seguir teniendo piezas reales pendientes de
+  // atribuir (quedan ligadas a la alerta cerrada, ver `closeOrphanEpisode`), así que ese caso
+  // sigue detectándose vía la suma real de eventos, nunca vía el mensaje de una alerta cerrada.
   const orphanPending = isOperatorOrphan
-    ? sumOrphanPendingForAlert(productionEvents, a.id) || parsePendingUnitsFromAlertMessage(a.message)
+    ? productionEvents.length > 0
+      ? sumOrphanPendingForAlert(productionEvents, a.id)
+      : a.status !== "closed"
+        ? parsePendingUnitsFromAlertMessage(a.message)
+        : 0
     : isPackagerOrphan && a.status === "open"
       ? parsePendingUnitsFromAlertMessage(a.message)
       : 0
