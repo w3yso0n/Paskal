@@ -737,42 +737,41 @@ export default function ProductionFloorPage() {
             mismatches.push({ name: r.machineName, field: "operatorCode", expected: expectedOp, got: gotOp })
           }
 
-          // Sin operador titular, el backend cierra el check-in ENTERO (una sesión no puede
-          // existir sin operador: `syncCheckinFromPersonnelDto` en machine.service.ts corta ahí
-          // mismo y nunca llega a guardar 2º operador/empacadores). Eso es correcto por diseño,
-          // no una falla de persistencia — antes se comparaba igual y disparaba un falso
-          // "cambios no persistidos" cada vez que alguien quitaba el operador dejando
-          // empacadores capturados (bug reportado: banner rojo aunque el cambio sí se aplicaba).
+          // Sin operador titular no puede haber "2º operador" (el rol depende de un titular) —
+          // el backend lo limpia por diseño, así que ese campo específico no se compara en ese
+          // caso. Los empacadores SÍ deben seguir asignados sin operador (se puede quitar al
+          // operador desde plataforma dejándolos trabajando), así que esos campos se comparan
+          // siempre: si no coinciden, es una falla real de persistencia.
           if (expectedOp != null) {
             const expectedOp2 = r.payload.operator2Code ?? null
             const gotOp2 = r.saved.operator2Code ?? null
             if (expectedOp2 !== gotOp2) {
               mismatches.push({ name: r.machineName, field: "operator2Code", expected: expectedOp2, got: gotOp2 })
             }
+          }
 
-            const expectedP1 = r.payload.packager1Code ?? null
-            const gotP1 = r.saved.packager1Code ?? null
-            if (expectedP1 !== gotP1) {
-              mismatches.push({ name: r.machineName, field: "packager1Code", expected: expectedP1, got: gotP1 })
-            }
+          const expectedP1 = r.payload.packager1Code ?? null
+          const gotP1 = r.saved.packager1Code ?? null
+          if (expectedP1 !== gotP1) {
+            mismatches.push({ name: r.machineName, field: "packager1Code", expected: expectedP1, got: gotP1 })
+          }
 
-            const expectedP2 = r.payload.packager2Code ?? null
-            const gotP2 = r.saved.packager2Code ?? null
-            if (expectedP2 !== gotP2) {
-              mismatches.push({ name: r.machineName, field: "packager2Code", expected: expectedP2, got: gotP2 })
-            }
+          const expectedP2 = r.payload.packager2Code ?? null
+          const gotP2 = r.saved.packager2Code ?? null
+          if (expectedP2 !== gotP2) {
+            mismatches.push({ name: r.machineName, field: "packager2Code", expected: expectedP2, got: gotP2 })
+          }
 
-            const expectedP3 = r.payload.packager3Code ?? null
-            const gotP3 = r.saved.packager3Code ?? null
-            if (expectedP3 !== gotP3) {
-              mismatches.push({ name: r.machineName, field: "packager3Code", expected: expectedP3, got: gotP3 })
-            }
+          const expectedP3 = r.payload.packager3Code ?? null
+          const gotP3 = r.saved.packager3Code ?? null
+          if (expectedP3 !== gotP3) {
+            mismatches.push({ name: r.machineName, field: "packager3Code", expected: expectedP3, got: gotP3 })
+          }
 
-            const expectedP4 = r.payload.packager4Code ?? null
-            const gotP4 = r.saved.packager4Code ?? null
-            if (expectedP4 !== gotP4) {
-              mismatches.push({ name: r.machineName, field: "packager4Code", expected: expectedP4, got: gotP4 })
-            }
+          const expectedP4 = r.payload.packager4Code ?? null
+          const gotP4 = r.saved.packager4Code ?? null
+          if (expectedP4 !== gotP4) {
+            mismatches.push({ name: r.machineName, field: "packager4Code", expected: expectedP4, got: gotP4 })
           }
         }
 
