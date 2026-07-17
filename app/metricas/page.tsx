@@ -871,6 +871,13 @@ function buildPersonnelMovementsFromEmployees(
 export default function MetricsPage() {
   const { user, getAccessToken } = useAuth()
   const allowedTabs = useMemo(() => visibleMetricasTabs(user), [user])
+  // Los reportes descargables (producción por turno, bono, anual) son de producción/bono —
+  // nada que ver con mantenimiento. Antes se mostraban a cualquiera con acceso a /metricas,
+  // sin chequeo de rol; ahora dependen de los mismos módulos que ya filtran esas pestañas.
+  const canSeeDownloadableReports =
+    allowedTabs.includes("produccion") ||
+    allowedTabs.includes("asistencia") ||
+    allowedTabs.includes("rotacion")
 
 
   const [activeTab, setActiveTab] = useState<string>("produccion")
@@ -2345,27 +2352,29 @@ export default function MetricsPage() {
         </Dialog>
 
         {/* Reportes */}
-        <div className="rounded-xl border border-border bg-card p-6">
-          <div className="mb-4 flex items-center gap-2">
-            <FileSpreadsheet className="h-5 w-5 text-muted-foreground" />
-            <h2 className="text-lg font-semibold text-card-foreground">Reportes Descargables</h2>
+        {canSeeDownloadableReports && (
+          <div className="rounded-xl border border-border bg-card p-6">
+            <div className="mb-4 flex items-center gap-2">
+              <FileSpreadsheet className="h-5 w-5 text-muted-foreground" />
+              <h2 className="text-lg font-semibold text-card-foreground">Reportes Descargables</h2>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Button variant="outline" className="justify-start" onClick={() => setIsReportDialogOpen(true)}>
+                <Download className="h-4 w-4" /> Reporte de Producción por Turno
+              </Button>
+              <Button variant="outline" className="justify-start" onClick={openBonusReportDialog}>
+                <Download className="h-4 w-4" /> Acumulado de Bono Mensual
+              </Button>
+              <Button
+                variant="outline"
+                className="justify-start"
+                onClick={handleDownloadAnnualAccumulatedReportXlsx}
+              >
+                <Download className="h-4 w-4" /> Acumulado Anual
+              </Button>
+            </div>
           </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Button variant="outline" className="justify-start" onClick={() => setIsReportDialogOpen(true)}>
-              <Download className="h-4 w-4" /> Reporte de Producción por Turno
-            </Button>
-            <Button variant="outline" className="justify-start" onClick={openBonusReportDialog}>
-              <Download className="h-4 w-4" /> Acumulado de Bono Mensual
-            </Button>
-            <Button
-              variant="outline"
-              className="justify-start"
-              onClick={handleDownloadAnnualAccumulatedReportXlsx}
-            >
-              <Download className="h-4 w-4" /> Acumulado Anual
-            </Button>
-          </div>
-        </div>
+        )}
 
         {/* Bonus report dialog */}
         <Dialog open={isBonusReportDialogOpen} onOpenChange={setIsBonusReportDialogOpen}>
