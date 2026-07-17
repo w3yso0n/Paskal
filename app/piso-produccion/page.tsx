@@ -660,7 +660,7 @@ export default function ProductionFloorPage() {
       }
 
       // Persistir a backend (machines.currentSku + c?digos). UI usa nombres, aqu? convertimos a employeeCode.
-      const updates = machineData.map(async (m) => {
+      const items = machineData.map((m) => {
         const operatorCode = m.operator ? employeeCodeByName.get(m.operator) ?? null : null
         const operator2Code = m.operator2 ? employeeCodeByName.get(m.operator2) ?? null : null
         const packer1Code = m.packers?.[0] ? employeeCodeByName.get(m.packers[0]) ?? null : null
@@ -678,24 +678,49 @@ export default function ProductionFloorPage() {
           packager3Code: packer3Code,
           packager4Code: packer4Code,
         } as const
-        const saved = await updateMachine(token, m.id, payload)
-        return { machineId: m.id, machineName: m.name, payload, saved }
+        return { machineId: m.id, machineName: m.name, payload }
       })
 
       try {
-        const settled = await Promise.allSettled(updates)
-        const rejected = settled.filter((r) => r.status === "rejected")
-        if (rejected.length > 0) {
-          const first = rejected[0] as PromiseRejectedResult
+        // Primera pasada: todas las máquinas en paralelo (rápido en el caso normal, sin conflictos).
+        const firstPass = await Promise.allSettled(
+          items.map((it) => updateMachine(token, it.machineId, it.payload)),
+        )
+
+        // Si mueves a un operador de una máquina a otra en el MISMO guardado, dos PATCH
+        // concurrentes pueden pisarse: la validación de "operador ya asignado" de la máquina
+        // destino corre antes de que el check-out de la máquina origen termine de comitearse
+        // en la BD, y rechaza algo que en realidad es válido (bug reportado: banner rojo de
+        // error aunque el cambio sí terminaba aplicándose). Reintento SECUENCIAL, una sola vez,
+        // solo de las que fallaron, después de que TODAS las demás ya asentaron — para entonces
+        // cualquier carrera transitoria ya se resolvió. Si el conflicto es real, el reintento
+        // también falla y sí se reporta.
+        const results: Array<{ machineId: string; machineName: string; payload: any; saved: ApiMachine }> = []
+        const failures: Array<{ machineName: string; reason: unknown }> = []
+        for (let i = 0; i < items.length; i++) {
+          const r = firstPass[i]
+          if (r.status === "fulfilled") {
+            results.push({ ...items[i], saved: r.value })
+            continue
+          }
+          try {
+            const saved = await updateMachine(token, items[i].machineId, items[i].payload)
+            results.push({ ...items[i], saved })
+          } catch (retryErr) {
+            failures.push({ machineName: items[i].machineName, reason: retryErr })
+          }
+        }
+
+        if (failures.length > 0) {
+          const first = failures[0]
+          const reason = first.reason as { message?: unknown } | undefined
           toast.error("No se pudo guardar en el backend.")
-          setError(first.reason?.message ? String(first.reason.message) : "Error al guardar en el backend.")
+          setError(
+            typeof reason?.message === "string" ? reason.message : "Error al guardar en el backend.",
+          )
           setHasUnsavedChanges(true)
           return
         }
-
-        const results = (settled as PromiseFulfilledResult<
-          { machineId: string; machineName: string; payload: any; saved: ApiMachine }
-        >[]).map((r) => r.value)
 
         // No mostrar "guardado" si el backend regres? valores distintos a lo enviado.
         const mismatches: Array<{ name: string; field: string; expected: string | null; got: string | null }> = []
