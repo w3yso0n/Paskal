@@ -44,9 +44,10 @@ export function TimelineList({
   showMachine = false,
   onAttribute,
 }: TimelineListProps) {
-  // La producción normal ya no se lista como fila: su conteo va en la barra de estatus (hover).
-  // Quedan los sucesos discretos y la producción sin atribuir (que necesita el botón Asignar).
-  const rows = items.filter((i) => i.kind !== "production_span")
+  // Se listan todos los sucesos. La producción normal (production_span) se muestra en formato
+  // compacto/tenue para no dominar sobre los sucesos; el delta/total también está en el hover
+  // de la barra. La producción sin atribuir (orphan_span) queda prominente (lleva Asignar).
+  const rows = items
   if (rows.length === 0) return null
 
   return (
@@ -57,6 +58,7 @@ export function TimelineList({
           const Icon =
             item.kind === "alert" && item.alertKind ? alertIcon(item.alertKind) : catalog.icon
           const isSpan = Boolean(item.endAt && item.endAt.getTime() > item.at.getTime())
+          const compact = item.kind === "production_span"
           // Sucesos puntuales con segundos para desempatar los del mismo minuto; los tramos
           // (rangos) siguen en HH:mm.
           const timeLabel = isSpan
@@ -67,7 +69,8 @@ export function TimelineList({
               key={item.id}
               id={item.id}
               className={cn(
-                "relative mb-1 rounded-md py-2.5 pl-8 pr-3 transition-shadow scroll-mt-24",
+                "relative rounded-md pl-8 pr-3 transition-shadow scroll-mt-24",
+                compact ? "mb-0.5 py-1" : "mb-1 py-2.5",
                 highlightId === item.id && "ring-2 ring-ring",
                 item.kind === "alert" && item.severity
                   ? ALERT_SEVERITY_STYLES[item.severity].rowTint
@@ -76,20 +79,28 @@ export function TimelineList({
             >
               {/* Hora en columna fija a la izquierda de la línea. El pr-3 la separa del
                   anillo del icono, que si no le tapaba el último dígito. */}
-              <span className="absolute -left-[120px] top-3 w-[104px] whitespace-nowrap pr-3 text-right text-xs tabular-nums text-muted-foreground">
-                {timeLabel}
-              </span>
-              {/* Icono sobre la línea conectora */}
               <span
                 className={cn(
-                  "absolute -left-[15px] top-2 flex h-[30px] w-[30px] items-center justify-center rounded-full ring-4 ring-background",
+                  "absolute -left-[120px] w-[104px] whitespace-nowrap pr-3 text-right text-xs tabular-nums text-muted-foreground",
+                  compact ? "top-1.5" : "top-3",
+                )}
+              >
+                {timeLabel}
+              </span>
+              {/* Icono sobre la línea conectora (más chico y tenue en producción) */}
+              <span
+                className={cn(
+                  "absolute flex items-center justify-center rounded-full ring-4 ring-background",
+                  compact ? "-left-[9px] top-2 h-[18px] w-[18px]" : "-left-[15px] top-2 h-[30px] w-[30px]",
                   catalog.dotClass,
                 )}
               >
-                <Icon className="h-4 w-4" />
+                <Icon className={compact ? "h-3 w-3" : "h-4 w-4"} />
               </span>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="text-sm font-medium">{item.title}</span>
+                <span className={compact ? "text-xs text-muted-foreground" : "text-sm font-medium"}>
+                  {item.title}
+                </span>
                 {showMachine && item.machineCode ? (
                   <Badge variant="outline" className="text-[10px]">
                     {item.machineCode}

@@ -315,15 +315,29 @@ export function buildAlertDetailRows(
         const v = raw as Record<string, unknown>
         const name = asString(v.name) ?? asString(v.code) ?? "—"
         const checkedInAt = formatPlantTime(v.checkedInAt)
+        const countedSince = formatPlantTime(v.countedSince)
         const worked = formatMinutesLabel(v.workedMinutes)
         const limit = formatMinutesLabel(v.limitMinutes)
         const shiftLabel = asString(v.shiftLabel)
         const parts: string[] = []
-        if (checkedInAt) parts.push(`check-in ${checkedInAt}`)
+        // `countedSince` cuadra con las horas (ahora − inicio = horas); el check-in ancla es
+        // solo dónde se reporta. Se prefiere el primero; si no llega (alertas viejas), el ancla.
+        if (countedSince) parts.push(`desde ${countedSince}`)
+        else if (checkedInAt) parts.push(`check-in ${checkedInAt}`)
         if (worked) parts.push(`lleva ${worked}`)
         if (limit) parts.push(`límite ${limit}${shiftLabel ? ` (turno ${shiftLabel})` : ""}`)
         if (v.pastShiftEnd) parts.push("después de su turno")
         rows.push({ label: name, value: parts.join(" · ") || "—" })
+        // Desglose por máquina que suma las horas (auditable).
+        const intervals = Array.isArray(v.intervals) ? v.intervals : []
+        for (const ivRaw of intervals) {
+          if (typeof ivRaw !== "object" || ivRaw === null) continue
+          const iv = ivRaw as Record<string, unknown>
+          const mc = asString(iv.machineCode)
+          const from = formatPlantTime(iv.from)
+          const to = formatPlantTime(iv.to)
+          if (mc && from) rows.push({ label: `· ${mc}`, value: `${from}–${to ?? "…"}` })
+        }
       }
       break
     }

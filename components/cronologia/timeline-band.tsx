@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Minus, Plus, RotateCcw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
-  bandHourTicks,
+  bandTicks,
   bandPositionPct,
   formatPlantTime,
   formatPlantTimeSeconds,
@@ -118,7 +118,7 @@ export function TimelineBand({
   // sucesos cercanos en el tiempo se separan para distinguirse mejor).
   const width = Math.max(viewport * zoom, 680)
 
-  const ticks = bandHourTicks(bandStart, bandEnd)
+  const ticks = useMemo(() => bandTicks(bandStart, bandEnd, width), [bandStart, bandEnd, width])
   const alerts = useMemo(() => items.filter((i) => i.kind === "alert"), [items])
   // La producción normal ya la muestra la pista verde (con delta/total al pasar el mouse), así
   // que NO se repite como chip aquí; solo quedan los sucesos discretos y la huérfana sin atribuir.
@@ -126,7 +126,6 @@ export function TimelineBand({
     () => items.filter((i) => i.kind !== "alert" && i.kind !== "production_span"),
     [items],
   )
-  const labelEveryTick = ticks.length > 0 && width / ticks.length >= 58
 
   const alertPack = useMemo(
     () => packMarkers(alerts, bandStart, bandEnd, width, CHIP, CHIP_GAP, MAX_ALERT_ROWS),
@@ -229,7 +228,10 @@ export function TimelineBand({
                     <div className="font-semibold">
                       {formatPlantTimeSeconds(seg.from)}–{formatPlantTimeSeconds(seg.to)}
                     </div>
-                    <div>{LED_STATUS_LABELS[seg.status]}</div>
+                    <div>
+                      {LED_STATUS_LABELS[seg.status]}
+                      {seg.machineCode ? ` · ${seg.machineCode}` : ""}
+                    </div>
                     {seg.producedUnits > 0 ? (
                       <div className="opacity-80">
                         En este tramo:{" "}
@@ -319,7 +321,7 @@ export function TimelineBand({
             )
           })}
 
-          {/* ---- Eje de horas ---- */}
+          {/* ---- Eje de tiempo (escala adaptiva al zoom: horas → minutos → segundos) ---- */}
           {ticks.map((tick, i) => (
             <div
               key={tick.label + i}
@@ -327,9 +329,7 @@ export function TimelineBand({
               style={{ left: `${tick.leftPct}%`, top: axisTop }}
             >
               <div className="mx-auto h-1.5 w-px bg-border" />
-              {labelEveryTick || i % 2 === 0 ? (
-                <span className="text-[10px] tabular-nums text-muted-foreground">{tick.label}</span>
-              ) : null}
+              <span className="text-[10px] tabular-nums text-muted-foreground">{tick.label}</span>
             </div>
           ))}
         </div>

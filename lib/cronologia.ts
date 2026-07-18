@@ -402,14 +402,21 @@ export function normalizeEvent(e: ApiProductionEvent, ctx: CronoContext): Timeli
       const badge: TimelineBadge = midSession
         ? { label: "a media sesión", tone: "warning" }
         : { label: "al iniciar sesión", tone: "info" }
+      // El destino real de un reset SIEMPRE es 0. La telemetría es periódica, así que si ya se
+      // produjeron piezas antes de la muestra, `to` las capta (>0) — no es que reseteara a `to`.
+      const detailParts: string[] = []
+      if (to !== null && to > COUNTER_RESET_RESIDUAL_MAX) {
+        detailParts.push(`~${formatUnits(to)} ya producidas tras el reset`)
+      }
+      if (ops.length) detailParts.push(`Operador: ${ops.join(", ")}`)
       return {
         ...base,
         kind: "counter_reset",
         title:
-          from !== null && to !== null
-            ? `Reset de contador (${formatUnits(from)} → ${formatUnits(to)})`
+          from !== null
+            ? `Reset de contador: venía en ${formatUnits(from)} → 0`
             : "Reset de contador",
-        detail: ops.length ? `Operador: ${ops.join(", ")}` : undefined,
+        detail: detailParts.length ? detailParts.join(" · ") : undefined,
         badges: [badge],
       }
     }
@@ -731,6 +738,10 @@ export function personCodeSet(
 /** Segundos máximos para considerar un par de eventos un "rebote" de doble lectura de tarjeta. */
 const SPURIOUS_TAP_SECONDS = 5
 
+/** Un `to` de reset por encima de esto significa que ya se produjeron piezas antes de la muestra
+ * (el destino real siempre es 0). Igual al COUNTER_ZERO_THRESHOLD del backend. */
+const COUNTER_RESET_RESIDUAL_MAX = 5
+
 function evType(e: ApiProductionEvent): string {
   return (e.eventType ?? "").trim().toUpperCase()
 }
@@ -841,6 +852,9 @@ export function buildTimeline(args: {
   let events = collapseSpuriousEvents(
     [...args.events].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)),
   )
+  // Eventos COMPLETOS (todas las máquinas) antes del filtro por persona: los necesita la banda
+  // de estatus en modo operador para reconstruir el estatus de cada máquina donde estuvo.
+  const allEvents = events
   let relevantAlerts = alerts
 
   if (mode === "operator" && personCodes) {
@@ -928,12 +942,15 @@ export function buildTimeline(args: {
     }
   }
 
-  // La pista de estatus solo tiene sentido para una máquina concreta (un operador rota entre
-  // varias). Se reconstruye de los eventos de esa máquina en la ventana.
-  const statusSegments =
-    mode === "machine" && args.window
+  // Pista de estatus LED: en modo máquina, el estatus de esa máquina; en modo operador, el
+  // estatus de la(s) máquina(s) donde el operador estuvo, en cada momento.
+  const statusSegments = !args.window
+    ? []
+    : mode === "machine"
       ? buildStatusSegments(events, spanItems, args.window.bandStart, args.window.bandEnd)
-      : []
+      : personCodes
+        ? buildOperatorStatusSegments(allEvents, personCodes, ctx, args.window.bandStart, args.window.bandEnd)
+        : []
 
   return {
     items,
@@ -954,17 +971,41 @@ export function bandPositionPct(at: Date, bandStart: Date, bandEnd: Date): numbe
   return Math.min(100, Math.max(0, pct))
 }
 
-/** Ticks del eje: una marca por hora en TZ de planta. */
-export function bandHourTicks(
+/** Pasos de tick candidatos (segundos), de fino a grueso. */
+const TICK_STEPS_S = [
+  5, 10, 15, 30, // segundos
+  60, 120, 300, 600, 900, 1800, // 1–30 min
+  3600, 7200, // 1–2 h
+]
+
+/**
+ * Ticks del eje adaptivos al zoom: elige el paso más fino que deje ~≥`minPxPerTick` px por
+ * etiqueta, según el ancho actual de la banda. Al acercar (mucho ancho por hora) muestra
+ * minutos e incluso segundos; alejado, horas. Etiqueta con segundos cuando el paso < 1 min.
+ */
+export function bandTicks(
   bandStart: Date,
   bandEnd: Date,
+  widthPx: number,
+  minPxPerTick = 62,
 ): { leftPct: number; label: string }[] {
+  const spanMs = bandEnd.getTime() - bandStart.getTime()
+  if (spanMs <= 0) return []
+  const maxTicks = Math.max(2, Math.floor(widthPx / minPxPerTick))
+  const stepS =
+    TICK_STEPS_S.find((s) => spanMs / (s * 1000) <= maxTicks) ??
+    TICK_STEPS_S[TICK_STEPS_S.length - 1]
+  const stepMs = stepS * 1000
+  const withSeconds = stepS < 60
+  // Arrancar en el primer múltiplo del paso (en ms epoch) dentro de la ventana.
+  const first = Math.ceil(bandStart.getTime() / stepMs) * stepMs
   const ticks: { leftPct: number; label: string }[] = []
-  const HOUR = 3_600_000
-  // La banda siempre arranca en hora cerrada (06:00 / 15:00); avanzar de hora en hora.
-  for (let t = bandStart.getTime(); t <= bandEnd.getTime(); t += HOUR) {
+  for (let t = first; t <= bandEnd.getTime(); t += stepMs) {
     const d = new Date(t)
-    ticks.push({ leftPct: bandPositionPct(d, bandStart, bandEnd), label: formatPlantTime(d) })
+    ticks.push({
+      leftPct: bandPositionPct(d, bandStart, bandEnd),
+      label: withSeconds ? formatPlantTimeSeconds(d) : formatPlantTime(d),
+    })
   }
   return ticks
 }
@@ -991,6 +1032,8 @@ export interface StatusSegment {
   producedUnits: number
   /** Total de producción válida acumulada del día hasta el fin de este tramo. */
   cumulativeValid: number
+  /** Solo en modo operador: de qué máquina es el estatus de este tramo. */
+  machineCode?: string
 }
 
 interface Interval {
@@ -1101,6 +1144,117 @@ export function buildStatusSegments(
       cumulativeValid: cumulative,
     }
   })
+}
+
+/** Tramos de producción de UNA máquina, reconstruidos de sus eventos crudos (para el estatus). */
+function machineSpanItems(mEvents: ApiProductionEvent[], ctx: CronoContext): TimelineItem[] {
+  const prod: ApiProductionEvent[] = []
+  const plain: TimelineItem[] = []
+  for (const e of mEvents) {
+    const t = (e.eventType ?? "").trim().toUpperCase()
+    if (t === "PROD" || t === "ORPHAN_PROD") {
+      prod.push(e)
+      continue
+    }
+    const item = normalizeEvent(e, ctx)
+    if (item) plain.push(item)
+  }
+  return groupProductionSpans(prod, plain, ctx)
+}
+
+/** Intervalos [from,to] por máquina donde el operador estuvo con check-in. */
+function operatorMachineIntervals(
+  allEvents: ApiProductionEvent[],
+  codes: ReadonlySet<string>,
+  bandStart: Date,
+  bandEnd: Date,
+): { machineId: string; from: number; to: number }[] {
+  const startMs = bandStart.getTime()
+  const endMs = bandEnd.getTime()
+  const sorted = allEvents
+    .filter((e) => {
+      const t = evType(e)
+      const emp = evEmployee(e)
+      return (t === "CHECK_IN" || t === "CHECK_OUT") && !!e.machineId && !!emp && codes.has(emp)
+    })
+    .sort((a, b) => a.occurredAt.localeCompare(b.occurredAt))
+  const open = new Map<string, number>()
+  const out: { machineId: string; from: number; to: number }[] = []
+  for (const e of sorted) {
+    const mid = e.machineId as string
+    const ms = new Date(e.occurredAt).getTime()
+    if (evType(e) === "CHECK_IN") {
+      if (!open.has(mid)) open.set(mid, ms)
+    } else {
+      const from = open.get(mid)
+      if (from !== undefined) {
+        out.push({ machineId: mid, from, to: ms })
+        open.delete(mid)
+      }
+    }
+  }
+  for (const [mid, from] of open) out.push({ machineId: mid, from, to: endMs })
+  return out
+    .map((iv) => ({
+      machineId: iv.machineId,
+      from: Math.max(iv.from, startMs),
+      to: Math.min(iv.to, endMs),
+    }))
+    .filter((iv) => iv.to > iv.from)
+}
+
+/**
+ * Estatus LED que vivió el OPERADOR a lo largo del día: para cada intervalo en que estuvo con
+ * check-in en una máquina, toma el estatus de ESA máquina (reconstruido de sus eventos) recortado
+ * al intervalo, y los concatena. Así la banda del modo operador muestra colores en vez de "sin
+ * datos". Necesita los eventos COMPLETOS (todas las máquinas), no los filtrados por persona.
+ */
+export function buildOperatorStatusSegments(
+  allEvents: ApiProductionEvent[],
+  codes: ReadonlySet<string>,
+  ctx: CronoContext,
+  bandStart: Date,
+  bandEnd: Date,
+): StatusSegment[] {
+  const intervals = operatorMachineIntervals(allEvents, codes, bandStart, bandEnd)
+  if (intervals.length === 0) return []
+
+  const statusByMachine = new Map<string, StatusSegment[]>()
+  for (const mid of new Set(intervals.map((iv) => iv.machineId))) {
+    const mEvents = allEvents.filter((e) => e.machineId === mid)
+    statusByMachine.set(mid, buildStatusSegments(mEvents, machineSpanItems(mEvents, ctx), bandStart, bandEnd))
+  }
+
+  const raw: { status: LedStatus; from: number; to: number; machineId: string }[] = []
+  for (const iv of intervals) {
+    for (const s of statusByMachine.get(iv.machineId) ?? []) {
+      const from = Math.max(s.from.getTime(), iv.from)
+      const to = Math.min(s.to.getTime(), iv.to)
+      if (to > from) raw.push({ status: s.status, from, to, machineId: iv.machineId })
+    }
+  }
+  raw.sort((a, b) => a.from - b.from || a.to - b.to)
+
+  const merged: typeof raw = []
+  for (const seg of raw) {
+    const last = merged[merged.length - 1]
+    if (last && last.status === seg.status && last.machineId === seg.machineId && seg.from <= last.to) {
+      last.to = Math.max(last.to, seg.to)
+    } else {
+      merged.push({ ...seg })
+    }
+  }
+
+  return merged.map((seg) => ({
+    status: seg.status,
+    from: new Date(seg.from),
+    to: new Date(seg.to),
+    startPct: bandPositionPct(new Date(seg.from), bandStart, bandEnd),
+    endPct: bandPositionPct(new Date(seg.to), bandStart, bandEnd),
+    producedUnits: 0,
+    cumulativeValid: 0,
+    machineCode: ctx.machineCodeById.get(seg.machineId),
+  }))
 }
 
 // --- Anti-colisión de marcas (escalonado en filas) ---------------------------
