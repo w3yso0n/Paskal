@@ -76,6 +76,10 @@ export interface TimelineItem {
   badges?: TimelineBadge[]
   severity?: ApiAlertSeverity
   alertKind?: ApiAlertKind
+  /** Solo alertas: metadata estructurada (para el detalle por causa). */
+  alertMetadata?: Record<string, unknown> | null
+  /** Solo alertas: cierre (fin del episodio, p. ej. fin del paro). */
+  closedAt?: Date | null
   units?: number
   /** Piezas de la máquina acumuladas en el día al cierre de este tramo. */
   cumulativeUnits?: number
@@ -445,6 +449,7 @@ export function normalizeAlert(a: ApiAlert, ctx: CronoContext): TimelineItem | n
     const units = parsePendingUnitsFromAlertMessage(a.message)
     if (units > 0) attribution = { target: "packager", alertId: a.id, units }
   }
+  const closedAt = a.closedAt ? new Date(a.closedAt) : null
   return {
     id: `tl-alert-${a.id}`,
     kind: "alert",
@@ -455,9 +460,22 @@ export function normalizeAlert(a: ApiAlert, ctx: CronoContext): TimelineItem | n
     detail: a.message ?? undefined,
     severity: a.severity,
     alertKind: kind,
+    alertMetadata: a.metadata ?? null,
+    closedAt: closedAt && !Number.isNaN(closedAt.getTime()) ? closedAt : null,
     attribution,
     sourceEventIds: [a.id],
   }
+}
+
+/** Rango del paro de una alerta idle: desde = max(lastProductionAt, checkedInAt); hasta = cierre. */
+export function idleRange(item: TimelineItem): { from: Date; to: Date | null } | null {
+  if (item.alertKind !== "idle") return null
+  const md = item.alertMetadata ?? {}
+  const lastProd = typeof md.lastProductionAt === "string" ? new Date(md.lastProductionAt).getTime() : 0
+  const checkin = typeof md.checkedInAt === "string" ? new Date(md.checkedInAt).getTime() : 0
+  const fromMs = Math.max(lastProd, checkin)
+  if (!fromMs) return null
+  return { from: new Date(fromMs), to: item.closedAt ?? null }
 }
 
 export function alertIcon(kind: ApiAlertKind): LucideIcon {
@@ -681,6 +699,92 @@ export function personCodeSet(
   return set
 }
 
+// --- Limpieza de rebotes de doble-lectura ------------------------------------
+
+/** Segundos máximos para considerar un par de eventos un "rebote" de doble lectura de tarjeta. */
+const SPURIOUS_TAP_SECONDS = 5
+
+function evType(e: ApiProductionEvent): string {
+  return (e.eventType ?? "").trim().toUpperCase()
+}
+
+function evEmployee(e: ApiProductionEvent): string | null {
+  return payloadStr(e.payload ?? {}, "employee")?.toLowerCase() ?? null
+}
+
+function secondsBetween(a: ApiProductionEvent, b: ApiProductionEvent): number {
+  return Math.abs(new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()) / 1000
+}
+
+/**
+ * Quita el ruido de la doble lectura del lector NFC y del doble OFFLINE, SOLO para la vista
+ * (el dato crudo sigue en BD / sección Datos):
+ *  - OFFLINE consecutivos sin BOOT ni producción entre medio → deja el primero.
+ *  - CHECK_IN + CHECK_OUT (o al revés) del mismo empleado en ≤5 s → rebote, quita ambos.
+ *  - MAINTENANCE_IN + MAINTENANCE_OUT del mismo empleado en ≤5 s → rebote, quita ambos.
+ * Recibe los eventos ya ordenados ascendentemente.
+ */
+export function collapseSpuriousEvents(events: ApiProductionEvent[]): ApiProductionEvent[] {
+  const drop = new Set<string>()
+
+  // Rebotes de tap: pares adyacentes opuestos del mismo empleado en ventana corta.
+  const CHECK = new Set(["CHECK_IN", "CHECK_OUT"])
+  const MAINT = new Set(["MAINTENANCE_IN", "MAINTENANCE_OUT"])
+  for (let i = 0; i < events.length - 1; i++) {
+    const a = events[i]
+    const b = events[i + 1]
+    if (drop.has(a.id)) continue
+    const ta = evType(a)
+    const tb = evType(b)
+    const opposite =
+      (CHECK.has(ta) && CHECK.has(tb) && ta !== tb) ||
+      (MAINT.has(ta) && MAINT.has(tb) && ta !== tb)
+    if (
+      opposite &&
+      evEmployee(a) &&
+      evEmployee(a) === evEmployee(b) &&
+      secondsBetween(a, b) <= SPURIOUS_TAP_SECONDS
+    ) {
+      drop.add(a.id)
+      drop.add(b.id)
+      i++ // consumir el par
+    }
+  }
+
+  // OFFLINE consecutivos sin BOOT/producción entre medio (por máquina).
+  const lastOffline = new Map<string, string>() // machineId → id del OFFLINE previo vigente
+  for (const e of events) {
+    if (drop.has(e.id)) continue
+    const mid = e.machineId ?? "∅"
+    const type = evType(e)
+    if (type === "OFFLINE") {
+      if (lastOffline.has(mid)) drop.add(e.id) // ya hay un OFFLINE vigente → este es duplicado
+      else lastOffline.set(mid, e.id)
+    } else if (type === "BOOT" || type === "PROD" || type === "ORPHAN_PROD") {
+      lastOffline.delete(mid) // hubo actividad → el siguiente OFFLINE ya no es duplicado
+    }
+  }
+
+  return events.filter((e) => !drop.has(e.id))
+}
+
+/** Intervalos de mantenimiento [inicio, fin] derivados de MAINTENANCE_IN/OUT (fin abierto = ahora). */
+function maintenanceIntervals(events: ApiProductionEvent[]): { from: number; to: number }[] {
+  const out: { from: number; to: number }[] = []
+  let open: number | null = null
+  for (const e of events) {
+    const t = evType(e)
+    const ms = new Date(e.occurredAt).getTime()
+    if (t === "MAINTENANCE_IN") open = open ?? ms
+    else if (t === "MAINTENANCE_OUT" && open !== null) {
+      out.push({ from: open, to: ms })
+      open = null
+    }
+  }
+  if (open !== null) out.push({ from: open, to: Number.POSITIVE_INFINITY })
+  return out
+}
+
 // --- Orquestación --------------------------------------------------------------
 
 export interface CronologiaResult {
@@ -706,7 +810,10 @@ export function buildTimeline(args: {
   window?: { bandStart: Date; bandEnd: Date }
 }): CronologiaResult {
   const { alerts, mode, personCodes, ctx } = args
-  let events = [...args.events].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt))
+  // A2: limpiar rebotes de doble-lectura (OFFLINE doble, taps/mantenimiento espurios) para la vista.
+  let events = collapseSpuriousEvents(
+    [...args.events].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)),
+  )
   let relevantAlerts = alerts
 
   if (mode === "operator" && personCodes) {
@@ -742,9 +849,31 @@ export function buildTimeline(args: {
   }
 
   const spanItems = groupProductionSpans(prodEvents, plainItems, ctx, args.gapMinutes)
+
+  // Alertas redundantes con lo que ya muestra la cronología (A3/A4/A6):
+  //  - counter_reset: el evento COUNTER_RESET ya lo dice todo (incluye midSession).
+  //  - no_checkin: ya lo muestra el tramo "sin operador" (orphan_span) con su rango y Asignar.
+  //  - idle que solape mantenimiento: no es culpa de la operadora (el backend ya no las genera,
+  //    esto cubre históricos).
+  const orphanAlertIds = new Set(
+    spanItems.map((s) => s.attribution?.alertId).filter((id): id is string => Boolean(id)),
+  )
+  const maint = maintenanceIntervals(events)
+  const overlapsMaintenance = (from: number, to: number) =>
+    maint.some((m) => from < m.to && to > m.from)
+
   const alertItems = relevantAlerts
     .map((a) => normalizeAlert(a, ctx))
     .filter((i): i is TimelineItem => i !== null)
+    .filter((i) => {
+      if (i.alertKind === "counter_reset") return false
+      if (i.alertKind === "no_checkin" && orphanAlertIds.has(i.sourceEventIds[0])) return false
+      if (i.alertKind === "idle") {
+        const r = idleRange(i)
+        if (r && overlapsMaintenance(r.from.getTime(), (r.to ?? i.at).getTime())) return false
+      }
+      return true
+    })
 
   const items = [...plainItems, ...spanItems, ...alertItems].sort(
     (a, b) => a.at.getTime() - b.at.getTime(),

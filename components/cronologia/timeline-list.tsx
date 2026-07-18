@@ -1,5 +1,6 @@
 "use client"
 
+import { Fragment } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { UserPlus } from "lucide-react"
@@ -10,9 +11,10 @@ import {
   formatPlantTime,
   formatPlantTimeSeconds,
   formatUnits,
+  idleRange,
   type TimelineItem,
 } from "@/lib/cronologia"
-import { ALERT_SEVERITY_STYLES } from "@/lib/alert-ui"
+import { ALERT_SEVERITY_STYLES, buildAlertDetailRows } from "@/lib/alert-ui"
 
 interface TimelineListProps {
   items: TimelineItem[]
@@ -116,6 +118,7 @@ export function TimelineList({
               {item.detail ? (
                 <p className="mt-0.5 text-xs text-muted-foreground">{item.detail}</p>
               ) : null}
+              {item.kind === "alert" ? <AlertDetail item={item} /> : null}
               {item.attribution && onAttribute ? (
                 <Button
                   size="sm"
@@ -142,5 +145,33 @@ export function TimelineList({
         ) : null}
       </div>
     </div>
+  )
+}
+
+/** Detalle estructurado por causa bajo cada alerta: rango del paro (idle), hora de inicio
+ * (horas excedidas), etc. Reutiliza `buildAlertDetailRows`. */
+function AlertDetail({ item }: { item: TimelineItem }) {
+  if (!item.alertKind) return null
+  const rows = buildAlertDetailRows(item.alertKind, item.alertMetadata ?? null)
+  const range = idleRange(item)
+  const rangeText = range
+    ? `${formatPlantTimeSeconds(range.from)} – ${range.to ? formatPlantTimeSeconds(range.to) : "en curso"}`
+    : null
+  if (!rangeText && rows.length === 0) return null
+  return (
+    <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+      {rangeText ? (
+        <>
+          <dt className="font-medium">Paro</dt>
+          <dd className="tabular-nums">{rangeText}</dd>
+        </>
+      ) : null}
+      {rows.map((r) => (
+        <Fragment key={r.label}>
+          <dt className="font-medium">{r.label}</dt>
+          <dd>{r.value}</dd>
+        </Fragment>
+      ))}
+    </dl>
   )
 }

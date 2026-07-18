@@ -126,9 +126,13 @@ export default function CronologiaPage() {
     }
   }, [getAccessToken])
 
+  // Por máquina no tiene sentido el turno (una máquina trabaja el día entero): día completo.
+  // El selector de turno solo aplica al ver por operador.
+  const effectiveShift: CronologiaShift = mode === "machine" ? "all" : shiftFilter
+
   const window_ = useMemo(
-    () => computeCronologiaWindow(dateIso, shiftFilter),
-    [dateIso, shiftFilter],
+    () => computeCronologiaWindow(dateIso, effectiveShift),
+    [dateIso, effectiveShift],
   )
 
   const loadTimeline = useCallback(
@@ -393,27 +397,30 @@ export default function CronologiaPage() {
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <Label>Turno</Label>
-                <ToggleGroup
-                  type="single"
-                  value={shiftFilter}
-                  onValueChange={(v) => {
-                    if (v === "all" || v === "matutino" || v === "vespertino") setShiftFilter(v)
-                  }}
-                  className="justify-start gap-2"
-                >
-                  <ToggleGroupItem value="all" size="sm" className="rounded-md px-3 shadow-none">
-                    Todos
-                  </ToggleGroupItem>
-                  <ToggleGroupItem value="matutino" size="sm" className="rounded-md px-3 shadow-none">
-                    Matutino
-                  </ToggleGroupItem>
-                  <ToggleGroupItem value="vespertino" size="sm" className="rounded-md px-3 shadow-none">
-                    Vespertino
-                  </ToggleGroupItem>
-                </ToggleGroup>
-              </div>
+              {/* El turno solo aplica al ver por operador; por máquina siempre es el día completo. */}
+              {mode === "operator" ? (
+                <div className="space-y-1.5">
+                  <Label>Turno</Label>
+                  <ToggleGroup
+                    type="single"
+                    value={shiftFilter}
+                    onValueChange={(v) => {
+                      if (v === "all" || v === "matutino" || v === "vespertino") setShiftFilter(v)
+                    }}
+                    className="justify-start gap-2"
+                  >
+                    <ToggleGroupItem value="all" size="sm" className="rounded-md px-3 shadow-none">
+                      Todos
+                    </ToggleGroupItem>
+                    <ToggleGroupItem value="matutino" size="sm" className="rounded-md px-3 shadow-none">
+                      Matutino
+                    </ToggleGroupItem>
+                    <ToggleGroupItem value="vespertino" size="sm" className="rounded-md px-3 shadow-none">
+                      Vespertino
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                </div>
+              ) : null}
             </CardContent>
           </Card>
 
@@ -441,9 +448,9 @@ export default function CronologiaPage() {
                 <CardTitle className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-base">
                   <span>
                     {subjectLabel ?? "Cronología"} ·{" "}
-                    {shiftFilter === "all"
+                    {effectiveShift === "all"
                       ? "día completo"
-                      : `turno ${SHIFT_SCHEDULE[shiftFilter].label.toLowerCase()}`}
+                      : `turno ${SHIFT_SCHEDULE[effectiveShift].label.toLowerCase()}`}
                   </span>
                   <span className="text-sm font-normal text-muted-foreground">
                     {result.items.length} sucesos · {result.alertCount} alertas · Total del día:{" "}

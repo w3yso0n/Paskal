@@ -1,6 +1,6 @@
 "use client"
 
-import { useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip"
 import { Button } from "@/components/ui/button"
 import { Minus, Plus, RotateCcw } from "lucide-react"
@@ -65,6 +65,8 @@ export function TimelineBand({
   const scrollRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState(960)
   const [zoom, setZoom] = useState(1)
+  // Ancla pendiente para mantener bajo el cursor el mismo punto de tiempo tras un zoom con rueda.
+  const pendingAnchor = useRef<{ fraction: number; cursorX: number } | null>(null)
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -75,6 +77,42 @@ export function TimelineBand({
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  // Zoom con rueda del mouse / pinch de trackpad, centrado en el cursor. Un swipe horizontal
+  // (deltaX dominante) se deja pasar para hacer scroll normal.
+  const handleWheel = useCallback((e: WheelEvent) => {
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && !e.ctrlKey) return
+    e.preventDefault()
+    const el = scrollRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const cursorX = e.clientX - rect.left
+    const fraction = (el.scrollLeft + cursorX) / (el.scrollWidth || 1)
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
+    setZoom((z) => {
+      const nz = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, +(z * factor).toFixed(3)))
+      if (nz !== z) pendingAnchor.current = { fraction, cursorX }
+      return nz
+    })
+  }, [])
+
+  // Listener nativo no-pasivo (React lo adjunta pasivo y no dejaría hacer preventDefault).
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    el.addEventListener("wheel", handleWheel, { passive: false })
+    return () => el.removeEventListener("wheel", handleWheel)
+  }, [handleWheel])
+
+  // Tras recalcular el ancho por el zoom, reposiciona el scroll para fijar el punto bajo el cursor.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    const a = pendingAnchor.current
+    if (el && a) {
+      el.scrollLeft = a.fraction * el.scrollWidth - a.cursorX
+      pendingAnchor.current = null
+    }
+  })
 
   // Ancho interno de la banda = viewport × zoom (a zoom 1 cabe justo; a más, hace scroll y los
   // sucesos cercanos en el tiempo se separan para distinguirse mejor).
