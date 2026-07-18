@@ -138,6 +138,27 @@ export function TimelineBand({ items, bandStart, bandEnd, nowMs, onSelect }: Tim
           ))}
         </div>
       </div>
+
+      {/* Leyenda: qué significa cada forma de la banda. */}
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-3 w-5 rounded-sm bg-emerald-500" />
+          Producción
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-3 w-5 rounded-sm bg-amber-400" />
+          Sin atribuir
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-blue-500" />
+          Suceso (check-in, reset, SKU…)
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block h-2 w-2 rotate-45 bg-rose-500" />
+          Alerta
+        </span>
+        <span className="text-muted-foreground/70">Pasa el cursor o haz clic en cualquier marca.</span>
+      </div>
     </TooltipProvider>
   )
 }

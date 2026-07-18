@@ -40,7 +40,7 @@ export function TimelineList({
 
   return (
     <div>
-      <ol className="relative ml-[104px] border-l border-border">
+      <ol className="relative ml-[120px] border-l border-border">
         {items.map((item) => {
           const catalog = CRONO_CATALOG[item.kind]
           const Icon =
@@ -61,8 +61,9 @@ export function TimelineList({
                   : null,
               )}
             >
-              {/* Hora en columna fija a la izquierda de la línea */}
-              <span className="absolute -left-[104px] top-3 w-[92px] text-right text-xs tabular-nums text-muted-foreground">
+              {/* Hora en columna fija a la izquierda de la línea. El pr-3 la separa del
+                  anillo del icono, que si no le tapaba el último dígito. */}
+              <span className="absolute -left-[120px] top-3 w-[104px] whitespace-nowrap pr-3 text-right text-xs tabular-nums text-muted-foreground">
                 {timeLabel}
               </span>
               {/* Icono sobre la línea conectora */}
@@ -116,7 +117,7 @@ export function TimelineList({
           )
         })}
       </ol>
-      <div className="mt-3 border-t border-border pt-3 pl-[104px] text-sm">
+      <div className="mt-3 border-t border-border pt-3 pl-[120px] text-sm">
         Total del día:{" "}
         <span className="font-semibold tabular-nums">{formatUnits(totalUnits)} pzas</span>
         {orphanUnits > 0 ? (
