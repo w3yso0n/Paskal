@@ -9,6 +9,12 @@ import {
   getShiftBoundsForCalendarDate,
   monthNameCapitalizedEs,
 } from "@/lib/shift-timezone"
+import {
+  allocateIntegerLargestRemainder,
+  dedupeReportPeople,
+  reportRosterKey,
+} from "@/lib/production-report-allocation"
+import type { EmployeeProductionRole } from "@/lib/employee-production-role"
 
 export const REPORT_TIMEZONE = "America/Mexico_City"
 
@@ -18,8 +24,30 @@ export type ProductionShiftReportSourceRow = {
   timestamp: string
   operator: string
   operator_2: string
+  operatorShift?: "matutino" | "vespertino" | null
+  operator2Shift?: "matutino" | "vespertino" | null
+  operatorPrimaryRoles?: Array<EmployeeProductionRole | null>
   packer_1: string
   packer_2: string
+  packer_3?: string
+  packer_4?: string
+  /** Lista completa preferida; permite conservar rosters de hasta cuatro personas. */
+  packersAttributed?: string[]
+  packerShifts?: Array<"matutino" | "vespertino" | null>
+  packerPrimaryRoles?: Array<EmployeeProductionRole | null>
+  /** Piezas ya repartidas por persona; evita recalcular al separar turnos mixtos. */
+  packerAllocatedPieces?: number[]
+  operatorAllocatedPieces?: number[]
+  /** Identidad estable del roster/check-in cuando la capa de integración la conoce. */
+  rosterId?: string | null
+  /** Producción sin atribución; se conserva y se marca en el Excel. */
+  isOrphan?: boolean
+  /** Ajuste que acredita empaque sin volver a sumar producción de máquina. */
+  isPackagerCredit?: boolean
+  packagingCreditPieces?: number
+  /** Participación de operación en otro turno, sin duplicar producción de máquina. */
+  isOperatorCredit?: boolean
+  operatorCreditPieces?: number
   count: number
   event: string
   sku: string
@@ -46,8 +74,6 @@ export type BuildProductionShiftReportParams = {
   rows: ProductionShiftReportSourceRow[]
   checkins: ApiMachineCheckin[]
   manualCaptures?: ProductionShiftManualCapture[]
-  /** SKUs con meta en plataforma; si hay valores, el desglose Metal Hooks solo muestra estos códigos. */
-  configuredSkus?: string[]
   resolveEmployeeCode: (displayName: string) => string
   resolvePersonFromCode: (code: string | null | undefined) => string
 }
@@ -64,10 +90,19 @@ type MachineReportRow = {
   packer1Boxes: number
   packer2: string
   packer2Boxes: number
+  packer3: string
+  packer3Boxes: number
+  packer4: string
+  packer4Boxes: number
   totalPackerBoxes: number
   difference: number
   packer1Pieces: number
   packer2Pieces: number
+  packer3Pieces: number
+  packer4Pieces: number
+  isOrphan: boolean
+  isPackagerCredit: boolean
+  isOperatorCredit: boolean
 }
 
 type MetalHooksRow = {
@@ -91,6 +126,205 @@ type BendingReportRow = {
   cajas: number | null
   piezas: number | null
   total: number
+}
+
+function rowPackerEntries(row: ProductionShiftReportSourceRow) {
+  const rawNames = row.packersAttributed?.length
+    ? row.packersAttributed
+    : [row.packer_1, row.packer_2, row.packer_3, row.packer_4]
+  const seen = new Set<string>()
+  const people = rawNames
+    .map((value, index) => ({
+      name: String(value ?? "").trim().replace(/\s+/g, " "),
+      shift: row.packerShifts?.[index] ?? row.shift,
+    }))
+    .filter(({ name }) => {
+      const key = name.toLocaleLowerCase("es")
+      if (!name || name === "—" || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  const names = people.map(({ name }) => name)
+  const total = row.isPackagerCredit
+    ? Math.round(Number(row.packagingCreditPieces ?? 0))
+    : Math.round(Number(row.count) || 0)
+  const allocations = row.packerAllocatedPieces?.length
+    ? names.map((name, index) => ({
+        recipient: name,
+        quantity: Math.max(0, Math.round(row.packerAllocatedPieces?.[index] ?? 0)),
+      }))
+    : allocateIntegerLargestRemainder(total, names)
+  return allocations.map((allocation, index) => ({
+    name: allocation.recipient,
+    pieces: allocation.quantity,
+    shift: people[index]?.shift ?? row.shift,
+  }))
+}
+
+function rowOperatorEntries(row: ProductionShiftReportSourceRow) {
+  if (row.isPackagerCredit) return []
+  const names = dedupeReportPeople([row.operator, row.operator_2])
+  const allocations = row.operatorAllocatedPieces?.length
+    ? names.map((name, index) => ({
+        recipient: name,
+        quantity: Math.max(0, Math.round(row.operatorAllocatedPieces?.[index] ?? 0)),
+      }))
+    : allocateIntegerLargestRemainder(Math.round(Number(row.count) || 0), names)
+  return allocations.map((allocation, index) => ({
+    name: allocation.recipient,
+    pieces: allocation.quantity,
+    shift:
+      index === 0
+        ? (row.operatorShift ?? row.shift)
+        : (row.operator2Shift ?? row.shift),
+  }))
+}
+
+/** Separa crédito personal por turno sin duplicar las piezas de máquina. */
+export function rowsForProductionReportShift(
+  rows: ProductionShiftReportSourceRow[],
+  reportShift: "matutino" | "vespertino",
+): ProductionShiftReportSourceRow[] {
+  const out: ProductionShiftReportSourceRow[] = []
+  for (const row of rows) {
+    const entries = rowPackerEntries(row).filter((entry) => entry.shift === reportShift)
+    const operatorEntries = rowOperatorEntries(row).filter(
+      (entry) => entry.shift === reportShift,
+    )
+    const names = entries.map((entry) => entry.name)
+    const allocated = entries.map((entry) => entry.pieces)
+    const operatorNames = operatorEntries.map((entry) => entry.name)
+    const operatorAllocated = operatorEntries.map((entry) => entry.pieces)
+    const operator = operatorNames[0] ?? "—"
+    const operator2 = operatorNames[1] ?? "—"
+
+    if (!row.isPackagerCredit && row.shift === reportShift) {
+      out.push({
+        ...row,
+        operator,
+        operator_2: operator2,
+        packer_1: names[0] ?? "—",
+        packer_2: names[1] ?? "—",
+        packer_3: names[2] ?? "—",
+        packer_4: names[3] ?? "—",
+        packersAttributed: names,
+        packerShifts: names.map(() => reportShift),
+        packerAllocatedPieces: allocated,
+        operatorAllocatedPieces: operatorAllocated,
+      })
+    }
+
+    if (
+      (entries.length > 0 || operatorEntries.length > 0) &&
+      (row.isPackagerCredit || row.shift !== reportShift)
+    ) {
+      out.push({
+        ...row,
+        count: 0,
+        operator,
+        operator_2: operator2,
+        shift: reportShift,
+        isPackagerCredit: entries.length > 0,
+        packagingCreditPieces: allocated.reduce((sum, value) => sum + value, 0),
+        isOperatorCredit: operatorEntries.length > 0,
+        operatorCreditPieces: operatorAllocated.reduce((sum, value) => sum + value, 0),
+        packer_1: names[0] ?? "—",
+        packer_2: names[1] ?? "—",
+        packer_3: names[2] ?? "—",
+        packer_4: names[3] ?? "—",
+        packersAttributed: names,
+        packerShifts: names.map(() => reportShift),
+        packerAllocatedPieces: allocated,
+        operatorAllocatedPieces: operatorAllocated,
+      })
+    }
+  }
+  return out
+}
+
+export type ProductionReportReconciliation = {
+  sourceMachinePieces: number
+  reportedMachinePieces: number
+  sourcePackagingPieces: number
+  reportedPackagingPieces: number
+  sourceOperatorPieces: number
+  reportedOperatorPieces: number
+}
+
+/**
+ * Invariante previo a crear el archivo: separar turnos no puede perder ni duplicar
+ * producción de máquina ni participaciones de empaque.
+ */
+export function reconcileProductionReportRows(
+  rows: ProductionShiftReportSourceRow[],
+): ProductionReportReconciliation {
+  const productionRows = rows.filter((row) => row.event === "Producción")
+  const shifted = [
+    ...rowsForProductionReportShift(productionRows, "matutino"),
+    ...rowsForProductionReportShift(productionRows, "vespertino"),
+  ]
+  const sourceMachinePieces = productionRows.reduce(
+    (sum, row) => sum + (row.isPackagerCredit ? 0 : Math.max(0, Number(row.count) || 0)),
+    0,
+  )
+  const reportedMachinePieces = shifted.reduce(
+    (sum, row) => sum + Math.max(0, Number(row.count) || 0),
+    0,
+  )
+  const sourcePackagingPieces = productionRows.reduce(
+    (sum, row) =>
+      sum +
+      rowPackerEntries(row).reduce(
+        (allocationSum, allocation) => allocationSum + allocation.pieces,
+        0,
+      ),
+    0,
+  )
+  const reportedPackagingPieces = shifted.reduce(
+    (sum, row) =>
+      sum +
+      (row.packerAllocatedPieces ?? []).reduce(
+        (allocationSum, pieces) => allocationSum + Math.max(0, Number(pieces) || 0),
+        0,
+      ),
+    0,
+  )
+  const sourceOperatorPieces = productionRows.reduce(
+    (sum, row) =>
+      sum +
+      rowOperatorEntries(row).reduce(
+        (allocationSum, allocation) => allocationSum + allocation.pieces,
+        0,
+      ),
+    0,
+  )
+  const reportedOperatorPieces = shifted.reduce(
+    (sum, row) =>
+      sum +
+      (row.operatorAllocatedPieces ?? []).reduce(
+        (allocationSum, pieces) => allocationSum + Math.max(0, Number(pieces) || 0),
+        0,
+      ),
+    0,
+  )
+  const result = {
+    sourceMachinePieces,
+    reportedMachinePieces,
+    sourcePackagingPieces,
+    reportedPackagingPieces,
+    sourceOperatorPieces,
+    reportedOperatorPieces,
+  }
+  if (
+    Math.abs(sourceMachinePieces - reportedMachinePieces) > 1e-9 ||
+    Math.abs(sourcePackagingPieces - reportedPackagingPieces) > 1e-9 ||
+    Math.abs(sourceOperatorPieces - reportedOperatorPieces) > 1e-9
+  ) {
+    throw new Error(
+      `La conciliación de producción falló: máquina ${sourceMachinePieces}/${reportedMachinePieces}, empaque ${sourcePackagingPieces}/${reportedPackagingPieces}, operación ${sourceOperatorPieces}/${reportedOperatorPieces}`,
+    )
+  }
+  return result
 }
 
 const BENDING_MACHINE_ORDER: Record<string, number> = Object.fromEntries(
@@ -349,6 +583,10 @@ function dominantSku(rows: ProductionShiftReportSourceRow[]): string {
   return best
 }
 
+function normalizeSkuKey(value: string | null | undefined): string {
+  return String(value ?? "").trim().toLowerCase()
+}
+
 function aggregateMachineRows(
   prodRows: ProductionShiftReportSourceRow[],
   checkins: ApiMachineCheckin[],
@@ -356,79 +594,114 @@ function aggregateMachineRows(
   endMs: number,
   resolveFromCheckin: (
     ch: ApiMachineCheckin,
-  ) => { operator1: string; operator2: string; packer1: string; packer2: string },
+  ) => {
+    operator1: string
+    operator2: string
+    packer1: string
+    packer2: string
+    packer3?: string
+    packer4?: string
+  },
 ): MachineReportRow[] {
-  const byMachine = new Map<string, ProductionShiftReportSourceRow[]>()
+  const byGroup = new Map<string, ProductionShiftReportSourceRow[]>()
   for (const r of prodRows) {
-    const key = r.machine_id?.trim() || "—"
-    const list = byMachine.get(key) ?? []
+    const machine = r.machine_id?.trim() || "—"
+    const sku = normalizeSkuKey(r.sku) || "—"
+    const upb = r.unitsPerBox > 0 ? r.unitsPerBox : 48
+    const packers = r.packersAttributed?.length
+      ? r.packersAttributed
+      : [r.packer_1, r.packer_2, r.packer_3, r.packer_4]
+    const roster = reportRosterKey(
+      [r.operator, r.operator_2],
+      packers,
+      r.rosterId,
+    )
+    const kind =
+      r.isPackagerCredit || r.isOperatorCredit
+        ? "participant-credit"
+        : r.isOrphan
+          ? "orphan"
+          : "normal"
+    const key = [machine, sku, String(upb), roster, kind].join("\u001f")
+    const list = byGroup.get(key) ?? []
     list.push(r)
-    byMachine.set(key, list)
+    byGroup.set(key, list)
   }
 
   const out: MachineReportRow[] = []
-  const sortedKeys = [...byMachine.keys()].sort((a, b) => a.localeCompare(b, "es"))
+  const sortedKeys = [...byGroup.keys()].sort((a, b) => a.localeCompare(b, "es"))
 
-  for (const machine of sortedKeys) {
-    const events = byMachine.get(machine) ?? []
+  for (const key of sortedKeys) {
+    const events = byGroup.get(key) ?? []
+    const machine = events[0]?.machine_id?.trim() || "—"
     const machineIdRaw = events.find((e) => e.machineIdRaw)?.machineIdRaw ?? null
     const ch = findCheckinForMachineInWindow(machineIdRaw, startMs, endMs, checkins)
     const fromChk = ch ? resolveFromCheckin(ch) : null
 
-    let operator1 = fromChk?.operator1 ?? "—"
-    let operator2 = fromChk?.operator2 ?? "—"
-    if (operator1 === "—") {
-      operator1 = events.find((e) => e.operator && e.operator !== "—")?.operator ?? "—"
-    }
-    if (operator2 === "—") {
-      operator2 = events.find((e) => e.operator_2 && e.operator_2 !== "—")?.operator_2 ?? "—"
-    }
+    const operator1 =
+      events.find((e) => e.operator && e.operator !== "—")?.operator ??
+      fromChk?.operator1 ??
+      "—"
+    const operator2 =
+      events.find((e) => e.operator_2 && e.operator_2 !== "—")?.operator_2 ??
+      fromChk?.operator2 ??
+      "—"
 
-    let packer1 = fromChk?.packer1 ?? "—"
-    let packer2 = fromChk?.packer2 ?? "—"
-    if (packer1 === "—") packer1 = events.find((e) => e.packer_1 !== "—")?.packer_1 ?? "—"
-    if (packer2 === "—") packer2 = events.find((e) => e.packer_2 !== "—")?.packer_2 ?? "—"
+    const eventPackers = dedupeReportPeople(
+      events.flatMap((event) =>
+        event.packersAttributed?.length
+          ? event.packersAttributed
+          : [event.packer_1, event.packer_2, event.packer_3, event.packer_4],
+      ),
+    )
+    const checkinPackers = dedupeReportPeople([
+      fromChk?.packer1,
+      fromChk?.packer2,
+      fromChk?.packer3,
+      fromChk?.packer4,
+    ])
+    const packers = (eventPackers.length > 0 ? eventPackers : checkinPackers).slice(0, 4)
+    const [packer1 = "—", packer2 = "—", packer3 = "—", packer4 = "—"] = packers
 
     let totalPieces = 0
-    let boxQty = 0
-    let packer1Boxes = 0
-    let packer2Boxes = 0
-    let piecesPerBox = 48
+    let packagingCreditPieces = 0
+    const piecesPerBox = events[0]?.unitsPerBox > 0 ? events[0].unitsPerBox : 48
 
     for (const e of events) {
-      // `count` es el conteo crudo del PLC = PIEZAS (payload.units). Las cajas se derivan:
-      // cajas = piezas / piezas_por_caja. (Antes se trataba count como cajas y se multiplicaba
-      // por piezas/caja, inflando "Piezas Totales" ~unitsPerBox veces → el "millón de piezas".)
       const pieces = Number.isFinite(e.count) ? e.count : 0
-      const upb = e.unitsPerBox > 0 ? e.unitsPerBox : piecesPerBox
-      const boxes = upb > 0 ? pieces / upb : 0
       totalPieces += pieces
-      boxQty += boxes
-      if (e.unitsPerBox > 0) piecesPerBox = e.unitsPerBox
-
-      const p1 = e.packer_1?.trim()
-      const p2 = e.packer_2?.trim()
-      if (p1 && p1 !== "—" && p1 === packer1) packer1Boxes += boxes
-      else if (p2 && p2 !== "—" && p2 === packer1) packer1Boxes += boxes
-      else if (packer1 !== "—" && !p1 && !p2) packer1Boxes += boxes / 2
-
-      if (p2 && p2 !== "—" && p2 === packer2) packer2Boxes += boxes
-      else if (p1 && p1 !== "—" && p1 === packer2) packer2Boxes += boxes
-      else if (packer2 !== "—" && packer1 === "—") {
-        packer2Boxes += boxes
-      }
-    }
-
-    if (packer1 !== "—" && packer1Boxes === 0 && packer2 === "—") packer1Boxes = boxQty
-    if (packer2 !== "—" && packer2Boxes === 0 && packer1Boxes + packer2Boxes < boxQty) {
-      packer2Boxes = Math.max(0, boxQty - packer1Boxes)
+      const credit = Number(e.packagingCreditPieces ?? 0)
+      if (Number.isFinite(credit) && credit > 0) packagingCreditPieces += credit
     }
 
     const totalPiecesRounded = Math.round(totalPieces)
-    const totalPackerBoxes = packer1Boxes + packer2Boxes
+    const isPackagerCredit = events.some((event) => event.isPackagerCredit)
+    const piecesToAllocate = isPackagerCredit
+      ? Math.round(packagingCreditPieces)
+      : totalPiecesRounded
+    const hasPreallocated = events.some((event) => event.packerAllocatedPieces?.length)
+    const allocatedPieces = hasPreallocated
+      ? packers.map((_, index) =>
+          events.reduce(
+            (sum, event) => sum + Math.max(0, Math.round(event.packerAllocatedPieces?.[index] ?? 0)),
+            0,
+          ),
+        )
+      : allocateIntegerLargestRemainder(piecesToAllocate, packers).map(
+          (allocation) => allocation.quantity,
+        )
+    const packer1Pieces = allocatedPieces[0] ?? 0
+    const packer2Pieces = allocatedPieces[1] ?? 0
+    const packer3Pieces = allocatedPieces[2] ?? 0
+    const packer4Pieces = allocatedPieces[3] ?? 0
+    const packer1Boxes = packer1Pieces / piecesPerBox
+    const packer2Boxes = packer2Pieces / piecesPerBox
+    const packer3Boxes = packer3Pieces / piecesPerBox
+    const packer4Boxes = packer4Pieces / piecesPerBox
+    const boxQty = totalPiecesRounded / piecesPerBox
+    const totalPackerBoxes =
+      packer1Boxes + packer2Boxes + packer3Boxes + packer4Boxes
     const difference = Math.round((boxQty - totalPackerBoxes) * 100) / 100
-    const packer1Pieces = Math.round(packer1Boxes * piecesPerBox)
-    const packer2Pieces = Math.round(packer2Boxes * piecesPerBox)
 
     out.push({
       machine,
@@ -442,10 +715,19 @@ function aggregateMachineRows(
       packer1Boxes: Math.round(packer1Boxes * 100) / 100,
       packer2,
       packer2Boxes: Math.round(packer2Boxes * 100) / 100,
+      packer3,
+      packer3Boxes: Math.round(packer3Boxes * 100) / 100,
+      packer4,
+      packer4Boxes: Math.round(packer4Boxes * 100) / 100,
       totalPackerBoxes: Math.round(totalPackerBoxes * 100) / 100,
       difference,
       packer1Pieces,
       packer2Pieces,
+      packer3Pieces,
+      packer4Pieces,
+      isOrphan: events.some((event) => event.isOrphan),
+      isPackagerCredit,
+      isOperatorCredit: events.some((event) => event.isOperatorCredit),
     })
   }
 
@@ -461,28 +743,8 @@ function manualCaptureMatchesShift(
   shiftNumber: 1 | 2,
 ): boolean {
   const normalized = captureShift?.trim().toLowerCase()
-  if (!normalized) return true
+  if (!normalized) return false
   return normalized === reportShiftLabel(shiftNumber)
-}
-
-function normalizeSkuKey(value: string | null | undefined): string {
-  return String(value ?? "").trim().toLowerCase()
-}
-
-function filterMachineRowsByConfiguredSkus(
-  rows: MachineReportRow[],
-  configuredSkus: string[] | undefined,
-): MachineReportRow[] {
-  if (!configuredSkus?.length) return rows
-  const allowed = new Set(
-    configuredSkus.map((s) => normalizeSkuKey(s)).filter(Boolean),
-  )
-  if (allowed.size === 0) return rows
-  return rows.filter((row) => {
-    const sku = row.item?.trim()
-    if (!sku || sku === "—") return false
-    return allowed.has(normalizeSkuKey(sku))
-  })
 }
 
 function manualWindingToMachineRow(
@@ -506,10 +768,19 @@ function manualWindingToMachineRow(
     packer1Boxes: qty,
     packer2: "—",
     packer2Boxes: 0,
+    packer3: "—",
+    packer3Boxes: 0,
+    packer4: "—",
+    packer4Boxes: 0,
     totalPackerBoxes: qty,
     difference: 0,
     packer1Pieces: Math.round(qty),
     packer2Pieces: 0,
+    packer3Pieces: 0,
+    packer4Pieces: 0,
+    isOrphan: false,
+    isPackagerCredit: false,
+    isOperatorCredit: false,
   }
 }
 
@@ -541,8 +812,9 @@ function machineRowsToMetalHooks(
   return machineRows.map((row, idx) => {
     const opName = row.operator1 !== "—" ? row.operator1 : row.operator2
     const opCode = opName !== "—" ? resolveEmployeeCode(opName) : ""
-    const empCajas = row.packer1Boxes > 0 ? row.packer1Boxes : row.packer2Boxes
-    const empTotal = row.packer1Pieces > 0 ? row.packer1Pieces : row.packer2Pieces
+    const empCajas = row.totalPackerBoxes
+    const empTotal =
+      row.packer1Pieces + row.packer2Pieces + row.packer3Pieces + row.packer4Pieces
 
     return {
       codigo: row.item !== "—" ? row.item : "",
@@ -598,6 +870,13 @@ function buildDayWorksheet(
     "Diferencia",
     "Total en Piezas Empacadas 1",
     "Total en Piezas Empacadas 2",
+    "Empacador (a) 3",
+    "Cantidad en cajas 3",
+    "Total en Piezas Empacadas 3",
+    "Empacador (a) 4",
+    "Cantidad en cajas 4",
+    "Total en Piezas Empacadas 4",
+    "Estado",
   ]
   const mainHeaderRow = 4
   const mainDataStart = 5
@@ -616,7 +895,7 @@ function buildDayWorksheet(
   /** Totales justo debajo de la última máquina (sin filas vacías fijas hasta la 32). */
   const mainTotalsRow = rowCount > 0 ? mainDataEnd + 1 : mainDataStart + 1
 
-  const numericMainCols = new Set([5, 6, 7, 9, 11, 12, 13, 14, 15])
+  const numericMainCols = new Set([5, 6, 7, 9, 11, 12, 13, 14, 15, 17, 18, 20, 21])
 
   machineRows.forEach((row, idx) => {
     const r = mainDataStart + idx
@@ -636,6 +915,21 @@ function buildDayWorksheet(
       row.difference,
       row.packer1Pieces,
       row.packer2Pieces,
+      row.packer3,
+      row.packer3Boxes,
+      row.packer3Pieces,
+      row.packer4,
+      row.packer4Boxes,
+      row.packer4Pieces,
+      row.isPackagerCredit || row.isOperatorCredit
+        ? row.isPackagerCredit && row.isOperatorCredit
+          ? "CRÉDITO DE OPERACIÓN Y EMPAQUE"
+          : row.isOperatorCredit
+            ? "CRÉDITO DE OPERACIÓN"
+            : "CRÉDITO DE EMPAQUE"
+        : row.isOrphan
+          ? "HUÉRFANA / SIN ATRIBUIR"
+          : "ATRIBUIDA",
     ]
     values.forEach((v, i) => {
       const col = i + 1
@@ -644,7 +938,7 @@ function buildDayWorksheet(
   })
 
   if (rowCount > 0) {
-    styleRect(sheet, mainDataStart, 1, mainDataEnd, 15, "data")
+    styleRect(sheet, mainDataStart, 1, mainDataEnd, 22, "data")
     for (const col of numericMainCols) {
       styleRect(sheet, mainDataStart, col, mainDataEnd, col, "number")
     }
@@ -652,7 +946,9 @@ function buildDayWorksheet(
     writeFormula(sheet, mainTotalsRow, 7, `SUM(G${mainDataStart}:G${mainDataEnd})`)
     writeFormula(sheet, mainTotalsRow, 14, `SUM(N${mainDataStart}:N${mainDataEnd})`)
     writeFormula(sheet, mainTotalsRow, 15, `SUM(O${mainDataStart}:O${mainDataEnd})`)
-    styleRect(sheet, mainTotalsRow, 1, mainTotalsRow, 15, "total")
+    writeFormula(sheet, mainTotalsRow, 18, `SUM(R${mainDataStart}:R${mainDataEnd})`)
+    writeFormula(sheet, mainTotalsRow, 21, `SUM(U${mainDataStart}:U${mainDataEnd})`)
+    styleRect(sheet, mainTotalsRow, 1, mainTotalsRow, 22, "total")
   }
 
   const metalRows = machineRowsToMetalHooks(machineRows, resolveEmployeeCode)
@@ -660,7 +956,7 @@ function buildDayWorksheet(
     machineRows.flatMap((r) => [r.operator1, r.operator2]),
   )
   const empacadoras = countDistinctPeople(
-    machineRows.flatMap((r) => [r.packer1, r.packer2]),
+    machineRows.flatMap((r) => [r.packer1, r.packer2, r.packer3, r.packer4]),
   )
 
   const bannerRow = mainTotalsRow + gapBeforePersonalBlock
@@ -723,7 +1019,7 @@ function buildDayWorksheet(
       [MH_COL.TOTAL, row.total],
       [MH_COL.MAQUINA_NUM, row.maquinaNum],
       [MH_COL.OPERADORA, row.operadora],
-      [MH_COL.CODIGO_OP, row.codigo],
+      [MH_COL.CODIGO_OP, row.operadoraCodigo],
       [MH_COL.EMP_CAJAS, row.empCajas],
       [MH_COL.EMP_PIEZAS, row.empPiezas],
       [MH_COL.EMP_TOTAL, row.empTotal],
@@ -839,7 +1135,7 @@ function buildDayWorksheet(
   mergeWrite(sheet, sigLabelRow, 8, 11, "Firma jefe de produccion", "sigLabel")
 
   sheet.views = [{ state: "frozen", ySplit: 4, activeCell: "A5" }]
-  autoFitColumns(sheet, 16, sigLabelRow)
+  autoFitColumns(sheet, 22, sigLabelRow)
 }
 
 export function productionShiftReportFilename(
@@ -856,7 +1152,14 @@ export async function buildProductionShiftReportBlob(
   params: BuildProductionShiftReportParams & {
     resolveFromCheckin: (
       ch: ApiMachineCheckin,
-    ) => { operator1: string; operator2: string; packer1: string; packer2: string }
+    ) => {
+      operator1: string
+      operator2: string
+      packer1: string
+      packer2: string
+      packer3?: string
+      packer4?: string
+    }
   },
 ): Promise<Blob> {
   const ExcelJS = (await import("exceljs")).default
@@ -882,12 +1185,12 @@ export async function buildProductionShiftReportBlob(
     const dayBounds = getPlantDayBoundsForCalendarDate(dayIso, REPORT_TIMEZONE)
     const dayStartMs = dayBounds.start.getTime()
     const dayEndMs = dayBounds.end.getTime()
-    const prodRows = params.rows.filter((r) => {
+    const dayRows = params.rows.filter((r) => {
       if (r.event !== "Producción") return false
-      if (r.shift !== reportShift) return false
       const ts = new Date(r.timestamp).getTime()
       return ts >= dayStartMs && ts < dayEndMs
     })
+    const prodRows = rowsForProductionReportShift(dayRows, reportShift)
 
     const machineRows = aggregateMachineRows(
       prodRows,
@@ -908,11 +1211,9 @@ export async function buildProductionShiftReportBlob(
       params.resolvePersonFromCode,
     )
 
-    const allMachineRows = filterMachineRowsByConfiguredSkus(
-      [...machineRows, ...windingManual].sort((a, b) =>
-        a.machine.localeCompare(b.machine, "es"),
-      ),
-      params.configuredSkus,
+    // El catálogo/metas puede validar el SKU, pero jamás decide si una pieza se exporta.
+    const allMachineRows = [...machineRows, ...windingManual].sort((a, b) =>
+      a.machine.localeCompare(b.machine, "es"),
     )
 
     let sheetName = excelSheetNameForDay(dayIso, REPORT_TIMEZONE)

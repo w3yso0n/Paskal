@@ -132,6 +132,17 @@ function DailyCaptureSection({
     [operators],
   )
 
+  const assignedShiftByCode = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const employee of employees) {
+      const code = employee.employeeCode?.trim()
+      if (!code) continue
+      if (employee.shift === 1) map.set(code, "matutino")
+      if (employee.shift === 2) map.set(code, "vespertino")
+    }
+    return map
+  }, [employees])
+
   const { getAccessToken } = useAuth()
   const [rows, setRows] = useState<ApiManualDataCapture[]>([])
   const [loading, setLoading] = useState(true)
@@ -184,8 +195,14 @@ function DailyCaptureSection({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     const qty = Number(form.productionQty)
-    if (!form.sourceKey || !form.recordDate || !form.operatorCode || !form.packagerCode) {
-      toast.error("Completa máquina, fecha, operador y empacador.")
+    if (
+      !form.sourceKey ||
+      !form.recordDate ||
+      !form.operatorCode ||
+      !form.packagerCode ||
+      !form.shift
+    ) {
+      toast.error("Completa máquina, fecha y personal con turno asignado.")
       return
     }
     if (form.operatorCode === form.packagerCode) {
@@ -263,18 +280,12 @@ function DailyCaptureSection({
                 />
               </div>
               <div className="space-y-2">
-                <Label>Turno (opcional)</Label>
-                <Select
-                  value={form.shift || "__none__"}
-                  onValueChange={(v) =>
-                    setForm((f) => ({ ...f, shift: v === "__none__" ? "" : v }))
-                  }
-                >
+                <Label>Turno asignado del operador</Label>
+                <Select value={form.shift} disabled>
                   <SelectTrigger>
-                    <SelectValue placeholder="Sin turno" />
+                    <SelectValue placeholder="Selecciona un operador con turno" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__none__">Sin turno</SelectItem>
                     {SHIFT_OPTIONS.map((s) => (
                       <SelectItem key={s.value} value={s.value}>
                         {s.label}
@@ -293,6 +304,7 @@ function DailyCaptureSection({
                     setForm((f) => ({
                       ...f,
                       operatorCode: code,
+                      shift: assignedShiftByCode.get(code) ?? "",
                       packagerCode: code && f.packagerCode === code ? "" : f.packagerCode,
                     }))
                   }

@@ -769,6 +769,8 @@ export interface ApiProductionEvent {
   eventType: string;
   message: string | null;
   occurredAt: string;
+  ingestSeq?: string;
+  ingestedAt?: string;
   payload: Record<string, unknown>;
 }
 
@@ -906,6 +908,7 @@ export async function getOperatorCheckoutEvaluations(
   accessToken: string,
   params: {
     from: string
+    /** Límite superior exclusivo del periodo [from, to). */
     to: string
     incidentsOnly?: boolean
     shift?: "matutino" | "vespertino"
@@ -934,6 +937,107 @@ export async function getProductionEvents(
   return parseResponse<ApiProductionEvent[]>(res);
 }
 
+export interface ProductionReportSnapshot {
+  snapshotMaxIngestSeq: string
+  snapshotIngestedBefore: string
+  snapshotSignature: string
+}
+
+interface ApiProductionReportPage extends ProductionReportSnapshot {
+  items: ApiProductionEvent[]
+  hasMore: boolean
+  nextCursor: string | null
+}
+
+interface ApiProductionReportVerification {
+  stable: boolean
+  initialSignature: string
+  currentSignature: string
+  snapshotMaxIngestSeq: string
+  snapshotIngestedBefore: string
+}
+
+export type ProductionReportResult = {
+  events: ApiProductionEvent[]
+  snapshot: ProductionReportSnapshot
+}
+
+/**
+ * Lee un período completo con snapshot estable y keyset. Si una transacción en
+ * vuelo cambia el conjunto mientras se pagina, descarta el intento y lo repite.
+ */
+export async function getProductionEventsForReport(
+  accessToken: string,
+  params: {
+    from: string
+    to: string
+    eventTypes?: string[]
+    pageSize?: number
+    maxAttempts?: number
+  },
+): Promise<ProductionReportResult> {
+  const maxAttempts = Math.min(Math.max(params.maxAttempts ?? 3, 1), 5)
+  const pageSize = Math.min(Math.max(params.pageSize ?? 5000, 1), 5000)
+  const eventTypes = params.eventTypes ?? ["PROD", "ORPHAN_PROD"]
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const events: ApiProductionEvent[] = []
+    let cursor: string | null = null
+    let snapshot: ProductionReportSnapshot | null = null
+
+    do {
+      const query = new URLSearchParams({
+        from: params.from,
+        to: params.to,
+        eventTypes: eventTypes.join(","),
+        limit: String(pageSize),
+      })
+      if (cursor) query.set("cursor", cursor)
+      if (snapshot) {
+        query.set("snapshotMaxIngestSeq", snapshot.snapshotMaxIngestSeq)
+        query.set("snapshotIngestedBefore", snapshot.snapshotIngestedBefore)
+        query.set("snapshotSignature", snapshot.snapshotSignature)
+      }
+      const response = await fetchWithAuth(`/production-event/reports/page?${query}`, {
+        accessToken,
+      })
+      const page = await parseResponse<ApiProductionReportPage>(response)
+      snapshot ??= {
+        snapshotMaxIngestSeq: page.snapshotMaxIngestSeq,
+        snapshotIngestedBefore: page.snapshotIngestedBefore,
+        snapshotSignature: page.snapshotSignature,
+      }
+      events.push(...page.items)
+      cursor = page.hasMore ? page.nextCursor : null
+      if (page.hasMore && !cursor) {
+        throw new Error("El servidor indicó más producción pero no devolvió cursor")
+      }
+    } while (cursor)
+
+    if (!snapshot) throw new Error("No se pudo establecer el snapshot de producción")
+    const verifyQuery = new URLSearchParams({
+      from: params.from,
+      to: params.to,
+      eventTypes: eventTypes.join(","),
+      snapshotMaxIngestSeq: snapshot.snapshotMaxIngestSeq,
+      snapshotIngestedBefore: snapshot.snapshotIngestedBefore,
+      snapshotSignature: snapshot.snapshotSignature,
+    })
+    const verificationResponse = await fetchWithAuth(
+      `/production-event/reports/verify?${verifyQuery}`,
+      { accessToken },
+    )
+    const verification = await parseResponse<ApiProductionReportVerification>(
+      verificationResponse,
+    )
+    if (verification.stable) return { events, snapshot }
+  }
+
+  throw new Error(
+    "La producción cambió durante la descarga. Intenta nuevamente en unos segundos.",
+  )
+}
+
 // --- Captura de datos (solo administradores) ---
 
 export type ApiDataCaptureCategory =
@@ -951,6 +1055,8 @@ export interface ApiManualDataCapture {
   recordYear: number | null
   recordMonth: number | null
   shift: string | null
+  packagerShift: string | null
+  shiftSource: string | null
   sku: string | null
   machineCode: string | null
   operatorCode: string | null

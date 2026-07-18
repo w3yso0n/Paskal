@@ -26,12 +26,20 @@ import {
   buildTempSecondaryRoleByPersonDay,
   collectSectionPeople,
   effectiveRoleForDay,
+  filterBonusEmployeesForShift,
   shouldShowNaForRoleContext,
   type BonusEmployeePrimaryRole,
   type BonusEmployeeRoleEvent,
   type BonusSectionRole,
 } from "@/lib/bonus-role-context"
-import type { EmployeeSecondaryRole } from "@/lib/employee-production-role"
+import {
+  resolveEmployeeProductionRole,
+  type EmployeeSecondaryRole,
+} from "@/lib/employee-production-role"
+import {
+  allocateIntegerLargestRemainder,
+  dedupeReportPeople,
+} from "@/lib/production-report-allocation"
 
 const BORDER_COLOR = "FF94A3B8"
 const HEADER_FILL = "FFE2E8F0"
@@ -374,13 +382,13 @@ function bonusShiftLabel(shiftNumber: 1 | 2): "matutino" | "vespertino" {
 
 function manualCaptureMatchesShift(captureShift: string | null, shiftNumber: 1 | 2): boolean {
   const normalized = captureShift?.trim().toLowerCase()
-  if (!normalized) return true
+  if (!normalized) return false
   return normalized === bonusShiftLabel(shiftNumber)
 }
 
 function employeeDayRecordMatchesShift(shift: string | null, shiftNumber: 1 | 2): boolean {
   const normalized = shift?.trim().toLowerCase()
-  if (!normalized) return true
+  if (!normalized) return false
   return normalized === bonusShiftLabel(shiftNumber)
 }
 
@@ -528,30 +536,59 @@ function aggregateCheckinPresenceByDay(
   return out
 }
 
-function aggregateRoleProductionByDay(
+type ShiftPerson = {
+  name: string
+  shift: "matutino" | "vespertino"
+}
+
+function dedupeShiftPeople(values: ShiftPerson[]): ShiftPerson[] {
+  const seen = new Set<string>()
+  return values.filter((person) => {
+    const key = person.name.trim().toLocaleLowerCase("es")
+    if (!key || person.name === "—" || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function operatorPeople(row: ProductionShiftReportSourceRow): ShiftPerson[] {
+  return dedupeShiftPeople([
+    { name: row.operator, shift: row.operatorShift ?? row.shift },
+    { name: row.operator_2, shift: row.operator2Shift ?? row.shift },
+  ])
+}
+
+function packerPeople(row: ProductionShiftReportSourceRow): ShiftPerson[] {
+  const names = row.packersAttributed?.length
+    ? row.packersAttributed
+    : [row.packer_1, row.packer_2, row.packer_3, row.packer_4]
+  return dedupeShiftPeople(
+    names.map((name, index) => ({
+      name: String(name ?? ""),
+      shift: row.packerShifts?.[index] ?? row.shift,
+    })),
+  )
+}
+
+export function aggregateRoleProductionByDay(
   rows: ProductionShiftReportSourceRow[],
   dayShiftBounds: ShiftDayBound[],
+  reportShift: "matutino" | "vespertino",
 ): Map<string, Map<string, DayRoleTotals>> {
   const out = new Map<string, Map<string, DayRoleTotals>>()
 
-  const addToRole = (
-    names: string[],
+  const addAllocation = (
+    person: ShiftPerson,
     dayIso: string,
-    count: number,
+    quantity: number,
     role: BonusSectionRole,
   ) => {
-    const valid = names
-      .map((n) => normalizeOperatorName(n))
-      .filter((n): n is string => Boolean(n))
-    if (valid.length === 0) return
-    const split = count / valid.length
-    for (const person of valid) {
-      const byDay = out.get(person) ?? new Map<string, DayRoleTotals>()
-      const totals = byDay.get(dayIso) ?? emptyDayRoleTotals()
-      totals[role] += split
-      byDay.set(dayIso, totals)
-      out.set(person, byDay)
-    }
+    if (person.shift !== reportShift || quantity <= 0) return
+    const byDay = out.get(person.name) ?? new Map<string, DayRoleTotals>()
+    const totals = byDay.get(dayIso) ?? emptyDayRoleTotals()
+    totals[role] += quantity
+    byDay.set(dayIso, totals)
+    out.set(person.name, byDay)
   }
 
   for (const row of rows) {
@@ -561,7 +598,11 @@ function aggregateRoleProductionByDay(
     const dayBound = dayShiftBounds.find((d) => ts >= d.startMs && ts < d.endMs)
     if (!dayBound) continue
 
-    const count = Number.isFinite(row.count) ? row.count : 0
+    const count = row.isPackagerCredit
+      ? Math.max(0, Number(row.packagingCreditPieces ?? 0))
+      : Number.isFinite(row.count)
+        ? row.count
+        : 0
     if (count <= 0) continue
 
     const machine = row.machine_id ?? ""
@@ -569,8 +610,41 @@ function aggregateRoleProductionByDay(
     const isRoller = machineIncludesAny(machine, ["roll", "roller", "rodillo"])
 
     const operatorRole: BonusSectionRole = isBending ? "bending" : isRoller ? "roller" : "operator"
-    addToRole([row.operator, row.operator_2], dayBound.dayIso, count, operatorRole)
-    addToRole([row.packer_1, row.packer_2], dayBound.dayIso, count, "packer")
+    const eventCredits = new Map<
+      string,
+      { person: ShiftPerson; quantity: number; role: BonusSectionRole }
+    >()
+    const consider = (
+      people: ShiftPerson[],
+      role: BonusSectionRole,
+      credit: number,
+    ) => {
+      const valid = dedupeShiftPeople(people)
+      for (const { recipient: person, quantity } of allocateIntegerLargestRemainder(
+        credit,
+        valid,
+      )) {
+        const key = person.name.trim().toLocaleLowerCase("es")
+        const previous = eventCredits.get(key)
+        // Una persona que cubrió dos funciones recibe una sola participación del
+        // evento. Se conserva la mayor; en empate prevalece operación.
+        if (!previous || quantity > previous.quantity) {
+          eventCredits.set(key, { person, quantity, role })
+        }
+      }
+    }
+    if (!row.isPackagerCredit) {
+      consider(operatorPeople(row), operatorRole, count)
+    }
+    consider(packerPeople(row), "packer", count)
+    for (const credit of eventCredits.values()) {
+      addAllocation(
+        credit.person,
+        dayBound.dayIso,
+        credit.quantity,
+        credit.role,
+      )
+    }
   }
 
   return out
@@ -647,7 +721,11 @@ function buildShiftDayBounds(dayDates: Date[]): ShiftDayBound[] {
 function aggregatePeopleProductionByDay(
   rows: ProductionShiftReportSourceRow[],
   dayShiftBounds: ShiftDayBound[],
-  extractPeople: (row: ProductionShiftReportSourceRow) => string[],
+  reportShift: "matutino" | "vespertino",
+  includePackagerCredits: boolean,
+  extractPeople: (
+    row: ProductionShiftReportSourceRow,
+  ) => ShiftPerson[],
 ): {
   people: string[]
   productionByPersonDay: Map<string, Map<string, number>>
@@ -669,23 +747,23 @@ function aggregatePeopleProductionByDay(
     const dayBound = dayShiftBounds.find((d) => ts >= d.startMs && ts < d.endMs)
     if (!dayBound) continue
 
-    const seen = new Set<string>()
-    const people = extractPeople(row)
-      .map((name) => normalizeOperatorName(name))
-      .filter((name): name is string => Boolean(name))
-      .filter((name) => {
-        const key = name.toLowerCase()
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
-      })
+    const people = dedupeShiftPeople(extractPeople(row))
 
-    const count = Number.isFinite(row.count) ? row.count : 0
+    if (row.isPackagerCredit && !includePackagerCredits) continue
+    const count = row.isPackagerCredit
+      ? Math.max(0, Number(row.packagingCreditPieces ?? 0))
+      : Number.isFinite(row.count)
+        ? row.count
+        : 0
     if (people.length === 0) continue
 
-    const split = count / people.length
-    for (const person of people) {
-      addProduction(person, dayBound.dayIso, split)
+    for (const { recipient: person, quantity } of allocateIntegerLargestRemainder(
+      count,
+      people,
+    )) {
+      if (person.shift === reportShift) {
+        addProduction(person.name, dayBound.dayIso, quantity)
+      }
     }
   }
 
@@ -786,7 +864,8 @@ function writeSectionDataRows(
   roleProductionByPersonDay: Map<string, Map<string, DayRoleTotals>>,
   presenceByPersonDay: Map<string, Set<string>>,
   dayRecordsByPerson: Map<string, Map<string, EmployeeDayRecordType>>,
-  dayIsos: string[],
+  displayDayIsos: string[],
+  allDayIsos: string[],
   holidayIsos: Set<string>,
   sectionRole: BonusSectionRole,
   shiftNumber: 1 | 2,
@@ -799,8 +878,8 @@ function writeSectionDataRows(
   const shiftSlice = getShiftConfigSlice(productionConfig, shiftNumber)
   const { winding } = shiftSlice
   const workingDays =
-    dayIsos.length > 0
-      ? dayIsos.length
+    allDayIsos.length > 0
+      ? allDayIsos.length
       : getWorkingDaysForShift(productionConfig, shiftNumber)
   const meta110Factor = 1.1
   const monthlyMeta100 =
@@ -812,8 +891,8 @@ function writeSectionDataRows(
     const rolesByDay = roleProductionByPersonDay.get(name) ?? new Map<string, DayRoleTotals>()
     const presentDays = presenceByPersonDay.get(name) ?? new Set<string>()
     const manualDays = dayRecordsByPerson.get(name) ?? new Map<string, EmployeeDayRecordType>()
-    const activityWindow = getPersonActivityWindow(dayIsos, rolesByDay, presentDays)
-    const vacationDays = countVacationDaysInPeriod(dayIsos, manualDays, holidayIsos)
+    const activityWindow = getPersonActivityWindow(displayDayIsos, rolesByDay, presentDays)
+    const vacationDays = countVacationDaysInPeriod(allDayIsos, manualDays, holidayIsos)
     const personWorkingDays = Math.max(0, workingDays - vacationDays)
     const personMeta = computePersonBonusMetaAdjustments(
       workingDays,
@@ -824,10 +903,10 @@ function writeSectionDataRows(
     sheet.getCell(row, 1).value = name
     applySubHeaderStyle(sheet.getCell(row, 1))
 
-    for (let i = 0; i < dayIsos.length; i++) {
+    for (let i = 0; i < displayDayIsos.length; i++) {
       const col = 2 + i
       const cell = sheet.getCell(row, col)
-      const dayIso = dayIsos[i]
+      const dayIso = displayDayIsos[i]
       if (holidayIsos.has(dayIso)) {
         applyHolidayDfStyle(cell)
         continue
@@ -896,7 +975,12 @@ function writeSectionDataRows(
     sheet.getCell(row, 23).value = { formula: `SUM(G${row}:K${row})` }
     sheet.getCell(row, 24).value = { formula: `SUM(L${row}:P${row})` }
     sheet.getCell(row, 25).value = { formula: `SUM(Q${row}:U${row})` }
-    sheet.getCell(row, 26).value = { formula: `SUM(V${row}:Y${row})` }
+    const monthlyTotal = allDayIsos.reduce((sum, dayIso) => sum + (byDay.get(dayIso) ?? 0), 0)
+    sheet.getCell(row, 26).value = Number(monthlyTotal.toFixed(2))
+    if (allDayIsos.length > displayDayIsos.length) {
+      sheet.getCell(row, 26).note =
+        `Incluye ${allDayIsos.length - displayDayIsos.length} días laborables adicionales no visibles en las 20 columnas diarias.`
+    }
     sheet.getCell(row, 27).value = {
       formula: personWorkingDays > 0 ? `Z${row}/${personWorkingDays}` : "0",
     }
@@ -953,11 +1037,13 @@ function configureTemplateSheet(
   const businessDays = businessDaysOfMonth(reportDate)
   const days = businessDays.length > 20 ? businessDays.slice(-20) : businessDays
   const dayIsos = days.map((d) => dateToIsoInTimeZone(d, REPORT_TIMEZONE))
-  const dayShiftBounds = buildShiftDayBounds(days)
-  // Turno por operadora: la hoja de T1/T2 solo suma filas clasificadas a ese turno.
+  const allDayIsos = businessDays.map((d) => dateToIsoInTimeZone(d, REPORT_TIMEZONE))
+  const dayShiftBounds = buildShiftDayBounds(businessDays)
+  // La producción de máquina pertenece al operador principal, pero el crédito
+  // individual se filtra por el turno congelado de cada participante.
   const sheetShift = shiftNumber === 1 ? "matutino" : "vespertino"
   const productionRows = sourceRows.filter(
-    (r) => r.event === "Producción" && r.shift === sheetShift,
+    (r) => r.event === "Producción",
   )
   const [yearRaw, monthRaw] = reportDate.split("-")
   const reportYear = Number(yearRaw)
@@ -968,12 +1054,16 @@ function configureTemplateSheet(
         mexicanPublicHolidayIsosForMonth(reportYear, reportMonth),
         options.extraHolidayIsos ?? [],
       )
-  const roleProductionByPersonDay = aggregateRoleProductionByDay(productionRows, dayShiftBounds)
+  const roleProductionByPersonDay = aggregateRoleProductionByDay(
+    productionRows,
+    dayShiftBounds,
+    sheetShift,
+  )
   const resolvePersonFromCode = options.resolvePersonFromCode ?? (() => "")
   mergeManualCapturesIntoRoleProduction(
     roleProductionByPersonDay,
     options.manualCaptures,
-    dayIsos,
+    allDayIsos,
     shiftNumber,
     resolvePersonFromCode,
   )
@@ -986,9 +1076,39 @@ function configureTemplateSheet(
     options.employeeDayRecords ?? [],
     shiftNumber,
   )
-  const primaryRoleByPerson = buildPrimaryRoleByPerson(options.employeePrimaryRoles ?? [])
-  const defaultSecondaryByPerson = buildDefaultSecondaryRoleByPerson(
+  const shiftEmployees = filterBonusEmployeesForShift(
     options.employeePrimaryRoles ?? [],
+    shiftNumber,
+  )
+  const primaryRoleByPerson = buildPrimaryRoleByPerson(shiftEmployees)
+  // El rol congelado del evento prevalece sobre el catálogo actual para evitar
+  // reclasificar producción histórica después de un cambio de puesto/turno.
+  for (const row of productionRows) {
+    const operatorNames = [row.operator, row.operator_2]
+    operatorNames.forEach((name, index) => {
+      const shift =
+        index === 0
+          ? (row.operatorShift ?? row.shift)
+          : (row.operator2Shift ?? row.shift)
+      if (shift !== sheetShift) return
+      const role = resolveEmployeeProductionRole(
+        row.operatorPrimaryRoles?.[index],
+      )
+      if (name && name !== "—" && role) primaryRoleByPerson.set(name, role)
+    })
+    const packerNames = row.packersAttributed?.length
+      ? row.packersAttributed
+      : [row.packer_1, row.packer_2, row.packer_3, row.packer_4]
+    packerNames.forEach((name, index) => {
+      if ((row.packerShifts?.[index] ?? row.shift) !== sheetShift) return
+      const role = resolveEmployeeProductionRole(
+        row.packerPrimaryRoles?.[index],
+      )
+      if (name && name !== "—" && role) primaryRoleByPerson.set(name, role)
+    })
+  }
+  const defaultSecondaryByPerson = buildDefaultSecondaryRoleByPerson(
+    shiftEmployees,
   )
   const tempSecondaryByPersonDay = buildTempSecondaryRoleByPersonDay(
     options.employeeRoleEvents ?? [],
@@ -1000,33 +1120,37 @@ function configureTemplateSheet(
       title: "Operadores",
       leftLabel: "Operador",
       sectionRole: "operator" as const,
+      includePackagerCredits: false,
       rows: productionRows,
-      extractPeople: (r: ProductionShiftReportSourceRow) => [r.operator, r.operator_2],
+      extractPeople: operatorPeople,
     },
     {
       title: "Empacadores",
       leftLabel: "Empacador",
       sectionRole: "packer" as const,
+      includePackagerCredits: true,
       rows: productionRows,
-      extractPeople: (r: ProductionShiftReportSourceRow) => [r.packer_1, r.packer_2],
+      extractPeople: packerPeople,
     },
     {
       title: "Operador Bending",
       leftLabel: "Operador",
       sectionRole: "bending" as const,
+      includePackagerCredits: false,
       rows: productionRows.filter((r) =>
         machineIncludesAny(r.machine_id, ["bend", "bending", "doblado", "dobladora"]),
       ),
-      extractPeople: (r: ProductionShiftReportSourceRow) => [r.operator, r.operator_2],
+      extractPeople: operatorPeople,
     },
     {
       title: "Operador Roller",
       leftLabel: "Operador",
       sectionRole: "roller" as const,
+      includePackagerCredits: false,
       rows: productionRows.filter((r) =>
         machineIncludesAny(r.machine_id, ["roll", "roller", "rodillo"]),
       ),
-      extractPeople: (r: ProductionShiftReportSourceRow) => [r.operator, r.operator_2],
+      extractPeople: operatorPeople,
     },
   ] as const
 
@@ -1057,6 +1181,8 @@ function configureTemplateSheet(
     let { people, productionByPersonDay } = aggregatePeopleProductionByDay(
       section.rows,
       dayShiftBounds,
+      sheetShift,
+      section.includePackagerCredits,
       section.extractPeople,
     )
     if (section.sectionRole === "operator" || section.sectionRole === "packer") {
@@ -1076,7 +1202,7 @@ function configureTemplateSheet(
         people,
         productionByPersonDay,
         options.manualCaptures,
-        dayIsos,
+        allDayIsos,
         shiftNumber,
         resolvePersonFromCode,
       )
@@ -1089,7 +1215,7 @@ function configureTemplateSheet(
       primaryRoleByPerson,
       defaultSecondaryByPerson,
       tempSecondaryByPersonDay,
-      dayIsos,
+      allDayIsos,
     )
     const dataStart = headerRow2 + 1
     const dataEnd = writeSectionDataRows(
@@ -1101,6 +1227,7 @@ function configureTemplateSheet(
       presenceByPersonDay,
       dayRecordsByPerson,
       dayIsos,
+      allDayIsos,
       holidayIsos,
       section.sectionRole,
       shiftNumber,

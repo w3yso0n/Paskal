@@ -18,6 +18,8 @@ export type BonusEmployeePrimaryRole = {
   fullName: string
   primaryRole?: EmployeeProductionRole | null
   secondaryRole?: EmployeeSecondaryRole | null
+  /** Turno congelado para el período del reporte. Null conserva compatibilidad histórica. */
+  shift?: number | null
 }
 
 function normalizePersonName(value: string): string {
@@ -30,8 +32,18 @@ function bonusShiftLabel(shiftNumber: 1 | 2): "matutino" | "vespertino" {
 
 function roleEventMatchesShift(shift: string | null, shiftNumber: 1 | 2): boolean {
   const normalized = shift?.trim().toLowerCase()
-  if (!normalized) return true
+  if (!normalized) return false
   return normalized === bonusShiftLabel(shiftNumber)
+}
+
+export function filterBonusEmployeesForShift(
+  employees: BonusEmployeePrimaryRole[],
+  shiftNumber: 1 | 2,
+): BonusEmployeePrimaryRole[] {
+  return employees.filter((employee) => {
+    if (employee.shift == null) return false
+    return employee.shift === shiftNumber
+  })
 }
 
 export function buildPrimaryRoleByPerson(
@@ -148,7 +160,13 @@ export function collectSectionPeople(
 type DayRoleTotals = Record<BonusSectionRole, number>
 
 function totalRoleProduction(roles: DayRoleTotals): number {
-  return roles.operator + roles.packer + roles.bending + roles.roller
+  return (
+    roles.operator +
+    roles.packer +
+    roles.bending +
+    roles.roller +
+    roles.maintenance
+  )
 }
 
 function workedInOtherRoles(roles: DayRoleTotals, sectionRole: BonusSectionRole): boolean {

@@ -99,6 +99,7 @@ import {
   getBonusProductionConfigForMonth,
   getResolvedHolidaysForMonth,
   getProductionEvents,
+  getProductionEventsForReport,
   getGoals,
   getAlerts,
   getMaintenanceSessions,
@@ -123,6 +124,7 @@ import {
 import {
   buildProductionShiftReportBlob,
   productionShiftReportFilename,
+  reconcileProductionReportRows,
   type ProductionShiftManualCapture,
   type ProductionShiftReportSourceRow,
 } from "@/lib/production-shift-report-excel"
@@ -144,14 +146,17 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   EMPLOYEE_PRODUCTION_ROLE_LABELS,
   resolveEmployeeProductionRole,
+  type EmployeeProductionRole,
 } from "@/lib/employee-production-role"
 import {
   PLANT_TIMEZONE,
   productionShiftFromMeasuredAt,
 } from "@/lib/tablero-operator-goal"
-import { getPartsInTimeZone } from "@/lib/shift-timezone"
+import { getPartsInTimeZone, plantDateOnlyRangeToIso } from "@/lib/shift-timezone"
 import {
   buildOperatorShiftByCode,
+  frozenParticipantPrimaryRole,
+  frozenParticipantShift,
   productionShiftForEvent,
   type OperatorShiftByCode,
 } from "@/lib/production-goal-events"
@@ -244,6 +249,7 @@ function dayRecordMatchesShiftFilter(
 }
 
 interface ProductionBaseRow {
+  eventId: string
   machine_id: string
   /** UUID de máquina en API (para enriquecer empacadores desde check-in). */
   machineIdRaw: string | null
@@ -252,11 +258,25 @@ interface ProductionBaseRow {
   eventRaw: string
   operator: string
   operator_2: string
+  operatorCode: string | null
+  operator2Code: string | null
+  operatorShift: ShiftType | null
+  operator2Shift: ShiftType | null
+  operatorPrimaryRoles: Array<EmployeeProductionRole | null>
   packer_1: string
   packer_2: string
+  packer_3: string
+  packer_4: string
+  packerCodes: string[]
+  packerShifts: (ShiftType | null)[]
+  packerPrimaryRoles: Array<EmployeeProductionRole | null>
   unitsPerBox: number
   /** Turno de la producción: turno ASIGNADO de la operadora del evento (fallback: reloj <16:00). */
   shift: "matutino" | "vespertino"
+  shiftSource: "assigned" | "legacy_current_assignment" | "orphan_clock"
+  isOrphan: boolean
+  isPackagerCredit: boolean
+  packagingCreditPieces: number
   /** Nombres únicos de empacadores atribuidos al evento (payload + fallback check-in). */
   packersAttributed: string[]
   parameter_1: number
@@ -305,6 +325,19 @@ function resolvePersonRoleLabel(
 /** Etiqueta para códigos de operador que ya no resuelven a ningún empleado (tarjeta no
  * registrada o dato viejo). Evita mostrar el UID NFC crudo como "operador fantasma". */
 const UNKNOWN_PERSON_LABEL = "Sin nombre"
+
+function plantRangeToInclusiveIso(
+  startDate: string,
+  endDate: string,
+): { from: string; to: string; toExclusive: string } {
+  const bounds = plantDateOnlyRangeToIso(startDate, endDate, PLANT_TIMEZONE)
+  if (!bounds) throw new Error("Rango de fechas inválido")
+  return {
+    from: bounds.from,
+    to: new Date(new Date(bounds.toExclusive).getTime() - 1).toISOString(),
+    toExclusive: bounds.toExclusive,
+  }
+}
 
 const PERSON_ROLE_CHART_COLORS: Record<string, string> = {
   Operador: "#22c55e",
@@ -560,14 +593,11 @@ function mapEventsToProductionBaseRows(
 ): ProductionBaseRow[] {
   const skipCheckinEnrich = options?.skipCheckinEnrich === true
   const machineLabelById = new Map<string, string>()
-  const machineSkuById = new Map<string, string>()
   const machineUpbById = new Map<string, number>()
   for (const m of filterFloorMachines(apiMachines)) {
     if (!m.id) continue
     const label = (m.code ?? m.name ?? "").trim() || "—"
     machineLabelById.set(m.id, label)
-    const curSku = m.currentSku?.trim()
-    if (curSku) machineSkuById.set(m.id, curSku)
     const upb = m.unitsPerBox
     if (upb != null && Number.isFinite(upb) && upb > 0) machineUpbById.set(m.id, upb)
   }
@@ -590,13 +620,10 @@ function mapEventsToProductionBaseRows(
 
   return events
     .filter((e) => !(e.payload as Record<string, unknown>)?.excludedMaintenance)
-    .filter((e) => (e.eventType ?? "").toUpperCase() !== "ORPHAN_PROD")
-    .filter((e) => {
-      const attr = (e.payload as Record<string, unknown>)?.attributedFrom
-      return attr !== "orphan" && attr !== "packager_orphan"
-    })
     .map((e: ApiProductionEvent) => {
     const payload = e.payload ?? {}
+    const isOrphan = (e.eventType ?? "").trim().toUpperCase() === "ORPHAN_PROD"
+    const isPackagerCredit = payload.attributedFrom === "packager_orphan"
     const eventRaw = String(payloadString(payload, "EVENT", "event") ?? e.eventType ?? "")
     const eventTypeUp = eventRaw.trim().toUpperCase()
     const lower = eventRaw.toLowerCase()
@@ -627,7 +654,10 @@ function mapEventsToProductionBaseRows(
       (payload["COUNT"] as unknown) ??
       (payload["count"] as unknown) ??
       (payload["units"] as unknown)
-    const count = typeof countRaw === "number" ? countRaw : Number(countRaw)
+    const rawCount = typeof countRaw === "number" ? countRaw : Number(countRaw)
+    const packagingCreditPieces =
+      isPackagerCredit && Number.isFinite(rawCount) ? Math.max(0, rawCount) : 0
+    const count = isPackagerCredit ? 0 : rawCount
 
     const ts = String(
       payloadString(payload, "TIMESTAMP", "timestamp") ?? e.occurredAt ?? new Date().toISOString(),
@@ -643,7 +673,7 @@ function mapEventsToProductionBaseRows(
       nthStringFromArrayLoose(payload, "operators", 0)
 
     let operatorLabel = resolvePerson(operatorCodeRaw)
-    if (!skipCheckinEnrich && operatorLabel === "—" && e.machineId?.trim()) {
+    if (!isOrphan && !skipCheckinEnrich && operatorLabel === "—" && e.machineId?.trim()) {
       const fromChk = primaryOperatorLabelFromCheckin(
         e.machineId,
         new Date(ts).getTime(),
@@ -658,7 +688,7 @@ function mapEventsToProductionBaseRows(
       nthStringFromArray(payload, "operators", 1) ??
       nthStringFromArrayLoose(payload, "operators", 1)
     let operator2Label = resolvePerson(operator2CodeRaw)
-    if (!skipCheckinEnrich && operator2Label === "—" && e.machineId?.trim()) {
+    if (!isOrphan && !skipCheckinEnrich && operator2Label === "—" && e.machineId?.trim()) {
       const ch = findBestCheckinForMachineAndTime(e.machineId, new Date(ts).getTime(), checkinsByMachine)
       const oc2 = ch?.operator2Code?.trim()
       if (oc2) operator2Label = resolvePerson(oc2)
@@ -686,15 +716,13 @@ function mapEventsToProductionBaseRows(
         "product",
         "PRODUCT_CODE",
         "product_code",
-      ) ??
-      (mid ? machineSkuById.get(mid) : undefined) ??
-      skuFromMessage(e.message)
+      ) ?? skuFromMessage(e.message)
 
     const rawPackerCodes = collectPackerCodesFromPayload(payload)
     let packersAttributed = dedupeTrimmedPreserveOrder(
       rawPackerCodes.map((c) => resolvePerson(c)).filter((p) => p && p !== "—"),
     )
-    if (!skipCheckinEnrich && packersAttributed.length === 0 && e.machineId?.trim()) {
+    if (!isOrphan && !skipCheckinEnrich && packersAttributed.length === 0 && e.machineId?.trim()) {
       packersAttributed = packerDisplayNamesFromCheckin(
         e.machineId,
         new Date(ts).getTime(),
@@ -704,6 +732,42 @@ function mapEventsToProductionBaseRows(
     }
     const packer_1 = packersAttributed[0] ?? "—"
     const packer_2 = packersAttributed[1] ?? "—"
+    const packer_3 = packersAttributed[2] ?? "—"
+    const packer_4 = packersAttributed[3] ?? "—"
+    const assignedShift = productionShiftForEvent(e, operatorShiftByCode)
+    const shiftForCode = (
+      code: string | null | undefined,
+      role: "operator" | "packager",
+    ): ShiftType | null => {
+      const frozen = frozenParticipantShift(e, code, role)
+      if (frozen) return frozen
+      const key = code?.trim().toLowerCase()
+      return key ? (operatorShiftByCode.get(key) ?? null) : null
+    }
+    const operatorShift = shiftForCode(operatorCodeRaw, "operator")
+    const operator2Shift = shiftForCode(operator2CodeRaw, "operator")
+    const packerShifts = rawPackerCodes.map((code) => shiftForCode(code, "packager"))
+    const frozenRole = (
+      code: string | null | undefined,
+      role: "operator" | "packager",
+    ) =>
+      resolveEmployeeProductionRole(
+        frozenParticipantPrimaryRole(e, code, role) as EmployeeProductionRole | null,
+      )
+    const operatorPrimaryRoles = [
+      frozenRole(operatorCodeRaw, "operator"),
+      frozenRole(operator2CodeRaw, "operator"),
+    ]
+    const packerPrimaryRoles = rawPackerCodes.map((code) =>
+      frozenRole(code, "packager"),
+    )
+    const payloadShiftSource = String(payload.shift_source ?? payload.shiftSource ?? "")
+    const hasFrozenRoster = Boolean(payload.rosterSnapshot ?? payload.roster_snapshot)
+    const shiftSource: ProductionBaseRow["shiftSource"] = isOrphan
+      ? "orphan_clock"
+      : payloadShiftSource === "assigned" || hasFrozenRoster
+        ? "assigned"
+        : "legacy_current_assignment"
 
     const rolledUp = payload.rolled_up === true || payload.rolled_up === "true"
     const firstOccurredAt =
@@ -717,16 +781,31 @@ function mapEventsToProductionBaseRows(
         : undefined
 
     return {
+      eventId: e.id,
       machine_id,
       machineIdRaw: e.machineId?.trim() ?? null,
       timestamp: ts,
       eventRaw,
       operator: operatorLabel,
       operator_2: operator2Label,
+      operatorCode: operatorCodeRaw ?? null,
+      operator2Code: operator2CodeRaw ?? null,
+      operatorShift,
+      operator2Shift,
+      operatorPrimaryRoles,
       unitsPerBox,
-      shift: productionShiftForEvent(e, operatorShiftByCode) ?? "matutino",
+      shift: assignedShift ?? productionShiftFromMeasuredAt(e.occurredAt) ?? "matutino",
+      shiftSource,
+      isOrphan,
+      isPackagerCredit,
+      packagingCreditPieces,
       packer_1,
       packer_2,
+      packer_3,
+      packer_4,
+      packerCodes: rawPackerCodes,
+      packerShifts,
+      packerPrimaryRoles,
       packersAttributed,
       parameter_1: Number((payload["PARAMETER_1"] as unknown) ?? 0) || 0,
       parameter_2: Number((payload["PARAMETER_2"] as unknown) ?? 0) || 0,
@@ -739,6 +818,36 @@ function mapEventsToProductionBaseRows(
       sourceEventCount,
     }
   })
+}
+
+function toProductionShiftSourceRows(
+  rows: ProductionBaseRow[],
+): ProductionShiftReportSourceRow[] {
+  return rows.map((r) => ({
+    machine_id: r.machine_id,
+    machineIdRaw: r.machineIdRaw,
+    timestamp: r.timestamp,
+    operator: r.operator,
+    operator_2: r.operator_2,
+    operatorShift: r.operatorShift,
+    operator2Shift: r.operator2Shift,
+    operatorPrimaryRoles: r.operatorPrimaryRoles,
+    packer_1: r.packer_1,
+    packer_2: r.packer_2,
+    packer_3: r.packer_3,
+    packer_4: r.packer_4,
+    packersAttributed: r.packersAttributed,
+    packerShifts: r.packerShifts,
+    packerPrimaryRoles: r.packerPrimaryRoles,
+    isOrphan: r.isOrphan,
+    isPackagerCredit: r.isPackagerCredit,
+    packagingCreditPieces: r.packagingCreditPieces,
+    count: r.count,
+    event: r.event,
+    sku: r.sku,
+    unitsPerBox: r.unitsPerBox,
+    shift: r.shift,
+  }))
 }
 
 /** Asistencia proxy: una fila por persona asignada en el check-in NFC (entrada/salida de máquina). */
@@ -1119,8 +1228,10 @@ export default function MetricsPage() {
       }
 
       try {
-        const fromIso = new Date(`${filterStartDate}T00:00:00`).toISOString()
-        const toIso = new Date(`${filterEndDate}T23:59:59.999`).toISOString()
+        const { from: fromIso, to: toIso } = plantRangeToInclusiveIso(
+          filterStartDate,
+          filterEndDate,
+        )
         const bonusMonth = filterStartDate.slice(0, 7)
 
         const [events, employees, apiMachines, checkins, goals, dayRecords, maintenanceSessions, alerts, bonusCfg] =
@@ -1851,6 +1962,8 @@ export default function MetricsPage() {
       operator2: resolvePerson(ch.operator2Code ?? undefined),
       packer1: resolvePerson(ch.packager1Code ?? undefined),
       packer2: resolvePerson(ch.packager2Code ?? undefined),
+      packer3: resolvePerson(ch.packager3Code ?? undefined),
+      packer4: resolvePerson(ch.packager4Code ?? undefined),
     })
     const nameToCode = new Map<string, string>()
     for (const emp of employeeRows) {
@@ -1866,30 +1979,33 @@ export default function MetricsPage() {
       return nameToCode.get(t) ?? nameToCode.get(t.toLowerCase()) ?? ""
     }
 
-    const sourceRows: ProductionShiftReportSourceRow[] = productionBaseRows.map((r) => ({
-      machine_id: r.machine_id,
-      machineIdRaw: r.machineIdRaw,
-      timestamp: r.timestamp,
-      operator: r.operator,
-      operator_2: r.operator_2,
-      packer_1: r.packer_1,
-      packer_2: r.packer_2,
-      count: r.count,
-      event: r.event,
-      sku: r.sku,
-      unitsPerBox: r.unitsPerBox,
-      shift: r.shift,
-    }))
-
     const monthBounds = getMonthDateBounds(reportDate)
     const shifts: (1 | 2)[] = reportBothShifts ? [1, 2] : [reportShiftNumber]
     setReportGenerating(true)
     try {
       const token = await getAccessToken()
+      if (!token) throw new Error("Sesión no válida")
+      const {
+        from: reportFrom,
+        to: reportTo,
+        toExclusive: reportToExclusive,
+      } = plantRangeToInclusiveIso(
+        monthBounds.start,
+        monthBounds.end,
+      )
       let manualCaptures: ProductionShiftManualCapture[] = []
-      let reportConfiguredSkus: string[] = []
-      if (token) {
-        const [windingRows, bendingRows, goals] = await Promise.all([
+      const [reportResult, reportCheckins, reportMachines, windingRows, bendingRows] =
+        await Promise.all([
+          getProductionEventsForReport(token, {
+            from: reportFrom,
+            to: reportToExclusive,
+          }),
+          getMachineCheckins(token, {
+            from: reportFrom,
+            to: reportTo,
+            limit: 20_000,
+          }),
+          getMachines(token),
           getManualDataCaptures(token, {
             category: "winding",
             from: monthBounds.start,
@@ -1902,32 +2018,27 @@ export default function MetricsPage() {
             to: monthBounds.end,
             limit: 2000,
           }),
-          getGoals(token).catch(() => [] as ApiGoal[]),
         ])
-        reportConfiguredSkus = [
-          ...new Set(
-            goals
-              .filter((g) => {
-                const sku = g.sku?.trim()
-                if (!sku || g.metricKind !== "production") return false
-                return g.startDate <= monthBounds.end && g.endDate >= monthBounds.start
-              })
-              .map((g) => g.sku!.trim()),
-          ),
-        ]
-        manualCaptures = [...windingRows, ...bendingRows]
-          .filter((c) => c.recordDate && c.productionQty != null)
-          .map((c) => ({
-            category: c.category as "winding" | "bending",
-            sourceKey: c.sourceKey,
-            recordDate: c.recordDate!,
-            shift: c.shift,
-            sku: c.sku,
-            operatorCode: c.operatorCode,
-            packagerCode: c.packagerCode,
-            productionQty: Number(c.productionQty),
-          }))
-      }
+      const reportBaseRows = mapEventsToProductionBaseRows(
+        reportResult.events,
+        reportCheckins,
+        employeeRows,
+        reportMachines,
+      )
+      const sourceRows = toProductionShiftSourceRows(reportBaseRows)
+      reconcileProductionReportRows(sourceRows)
+      manualCaptures = [...windingRows, ...bendingRows]
+        .filter((c) => c.recordDate && c.productionQty != null)
+        .map((c) => ({
+          category: c.category as "winding" | "bending",
+          sourceKey: c.sourceKey,
+          recordDate: c.recordDate!,
+          shift: c.shift,
+          sku: c.sku,
+          operatorCode: c.operatorCode,
+          packagerCode: c.packagerCode,
+          productionQty: Number(c.productionQty),
+        }))
 
       for (const shiftNumber of shifts) {
         const blob = await buildProductionShiftReportBlob({
@@ -1935,9 +2046,8 @@ export default function MetricsPage() {
           shiftNumber,
           supervisorName: supervisorName.trim() || "—",
           rows: sourceRows,
-          checkins: machineCheckinsLoaded,
+          checkins: reportCheckins,
           manualCaptures,
-          configuredSkus: reportConfiguredSkus,
           resolveFromCheckin,
           resolveEmployeeCode,
           resolvePersonFromCode,
@@ -1952,9 +2062,10 @@ export default function MetricsPage() {
 
   const openBonusReportDialog = () => {
     const monthFirst = `${filterStartDate.slice(0, 7)}-01`
+    const bounds = getMonthDateBounds(monthFirst)
     setBonusReportDate(monthFirst)
-    setBonusRangeStart(filterStartDate)
-    setBonusRangeEnd(filterEndDate)
+    setBonusRangeStart(bounds.start)
+    setBonusRangeEnd(bounds.end)
     setBonusReportError(null)
     setIsBonusReportDialogOpen(true)
   }
@@ -1967,12 +2078,7 @@ export default function MetricsPage() {
   }
 
   const handleGenerateBonusReport = async () => {
-    if (!bonusRangeStart || !bonusRangeEnd) {
-      setBonusReportError("Selecciona el rango de fechas.")
-      return
-    }
-    const rangeStart = bonusRangeStart <= bonusRangeEnd ? bonusRangeStart : bonusRangeEnd
-    const rangeEnd = bonusRangeStart <= bonusRangeEnd ? bonusRangeEnd : bonusRangeStart
+    const monthBounds = getMonthDateBounds(bonusReportDate)
 
     const codeToName = buildEmployeeCodeToNameMap(employeeRows)
     const resolvePersonFromCode = (code: string | null | undefined) => {
@@ -1990,38 +2096,31 @@ export default function MetricsPage() {
         return
       }
 
-      const fromIso = new Date(`${rangeStart}T00:00:00`).toISOString()
-      const toIso = new Date(`${rangeEnd}T23:59:59.999`).toISOString()
+      const {
+        from: fromIso,
+        to: toIso,
+        toExclusive: toExclusiveIso,
+      } = plantRangeToInclusiveIso(
+        monthBounds.start,
+        monthBounds.end,
+      )
 
-      const [events, employees, apiMachines, checkins] = await Promise.all([
-        getProductionEvents(token, { from: fromIso, to: toIso, limit: 120_000 }),
+      const [reportResult, employees, apiMachines, checkins] = await Promise.all([
+        getProductionEventsForReport(token, { from: fromIso, to: toExclusiveIso }),
         employeeRows.length > 0 ? Promise.resolve(employeeRows) : getEmployees(token),
         getMachines(token),
         getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
       ])
 
-      const reportRows = mapEventsToProductionBaseRows(events, checkins, employees, apiMachines)
-      const sourceRows: ProductionShiftReportSourceRow[] = reportRows
-        .filter((r) => {
-          const day = r.timestamp.slice(0, 10)
-          return day >= rangeStart && day <= rangeEnd
-        })
-        .map((r) => ({
-          machine_id: r.machine_id,
-          machineIdRaw: r.machineIdRaw,
-          timestamp: r.timestamp,
-          operator: r.operator,
-          operator_2: r.operator_2,
-          packer_1: r.packer_1,
-          packer_2: r.packer_2,
-          count: r.count,
-          event: r.event,
-          sku: r.sku,
-          unitsPerBox: r.unitsPerBox,
-          shift: r.shift,
-        }))
+      const reportRows = mapEventsToProductionBaseRows(
+        reportResult.events,
+        checkins,
+        employees,
+        apiMachines,
+      )
+      const sourceRows = toProductionShiftSourceRows(reportRows)
+      reconcileProductionReportRows(sourceRows)
 
-      const monthBounds = getMonthDateBounds(bonusReportDate)
       let manualCaptures: BonusManualCapture[] = []
       let employeeDayRecords: BonusEmployeeDayRecord[] = []
       let employeeRoleEvents: BonusEmployeeRoleEvent[] = []
@@ -2082,6 +2181,7 @@ export default function MetricsPage() {
           fullName: e.fullName,
           primaryRole: e.primaryRole,
           secondaryRole: e.secondaryRole,
+          shift: e.shift,
         }))
       }
 
@@ -2130,22 +2230,105 @@ export default function MetricsPage() {
   const handleDownloadAnnualAccumulatedReportXlsx = async () => {
     const targetDate = reportDate || filterEndDate || formatDate(new Date())
     const year = Number(targetDate.slice(0, 4)) || new Date().getFullYear()
-    const sourceRows: ProductionShiftReportSourceRow[] = productionBaseRows.map((r) => ({
-      machine_id: r.machine_id,
-      machineIdRaw: r.machineIdRaw,
-      timestamp: r.timestamp,
-      operator: r.operator,
-      operator_2: r.operator_2,
-      packer_1: r.packer_1,
-      packer_2: r.packer_2,
-      count: r.count,
-      event: r.event,
-      sku: r.sku,
-      unitsPerBox: r.unitsPerBox,
-      shift: r.shift,
-    }))
-    const blob = await buildAnnualAccumulatedReportBlob(year, sourceRows)
-    downloadBlob(annualAccumulatedReportFilename(year), blob)
+    setReportGenerating(true)
+    try {
+      const token = await getAccessToken()
+      if (!token) throw new Error("Sesión no válida")
+      const yearStart = `${year}-01-01`
+      const yearEnd = `${year}-12-31`
+      const { from, to, toExclusive } = plantRangeToInclusiveIso(yearStart, yearEnd)
+      const [
+        reportResult,
+        employees,
+        apiMachines,
+        checkins,
+        windingCaptures,
+        bendingCaptures,
+      ] = await Promise.all([
+        getProductionEventsForReport(token, { from, to: toExclusive }),
+        getEmployees(token),
+        getMachines(token),
+        getMachineCheckins(token, { from, to, limit: 20_000 }),
+        getManualDataCaptures(token, {
+          category: "winding",
+          from: yearStart,
+          to: yearEnd,
+          limit: 100_000,
+        }),
+        getManualDataCaptures(token, {
+          category: "bending",
+          from: yearStart,
+          to: yearEnd,
+          limit: 100_000,
+        }),
+      ])
+      const reportRows = mapEventsToProductionBaseRows(
+        reportResult.events,
+        checkins,
+        employees,
+        apiMachines,
+      )
+      const codeToName = buildEmployeeCodeToNameMap(employees)
+      const resolveCode = (code: string | null | undefined) => {
+        const key = String(code ?? "").trim()
+        return (
+          codeToName.get(key) ??
+          codeToName.get(key.toLowerCase()) ??
+          UNKNOWN_PERSON_LABEL
+        )
+      }
+      const manualRows: ProductionShiftReportSourceRow[] = [
+        ...windingCaptures,
+        ...bendingCaptures,
+      ]
+        .filter(
+          (capture) =>
+            capture.recordDate &&
+            capture.productionQty != null &&
+            (capture.shift === "matutino" || capture.shift === "vespertino"),
+        )
+        .map((capture) => {
+          const dayStart = plantDateOnlyRangeToIso(
+            capture.recordDate!,
+            capture.recordDate!,
+            PLANT_TIMEZONE,
+          )!.from
+          const operator = resolveCode(capture.operatorCode)
+          const packer = resolveCode(capture.packagerCode)
+          return {
+            machine_id: capture.sourceKey,
+            machineIdRaw: null,
+            timestamp: new Date(new Date(dayStart).getTime() + 12 * 60 * 60 * 1000).toISOString(),
+            operator,
+            operator_2: "—",
+            operatorShift: capture.shift as ShiftType,
+            operator2Shift: null,
+            packer_1: packer,
+            packer_2: "—",
+            packer_3: "—",
+            packer_4: "—",
+            packersAttributed: [packer],
+            packerShifts: [capture.packagerShift as ShiftType | null],
+            count: Number(capture.productionQty),
+            event: "Producción" as const,
+            sku: capture.sku ?? "—",
+            unitsPerBox: 1,
+            shift: capture.shift as ShiftType,
+          }
+        })
+      const sourceRows = [
+        ...toProductionShiftSourceRows(reportRows),
+        ...manualRows,
+      ]
+      reconcileProductionReportRows(sourceRows)
+      const blob = await buildAnnualAccumulatedReportBlob(
+        year,
+        sourceRows,
+      )
+      downloadBlob(annualAccumulatedReportFilename(year), blob)
+    } finally {
+      setReportGenerating(false)
+    }
   }
 
   // KPIs (sin hardcode / sin mocks). Se calculan a partir de datos existentes;
@@ -2361,6 +2544,7 @@ export default function MetricsPage() {
               variant="outline"
               className="justify-start"
               onClick={handleDownloadAnnualAccumulatedReportXlsx}
+              disabled={reportGenerating}
             >
               <Download className="h-4 w-4" /> Acumulado Anual
             </Button>
@@ -2381,7 +2565,9 @@ export default function MetricsPage() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground">Rango de fechas</label>
+                <label className="text-sm font-medium text-foreground">
+                  Periodo mensual completo
+                </label>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="bonus-range-start">Desde</Label>
@@ -2390,7 +2576,7 @@ export default function MetricsPage() {
                       type="date"
                       value={bonusRangeStart}
                       max={bonusRangeEnd || undefined}
-                      onChange={(e) => setBonusRangeStart(e.target.value)}
+                      disabled
                       className={cn(
                         "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
@@ -2404,7 +2590,7 @@ export default function MetricsPage() {
                       type="date"
                       value={bonusRangeEnd}
                       min={bonusRangeStart || undefined}
-                      onChange={(e) => setBonusRangeEnd(e.target.value)}
+                      disabled
                       className={cn(
                         "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
                         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",

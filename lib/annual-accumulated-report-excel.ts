@@ -1,6 +1,14 @@
 import type { CellValue, Worksheet } from "exceljs"
-import type { ProductionShiftReportSourceRow } from "@/lib/production-shift-report-excel"
+import {
+  rowsForProductionReportShift,
+  type ProductionShiftReportSourceRow,
+} from "@/lib/production-shift-report-excel"
 import { getPartsInTimeZone } from "@/lib/shift-timezone"
+import {
+  allocateIntegerLargestRemainder,
+  dedupeReportPeople,
+  reportRosterKey,
+} from "@/lib/production-report-allocation"
 
 const TZ = "America/Mexico_City"
 const BORDER = "FF94A3B8"
@@ -16,6 +24,8 @@ type ShiftRow = {
   machine: string
   operator1: string
   operator2: string
+  operatorPieces1: number
+  operatorPieces2: number
   item: string
   boxCount: number
   unitsPerBox: number
@@ -24,10 +34,18 @@ type ShiftRow = {
   packer1Boxes: number
   packer2: string
   packer2Boxes: number
+  packer3: string
+  packer3Boxes: number
+  packer4: string
+  packer4Boxes: number
   totalBoxes: number
   difference: number
   packedPieces1: number
   packedPieces2: number
+  packedPieces3: number
+  packedPieces4: number
+  isOrphan: boolean
+  creditStatus: "normal" | "operator" | "packager" | "both"
   bending?: {
     boxCount: number
     unitsPerBox: number
@@ -93,60 +111,138 @@ function safeName(v: string | null | undefined): string {
 function toShiftRows(sourceRows: ProductionShiftReportSourceRow[]) {
   const matutino: ShiftRow[] = []
   const vespertino: ShiftRow[] = []
+  const grouped = new Map<string, ProductionShiftReportSourceRow[]>()
+  const rowsByAssignedShift = [
+    ...rowsForProductionReportShift(sourceRows, "matutino"),
+    ...rowsForProductionReportShift(sourceRows, "vespertino"),
+  ]
 
-  for (const row of sourceRows) {
+  for (const row of rowsByAssignedShift) {
     if (row.event !== "Producción") continue
     const ts = new Date(row.timestamp)
     if (Number.isNaN(ts.getTime())) continue
-    // Turno por operadora: la fila ya viene clasificada (asignado, fallback reloj).
-    const shift = row.shift
+    const parts = getPartsInTimeZone(ts, TZ)
+    const day = `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`
+    const packers = row.packersAttributed?.length
+      ? row.packersAttributed
+      : [row.packer_1, row.packer_2, row.packer_3, row.packer_4]
+    const roster = reportRosterKey(
+      [row.operator, row.operator_2],
+      packers,
+      row.rosterId,
+    )
+    const key = [
+      day,
+      row.shift,
+      row.machine_id.trim(),
+      row.sku.trim().toLocaleLowerCase("es"),
+      String(row.unitsPerBox > 0 ? row.unitsPerBox : 48),
+      roster,
+      row.isPackagerCredit || row.isOperatorCredit
+        ? "participant-credit"
+        : row.isOrphan
+          ? "orphan"
+          : "normal",
+    ].join("\u001f")
+    const current = grouped.get(key) ?? []
+    current.push(row)
+    grouped.set(key, current)
+  }
 
-    // `count` = conteo crudo del PLC = PIEZAS (payload.units). Las cajas se derivan:
-    // cajas = piezas / piezas_por_caja. (Antes count se trataba como cajas y se multiplicaba
-    // por upb, inflando "Piezas Totales" ~unitsPerBox veces.)
-    const pieces = Number.isFinite(row.count) ? row.count : 0
-    const upb = row.unitsPerBox > 0 ? row.unitsPerBox : 48
-    const boxes = upb > 0 ? Math.round((pieces / upb) * 100) / 100 : pieces
-    const totalPieces = Math.round(pieces)
-    const p1 = safeName(row.packer_1)
-    const p2 = safeName(row.packer_2)
-    const hasP1 = p1 !== "—"
-    const hasP2 = p2 !== "—"
-    let p1Boxes = 0
-    let p2Boxes = 0
-    if (hasP1 && hasP2) {
-      p1Boxes = boxes / 2
-      p2Boxes = boxes / 2
-    } else if (hasP1) {
-      p1Boxes = boxes
-    } else if (hasP2) {
-      p2Boxes = boxes
-    }
-
+  for (const rows of grouped.values()) {
+    const first = rows[0]
+    const ts = new Date(first.timestamp)
+    const shift = first.shift
+    const totalPieces = Math.max(
+      0,
+      Math.round(
+        rows.reduce(
+          (sum, row) => sum + (Number.isFinite(row.count) ? row.count : 0),
+          0,
+        ),
+      ),
+    )
+    const upb = first.unitsPerBox > 0 ? first.unitsPerBox : 48
+    const boxes = totalPieces / upb
+    const operators = dedupeReportPeople(
+      rows.flatMap((row) => [row.operator, row.operator_2]),
+    ).slice(0, 2)
+    const packers = dedupeReportPeople(
+      rows.flatMap((row) =>
+        row.packersAttributed?.length
+          ? row.packersAttributed
+          : [row.packer_1, row.packer_2, row.packer_3, row.packer_4],
+      ),
+    ).slice(0, 4)
+    const hasOperatorPreallocated = rows.some(
+      (row) => row.operatorAllocatedPieces?.length,
+    )
+    const operatorAllocated = hasOperatorPreallocated
+      ? operators.map((_, index) =>
+          rows.reduce(
+            (sum, row) =>
+              sum + Math.max(0, Math.round(row.operatorAllocatedPieces?.[index] ?? 0)),
+            0,
+          ),
+        )
+      : allocateIntegerLargestRemainder(totalPieces, operators).map(
+          (allocation) => allocation.quantity,
+        )
+    const hasPreallocated = rows.some((row) => row.packerAllocatedPieces?.length)
+    const packed = hasPreallocated
+      ? packers.map((_, index) =>
+          rows.reduce(
+            (sum, row) =>
+              sum + Math.max(0, Math.round(row.packerAllocatedPieces?.[index] ?? 0)),
+            0,
+          ),
+        )
+      : allocateIntegerLargestRemainder(totalPieces, packers).map(
+          (allocation) => allocation.quantity,
+        )
+    const packerBoxes = packed.map((pieces) => pieces / upb)
     const data: ShiftRow = {
       date: ts,
       month: getPartsInTimeZone(ts, TZ).month,
-      machine: row.machine_id,
-      operator1: safeName(row.operator),
-      operator2: safeName(row.operator_2),
-      item: safeName(row.sku),
+      machine: first.machine_id,
+      operator1: operators[0] ?? "—",
+      operator2: operators[1] ?? "—",
+      operatorPieces1: operatorAllocated[0] ?? 0,
+      operatorPieces2: operatorAllocated[1] ?? 0,
+      item: safeName(first.sku),
       boxCount: boxes,
       unitsPerBox: upb,
       totalPieces,
-      packer1: p1,
-      packer1Boxes: p1Boxes,
-      packer2: p2,
-      packer2Boxes: p2Boxes,
-      totalBoxes: p1Boxes + p2Boxes,
-      difference: Math.round((boxes - (p1Boxes + p2Boxes)) * 100) / 100,
-      packedPieces1: Math.round(p1Boxes * upb),
-      packedPieces2: Math.round(p2Boxes * upb),
+      packer1: packers[0] ?? "—",
+      packer1Boxes: packerBoxes[0] ?? 0,
+      packer2: packers[1] ?? "—",
+      packer2Boxes: packerBoxes[1] ?? 0,
+      packer3: packers[2] ?? "—",
+      packer3Boxes: packerBoxes[2] ?? 0,
+      packer4: packers[3] ?? "—",
+      packer4Boxes: packerBoxes[3] ?? 0,
+      totalBoxes: packerBoxes.reduce((sum, value) => sum + value, 0),
+      difference: packers.length > 0 ? 0 : boxes,
+      packedPieces1: packed[0] ?? 0,
+      packedPieces2: packed[1] ?? 0,
+      packedPieces3: packed[2] ?? 0,
+      packedPieces4: packed[3] ?? 0,
+      isOrphan: rows.some((row) => row.isOrphan),
+      creditStatus: rows.some(
+        (row) => row.isOperatorCredit && row.isPackagerCredit,
+      )
+        ? "both"
+        : rows.some((row) => row.isOperatorCredit)
+          ? "operator"
+          : rows.some((row) => row.isPackagerCredit)
+            ? "packager"
+            : "normal",
     }
 
-    if (isBendingMachine(row.machine_id)) {
+    if (isBendingMachine(first.machine_id)) {
       data.bending = { boxCount: boxes, unitsPerBox: upb, totalPieces }
     }
-    if (isRollerMachine(row.machine_id)) {
+    if (isRollerMachine(first.machine_id)) {
       data.roller = { boxCount: boxes, unitsPerBox: upb, totalPieces }
     }
 
@@ -188,6 +284,13 @@ function renderShiftSheet(sheet: Worksheet, rows: ShiftRow[], english = false) {
         "Diference",
         "Total in packed parts",
         "Total in packed parts 2",
+        "Packer 3",
+        "Quantity in boxes 3",
+        "Total in packed parts 3",
+        "Packer 4",
+        "Quantity in boxes 4",
+        "Total in packed parts 4",
+        "Status",
       ]
     : [
         "Fecha",
@@ -207,6 +310,13 @@ function renderShiftSheet(sheet: Worksheet, rows: ShiftRow[], english = false) {
         "Diferencia",
         "Total en Piezas Empacadas 1",
         "Total en Piezas Empacadas 2",
+        "Empacador (a) 3",
+        "Cantidad en cajas 3",
+        "Total en Piezas Empacadas 3",
+        "Empacador (a) 4",
+        "Cantidad en cajas 4",
+        "Total en Piezas Empacadas 4",
+        "Estado",
       ]
 
   const headersB = english
@@ -222,12 +332,12 @@ function renderShiftSheet(sheet: Worksheet, rows: ShiftRow[], english = false) {
     styleHeader(cell)
   })
   headersB.forEach((h, i) => {
-    const cell = sheet.getCell(1, 18 + i)
+    const cell = sheet.getCell(1, 25 + i)
     cell.value = h
     styleHeader(cell)
   })
   headersC.forEach((h, i) => {
-    const cell = sheet.getCell(1, 27 + i)
+    const cell = sheet.getCell(1, 34 + i)
     cell.value = h
     styleHeader(cell)
   })
@@ -252,13 +362,28 @@ function renderShiftSheet(sheet: Worksheet, rows: ShiftRow[], english = false) {
       r.difference,
       r.packedPieces1,
       r.packedPieces2,
+      r.packer3,
+      r.packer3Boxes,
+      r.packedPieces3,
+      r.packer4,
+      r.packer4Boxes,
+      r.packedPieces4,
+      r.creditStatus === "both"
+        ? "OPERATION AND PACKAGING CREDIT"
+        : r.creditStatus === "operator"
+          ? "OPERATION CREDIT"
+          : r.creditStatus === "packager"
+            ? "PACKAGING CREDIT"
+            : r.isOrphan
+              ? "ORPHAN / UNATTRIBUTED"
+              : "ATTRIBUTED",
     ]
     mainValues.forEach((v, i) => {
       const c = i + 1
       const cell = sheet.getCell(row, c)
       cell.value = v
       if (c === 1) cell.numFmt = "yyyy-mm-dd"
-      if ([2, 7, 8, 9, 11, 13, 14, 15, 16, 17].includes(c)) styleNumber(cell)
+      if ([2, 7, 8, 9, 11, 13, 14, 15, 16, 17, 19, 20, 22, 23].includes(c)) styleNumber(cell)
       else styleData(cell)
     })
     const bend = r.bending
@@ -266,11 +391,11 @@ function renderShiftSheet(sheet: Worksheet, rows: ShiftRow[], english = false) {
       ? [r.date, r.month, r.machine, r.operator1, r.item, bend.boxCount, bend.unitsPerBox, bend.totalPieces]
       : ["", "", "", "", "", "", "", ""]
     bendValues.forEach((v, i) => {
-      const c = 18 + i
+      const c = 25 + i
       const cell = sheet.getCell(row, c)
       cell.value = v
-      if (c === 18 && v) cell.numFmt = "yyyy-mm-dd"
-      if ([19, 23, 24, 25].includes(c)) styleNumber(cell)
+      if (c === 25 && v) cell.numFmt = "yyyy-mm-dd"
+      if ([26, 30, 31, 32].includes(c)) styleNumber(cell)
       else styleData(cell)
     })
     const roll = r.roller
@@ -278,16 +403,16 @@ function renderShiftSheet(sheet: Worksheet, rows: ShiftRow[], english = false) {
       ? [r.date, r.month, r.machine, r.operator1, r.item, roll.boxCount, roll.unitsPerBox, roll.totalPieces]
       : ["", "", "", "", "", "", "", ""]
     rollValues.forEach((v, i) => {
-      const c = 27 + i
+      const c = 34 + i
       const cell = sheet.getCell(row, c)
       cell.value = v
-      if (c === 27 && v) cell.numFmt = "yyyy-mm-dd"
-      if ([28, 32, 33, 34].includes(c)) styleNumber(cell)
+      if (c === 34 && v) cell.numFmt = "yyyy-mm-dd"
+      if ([35, 39, 40, 41].includes(c)) styleNumber(cell)
       else styleData(cell)
     })
   })
 
-  autoFit(sheet, 34, Math.max(2, rows.length + 1))
+  autoFit(sheet, 41, Math.max(2, rows.length + 1))
   sheet.views = [{ state: "frozen", ySplit: 1, activeCell: "A2" }]
 }
 
@@ -350,13 +475,15 @@ function renderTotalProductionSheet(sheet: Worksheet, year: number) {
     sheet.getCell(`B${r}`).value = { formula: `SUMIF('Turno Matutino'!B:B,${m},'Turno Matutino'!I:I)` }
     sheet.getCell(`C${r}`).value = { formula: `SUMIF('Turno Vespertino'!B:B,${m},'Turno Vespertino'!I:I)` }
     sheet.getCell(`E${r}`).value = monthNameEs(m)
-    sheet.getCell(`F${r}`).value = { formula: `SUMIF('Turno Matutino'!S:S,${m},'Turno Matutino'!Y:Y)` }
-    sheet.getCell(`G${r}`).value = { formula: `SUMIF('Turno Vespertino'!S:S,${m},'Turno Vespertino'!Y:Y)` }
+    sheet.getCell(`F${r}`).value = { formula: `SUMIF('Turno Matutino'!Z:Z,${m},'Turno Matutino'!AF:AF)` }
+    sheet.getCell(`G${r}`).value = { formula: `SUMIF('Turno Vespertino'!Z:Z,${m},'Turno Vespertino'!AF:AF)` }
     sheet.getCell(`I${r}`).value = monthNameEs(m)
-    sheet.getCell(`J${r}`).value = { formula: `SUMIF('Turno Matutino'!AB:AB,${m},'Turno Matutino'!AH:AH)` }
-    sheet.getCell(`K${r}`).value = { formula: `SUMIF('Turno Vespertino'!AB:AB,${m},'Turno Vespertino'!AH:AH)` }
+    sheet.getCell(`J${r}`).value = { formula: `SUMIF('Turno Matutino'!AI:AI,${m},'Turno Matutino'!AO:AO)` }
+    sheet.getCell(`K${r}`).value = { formula: `SUMIF('Turno Vespertino'!AI:AI,${m},'Turno Vespertino'!AO:AO)` }
     sheet.getCell(`M${r}`).value = m
-    sheet.getCell(`N${r}`).value = { formula: `COUNTIF('Turno Matutino'!B:B,M${r})` }
+    sheet.getCell(`N${r}`).value = {
+      formula: `COUNTIFS('Turno Matutino'!B:B,M${r},'Turno Matutino'!X:X,"ATTRIBUTED")`,
+    }
     sheet.getCell(`O${r}`).value = daysInMonth(year, m)
     sheet.getCell(`P${r}`).value = { formula: `IF(O${r}=0,0,N${r}/O${r})` }
     sheet.getCell(`Q${r}`).value = { formula: `IF(P${r}=0,0,B${r}/P${r})` }
@@ -394,10 +521,16 @@ function renderTotalProductionSheet(sheet: Worksheet, year: number) {
   for (let m = 1; m <= 12; m++) {
     const r = m + 20
     sheet.getCell(`A${r}`).value = monthNameEs(m)
-    sheet.getCell(`B${r}`).value = { formula: `SUMIF('Turno Matutino'!B:B,${m},'Turno Matutino'!P:P)` }
-    sheet.getCell(`C${r}`).value = { formula: `SUMIF('Turno Vespertino'!B:B,${m},'Turno Vespertino'!P:P)` }
+    sheet.getCell(`B${r}`).value = {
+      formula: `SUMIF('Turno Matutino'!B:B,${m},'Turno Matutino'!P:P)+SUMIF('Turno Matutino'!B:B,${m},'Turno Matutino'!Q:Q)+SUMIF('Turno Matutino'!B:B,${m},'Turno Matutino'!T:T)+SUMIF('Turno Matutino'!B:B,${m},'Turno Matutino'!W:W)`,
+    }
+    sheet.getCell(`C${r}`).value = {
+      formula: `SUMIF('Turno Vespertino'!B:B,${m},'Turno Vespertino'!P:P)+SUMIF('Turno Vespertino'!B:B,${m},'Turno Vespertino'!Q:Q)+SUMIF('Turno Vespertino'!B:B,${m},'Turno Vespertino'!T:T)+SUMIF('Turno Vespertino'!B:B,${m},'Turno Vespertino'!W:W)`,
+    }
     sheet.getCell(`M${r}`).value = m
-    sheet.getCell(`N${r}`).value = { formula: `COUNTIF('Turno Vespertino'!B:B,M${r})` }
+    sheet.getCell(`N${r}`).value = {
+      formula: `COUNTIFS('Turno Vespertino'!B:B,M${r},'Turno Vespertino'!X:X,"ATTRIBUTED")`,
+    }
     sheet.getCell(`O${r}`).value = daysInMonth(year, m)
     sheet.getCell(`P${r}`).value = { formula: `IF(O${r}=0,0,N${r}/O${r})` }
     sheet.getCell(`Q${r}`).value = { formula: `IF(P${r}=0,0,C${r}/P${r})` }
@@ -414,26 +547,17 @@ function renderTotalProductionSheet(sheet: Worksheet, year: number) {
   autoFit(sheet, 20, 35)
 }
 
-function aggregateByPerson(rows: ShiftRow[], picker: (r: ShiftRow) => string): Map<string, number> {
-  const out = new Map<string, number>()
-  for (const r of rows) {
-    const name = picker(r)
-    if (!name || name === "—") continue
-    out.set(name, (out.get(name) ?? 0) + r.totalPieces)
-  }
-  return out
-}
-
 function aggregateByMonthPerson(
   rows: ShiftRow[],
-  picker: (r: ShiftRow) => string,
+  picker: (r: ShiftRow) => Array<[string, number]>,
 ): Map<number, Map<string, number>> {
   const out = new Map<number, Map<string, number>>()
   for (const r of rows) {
-    const name = picker(r)
-    if (!name || name === "—") continue
     const monthMap = out.get(r.month) ?? new Map<string, number>()
-    monthMap.set(name, (monthMap.get(name) ?? 0) + r.totalPieces)
+    for (const [name, quantity] of picker(r)) {
+      if (!name || name === "—" || quantity <= 0) continue
+      monthMap.set(name, (monthMap.get(name) ?? 0) + quantity)
+    }
     out.set(r.month, monthMap)
   }
   return out
@@ -449,10 +573,11 @@ function topFromMonthMap(monthMap: Map<string, number> | undefined, limit = 32) 
 }
 
 function renderTopMaquinistasSheet(sheet: Worksheet, mat: ShiftRow[], ves: ShiftRow[], year: number) {
-  const byMonthAll = aggregateByMonthPerson([...mat, ...ves], (r) => r.operator1)
-  const sortedMonths = [...byMonthAll.keys()].sort((a, b) => a - b)
-  const months = (sortedMonths.length > 0 ? sortedMonths : [1, 2, 3, 4]).slice(0, 4)
-  while (months.length < 4) months.push(months.length + 1)
+  const byMonthAll = aggregateByMonthPerson([...mat, ...ves], (r) => [
+    [r.operator1, r.operatorPieces1],
+    [r.operator2, r.operatorPieces2],
+  ])
+  const months = Array.from({ length: 12 }, (_, index) => index + 1)
   const starts = [1, 7, 13, 19]
 
   const writeBlockHeaders = (row: number) => {
@@ -472,6 +597,7 @@ function renderTopMaquinistasSheet(sheet: Worksheet, mat: ShiftRow[], ves: Shift
 
   writeBlockHeaders(1)
   writeBlockHeaders(36)
+  writeBlockHeaders(71)
 
   sheet.getCell("G2").value = "Turno 1"
   sheet.getCell("G3").value = "Turno 2"
@@ -494,10 +620,16 @@ function renderTopMaquinistasSheet(sheet: Worksheet, mat: ShiftRow[], ves: Shift
     }
   }
 
-  const writeGroup = (startRow: number, indexRow: number, hourDiv: number, topLimit: number) => {
-    months.forEach((m, idx) => {
+  const writeGroup = (
+    groupMonths: number[],
+    startRow: number,
+    indexRow: number,
+    hourDiv: number,
+    topLimit: number,
+  ) => {
+    groupMonths.forEach((m, idx) => {
       const start = starts[idx]
-      sheet.getCell(indexRow, start).value = String(idx + 1)
+      sheet.getCell(indexRow, start).value = String(m)
       sheet.getCell(indexRow, start + 1).value = monthLabel(m, year)
       styleData(sheet.getCell(indexRow, start))
       styleData(sheet.getCell(indexRow, start + 1))
@@ -523,10 +655,11 @@ function renderTopMaquinistasSheet(sheet: Worksheet, mat: ShiftRow[], ves: Shift
     })
   }
 
-  writeGroup(5, 4, 8, 31)
-  writeGroup(38, 37, 6.5, 28)
+  writeGroup(months.slice(0, 4), 5, 4, 8, 30)
+  writeGroup(months.slice(4, 8), 40, 39, 8, 30)
+  writeGroup(months.slice(8, 12), 75, 74, 8, 30)
 
-  autoFit(sheet, 25, 68)
+  autoFit(sheet, 25, 106)
 }
 
 function renderPerformanceSheet(
@@ -538,26 +671,30 @@ function renderPerformanceSheet(
   baseShift2: number,
   includeTopHint = false,
 ) {
-  const months = [...peopleByMonth.keys()].sort((a, b) => a - b).slice(0, 4)
-  while (months.length < 4) months.push(months.length + 1)
+  const months = Array.from({ length: 12 }, (_, index) => index + 1)
   const starts = [1, 5, 9, 13]
 
   months.forEach((m, idx) => {
-    const start = starts[idx]
+    const band = Math.floor(idx / 4)
+    const start = starts[idx % 4]
+    const baseRow = 1 + band * 61
     const totalCol = String.fromCharCode(64 + start + 1)
-    const ratioCol = String.fromCharCode(64 + start + 2)
     const days = daysInMonth(year, m)
-    sheet.getCell(1, start + 1).value = 1
-    sheet.getCell(1, start + 2).value = 0.8
-    sheet.getCell(2, start + 1).value = { formula: `${days}*${baseShift1}` }
-    sheet.getCell(2, start + 2).value = { formula: `${totalCol}2*2` }
-    sheet.getCell(3, start + 1).value = { formula: `${days}*${baseShift2}` }
-    sheet.getCell(3, start + 2).value = { formula: `${totalCol}3*2` }
-    sheet.getCell(4, start).value = label
-    sheet.getCell(4, start + 1).value = monthLabel(m, year)
+    sheet.getCell(baseRow, start + 1).value = 1
+    sheet.getCell(baseRow, start + 2).value = 0.8
+    sheet.getCell(baseRow + 1, start + 1).value = { formula: `${days}*${baseShift1}` }
+    sheet.getCell(baseRow + 1, start + 2).value = {
+      formula: `${totalCol}${baseRow + 1}*2`,
+    }
+    sheet.getCell(baseRow + 2, start + 1).value = { formula: `${days}*${baseShift2}` }
+    sheet.getCell(baseRow + 2, start + 2).value = {
+      formula: `${totalCol}${baseRow + 2}*2`,
+    }
+    sheet.getCell(baseRow + 3, start).value = label
+    sheet.getCell(baseRow + 3, start + 1).value = monthLabel(m, year)
     const top = topFromMonthMap(peopleByMonth.get(m), 55)
     top.forEach(([name, total], i) => {
-      const r = i + 5
+      const r = baseRow + 4 + i
       sheet.getCell(r, start).value = name
       sheet.getCell(r, start + 1).value = total
       sheet.getCell(r, start + 2).value = { formula: `${totalCol}${r}/${days}/${baseShift1}` }
@@ -566,10 +703,10 @@ function renderPerformanceSheet(
       styleNumber(sheet.getCell(r, start + 2))
       sheet.getCell(r, start + 2).numFmt = "0.00%"
     })
-    for (let r = 1; r <= 4; r++) {
+    for (let r = baseRow; r <= baseRow + 3; r++) {
       for (let c = start; c <= start + 2; c++) {
         const cell = sheet.getCell(r, c)
-        if (r === 4 || (r <= 3 && c > start)) styleHeader(cell)
+        if (r === baseRow + 3 || (r <= baseRow + 2 && c > start)) styleHeader(cell)
         else styleData(cell)
       }
     }
@@ -592,7 +729,7 @@ function renderPerformanceSheet(
     }
   }
 
-  autoFit(sheet, 17, 66)
+  autoFit(sheet, 17, 184)
 }
 
 function renderScrapSheet(sheet: Worksheet) {
@@ -674,7 +811,10 @@ export async function buildAnnualAccumulatedReportBlob(
   renderTopMaquinistasSheet(shTop, matutino, vespertino, year)
 
   const shOp = wb.addWorksheet("Desempeño de operadoras")
-  const operatorsByMonth = aggregateByMonthPerson([...matutino, ...vespertino], (r) => r.operator1)
+  const operatorsByMonth = aggregateByMonthPerson([...matutino, ...vespertino], (r) => [
+    [r.operator1, r.operatorPieces1],
+    [r.operator2, r.operatorPieces2],
+  ])
   renderPerformanceSheet(
     shOp,
     operatorsByMonth,
@@ -686,7 +826,12 @@ export async function buildAnnualAccumulatedReportBlob(
   )
 
   const shEmp = wb.addWorksheet("Desempeño empacadoras")
-  const packersByMonth = aggregateByMonthPerson([...matutino, ...vespertino], (r) => r.packer1)
+  const packersByMonth = aggregateByMonthPerson([...matutino, ...vespertino], (r) => [
+    [r.packer1, r.packedPieces1],
+    [r.packer2, r.packedPieces2],
+    [r.packer3, r.packedPieces3],
+    [r.packer4, r.packedPieces4],
+  ])
   renderPerformanceSheet(
     shEmp,
     packersByMonth,

@@ -143,6 +143,100 @@ export function normalizeSku(value: string | null | undefined): string | null {
 /** Turno asignado por código de empleada (minúsculas). Ver `buildOperatorShiftByCode`. */
 export type OperatorShiftByCode = Map<string, ApiGoalShift>
 
+function normalizeShift(value: unknown): ApiGoalShift | null {
+  if (value === 1 || value === "1" || value === "matutino") return "matutino"
+  if (value === 2 || value === "2" || value === "vespertino") return "vespertino"
+  return null
+}
+
+function shiftFromCodeMap(value: unknown, code: string): ApiGoalShift | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const map = value as Record<string, unknown>
+  return normalizeShift(map[code] ?? map[code.toLowerCase()])
+}
+
+/** Turno congelado de una persona dentro del payload histórico del evento. */
+export function frozenParticipantShift(
+  event: ApiProductionEvent,
+  code: string | null | undefined,
+  role: "operator" | "packager",
+): ApiGoalShift | null {
+  const key = code?.trim()
+  if (!key) return null
+  const payload = event.payload ?? {}
+  const rosterSnapshot = payload["rosterSnapshot"] ?? payload["roster_snapshot"]
+  if (rosterSnapshot && typeof rosterSnapshot === "object" && !Array.isArray(rosterSnapshot)) {
+    const members = (rosterSnapshot as Record<string, unknown>)[
+      role === "operator" ? "operators" : "packagers"
+    ]
+    if (Array.isArray(members)) {
+      const match = members.find((member) => {
+        if (!member || typeof member !== "object") return false
+        const memberCode = String(
+          (member as Record<string, unknown>)["employeeCode"] ??
+            (member as Record<string, unknown>)["employee_code"] ??
+            "",
+        )
+          .trim()
+          .toLowerCase()
+        return memberCode === key.toLowerCase()
+      })
+      if (match && typeof match === "object") {
+        const shift = normalizeShift(
+          (match as Record<string, unknown>)["assignedShift"] ??
+            (match as Record<string, unknown>)["assigned_shift"],
+        )
+        if (shift) return shift
+      }
+    }
+  }
+  const participantMaps = [
+    payload["participant_shifts"],
+    payload["participantShifts"],
+    role === "operator" ? payload["operator_shifts"] : payload["packager_shifts"],
+    role === "operator" ? payload["operatorShifts"] : payload["packagerShifts"],
+  ]
+  for (const value of participantMaps) {
+    const direct = shiftFromCodeMap(value, key)
+    if (direct) return direct
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const nested = (value as Record<string, unknown>)[`${role}s`]
+      const fromNested = shiftFromCodeMap(nested, key)
+      if (fromNested) return fromNested
+    }
+  }
+  return null
+}
+
+export function frozenParticipantPrimaryRole(
+  event: Pick<ApiProductionEvent, "payload">,
+  employeeCode: string | null | undefined,
+  role: "operator" | "packager",
+): string | null {
+  const key = employeeCode?.trim().toLowerCase()
+  if (!key) return null
+  const payload = event.payload ?? {}
+  const snapshot = payload["rosterSnapshot"] ?? payload["roster_snapshot"]
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null
+  const members = (snapshot as Record<string, unknown>)[
+    role === "operator" ? "operators" : "packagers"
+  ]
+  if (!Array.isArray(members)) return null
+  for (const member of members) {
+    if (!member || typeof member !== "object") continue
+    const data = member as Record<string, unknown>
+    const code = String(data.employeeCode ?? data.employee_code ?? "")
+      .trim()
+      .toLowerCase()
+    if (code !== key) continue
+    const primaryRole = String(
+      data.assignedPrimaryRole ?? data.assigned_primary_role ?? "",
+    ).trim()
+    return primaryRole || null
+  }
+  return null
+}
+
 /**
  * Mapa código → turno ASIGNADO (employees.shift: 1 = matutino, 2 = vespertino).
  * Indexa por employeeCode y nfcCardUid (en legacy coinciden) en minúsculas.
@@ -237,7 +331,21 @@ export function productionShiftForEvent(
   event: ApiProductionEvent,
   operatorShiftByCode?: OperatorShiftByCode | null,
 ): ApiGoalShift | null {
+  const payload = event.payload ?? {}
+  const frozenProductionShift = normalizeShift(
+    payload["production_shift"] ??
+      payload["productionShift"] ??
+      payload["assigned_shift"] ??
+      payload["assignedShift"],
+  )
+  if (frozenProductionShift) return frozenProductionShift
+
   const code = eventPrimaryOperatorCode(event)?.toLowerCase()
+  const frozenOperatorShift = frozenParticipantShift(event, code, "operator")
+  if (frozenOperatorShift) return frozenOperatorShift
+
+  // Compatibilidad legacy: congela conceptualmente el turno actual conocido. El reloj
+  // queda reservado para producción sin persona/check-in.
   const assigned = code ? operatorShiftByCode?.get(code) : undefined
   return assigned ?? productionShiftFromMeasuredAt(event.occurredAt)
 }
