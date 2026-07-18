@@ -2553,7 +2553,7 @@ export default function MetricsPage() {
               <Download className="h-4 w-4" /> Acumulado Anual
             </Button>
           </div>
-        </div>
+        )}
 
         {/* Bonus report dialog */}
         <Dialog open={isBonusReportDialogOpen} onOpenChange={setIsBonusReportDialogOpen}>
