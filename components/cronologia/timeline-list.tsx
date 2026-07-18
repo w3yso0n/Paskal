@@ -1,6 +1,8 @@
 "use client"
 
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { UserPlus } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   alertIcon,
@@ -19,6 +21,8 @@ interface TimelineListProps {
   highlightId?: string | null
   /** Mostrar de qué máquina es cada suceso (modo operador). */
   showMachine?: boolean
+  /** Abrir el diálogo para atribuir las piezas pendientes de este item. */
+  onAttribute?: (item: TimelineItem) => void
 }
 
 const BADGE_TONE_CLASSES: Record<string, string> = {
@@ -35,6 +39,7 @@ export function TimelineList({
   orphanUnits,
   highlightId,
   showMachine = false,
+  onAttribute,
 }: TimelineListProps) {
   if (items.length === 0) return null
 
@@ -112,6 +117,17 @@ export function TimelineList({
                     {formatUnits(item.cumulativeUnits)}
                   </span>
                 </p>
+              ) : null}
+              {item.attribution && onAttribute ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-2 h-7 gap-1.5 text-xs"
+                  onClick={() => onAttribute(item)}
+                >
+                  <UserPlus className="h-3.5 w-3.5" />
+                  Asignar {item.attribution.target === "packager" ? "empacador" : "operador"}
+                </Button>
               ) : null}
             </li>
           )

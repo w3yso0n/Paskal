@@ -1,18 +1,27 @@
 "use client"
 
+import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import {
   bandHourTicks,
   bandPositionPct,
   formatPlantTime,
+  packMarkers,
   CRONO_CATALOG,
+  LED_STATUS_LABELS,
+  alertIcon,
+  type LedStatus,
+  type MarkerCluster,
+  type StatusSegment,
   type TimelineItem,
 } from "@/lib/cronologia"
 import { ALERT_SEVERITY_STYLES } from "@/lib/alert-ui"
+import { MACHINE_STATUS_DOT_COLORS } from "@/components/production/machine-status-dot"
 
 interface TimelineBandProps {
   items: TimelineItem[]
+  statusSegments: StatusSegment[]
   bandStart: Date
   bandEnd: Date
   /** Marca vertical de "ahora" (solo cuando el día elegido es hoy). */
@@ -20,117 +29,196 @@ interface TimelineBandProps {
   onSelect: (anchorId: string) => void
 }
 
+const CHIP = 28 // diámetro del chip en px
+const CHIP_GAP = 6 // separación mínima horizontal antes de bajar de fila
+const ROW_H = 34 // alto de cada fila escalonada
+const TRACK_H = 34 // alto de la pista de estatus
+const LANE_GAP = 10 // aire entre la pista y cada carril de chips
+const AXIS_H = 20
+const MAX_ALERT_ROWS = 3
+const MAX_EVENT_ROWS = 4
+
+const LED_ORDER: LedStatus[] = ["active", "waiting", "maintenance", "inactive"]
+
 /**
- * Banda horizontal del turno: tramos de producción como bloques, sucesos puntuales como
- * marcas y alertas como rombos — mismo lenguaje de color que el listado (CRONO_CATALOG).
- * Posicionamiento por porcentaje de tiempo con divs absolutos (sin librería de gráficos).
+ * Banda del cronograma. Eje central = pista de estatus LED de la máquina (mismo código de
+ * colores del piso: verde/amarillo/azul/rojo). Encima, las alertas; debajo, los sucesos —
+ * ambos como chips grandes con su icono, escalonados en filas para que dos marcas cercanas en
+ * el tiempo no se encimen. Hover = detalle; clic = salta al detalle en la lista.
  */
-export function TimelineBand({ items, bandStart, bandEnd, nowMs, onSelect }: TimelineBandProps) {
+export function TimelineBand({
+  items,
+  statusSegments,
+  bandStart,
+  bandEnd,
+  nowMs,
+  onSelect,
+}: TimelineBandProps) {
+  const innerRef = useRef<HTMLDivElement>(null)
+  const [width, setWidth] = useState(960)
+
+  useLayoutEffect(() => {
+    const el = innerRef.current
+    if (!el) return
+    const update = () => setWidth(el.clientWidth || 960)
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   const ticks = bandHourTicks(bandStart, bandEnd)
-  const spans = items.filter((i) => i.endAt && (i.kind === "production_span" || i.kind === "orphan_span"))
-  const points = items.filter((i) => !i.endAt && i.kind !== "alert")
-  const alerts = items.filter((i) => i.kind === "alert")
+  const alerts = useMemo(() => items.filter((i) => i.kind === "alert"), [items])
+  const events = useMemo(
+    () => items.filter((i) => i.kind !== "alert"),
+    [items],
+  )
+
+  const alertPack = useMemo(
+    () => packMarkers(alerts, bandStart, bandEnd, width, CHIP, CHIP_GAP, MAX_ALERT_ROWS),
+    [alerts, bandStart, bandEnd, width],
+  )
+  const eventPack = useMemo(
+    () => packMarkers(events, bandStart, bandEnd, width, CHIP, CHIP_GAP, MAX_EVENT_ROWS),
+    [events, bandStart, bandEnd, width],
+  )
+
+  const alertsH = alertPack.rows * ROW_H
+  const eventsH = eventPack.rows * ROW_H
+  const trackTop = alertsH + LANE_GAP
+  const eventsTop = trackTop + TRACK_H + LANE_GAP
+  const axisTop = eventsTop + eventsH + 4
+  const totalH = axisTop + AXIS_H
+
   const nowPct =
     nowMs && nowMs >= bandStart.getTime() && nowMs <= bandEnd.getTime()
       ? bandPositionPct(new Date(nowMs), bandStart, bandEnd)
       : null
 
-  const spanLabel = (item: TimelineItem) =>
-    `${formatPlantTime(item.at)}–${item.endAt ? formatPlantTime(item.endAt) : ""} · ${item.title}`
-
   return (
     <TooltipProvider delayDuration={100}>
-      <div className="overflow-x-auto">
-        <div className="relative h-[88px] min-w-[560px] select-none">
-          {/* Riel de fondo */}
-          <div className="absolute inset-x-0 top-6 h-8 rounded-md bg-muted/60" />
-
-          {/* Tramos de producción */}
-          {spans.map((item) => {
-            const left = bandPositionPct(item.at, bandStart, bandEnd)
-            const right = bandPositionPct(item.endAt as Date, bandStart, bandEnd)
-            const width = Math.max(right - left, 0.4)
-            return (
-              <Tooltip key={item.id}>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label={spanLabel(item)}
-                    onClick={() => onSelect(item.id)}
-                    className={cn(
-                      "absolute top-6 h-8 rounded-sm opacity-80 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      CRONO_CATALOG[item.kind].bandClass,
-                    )}
-                    style={{ left: `${left}%`, width: `${width}%` }}
-                  />
-                </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-64 text-xs">
-                  {spanLabel(item)}
-                </TooltipContent>
-              </Tooltip>
-            )
-          })}
-
-          {/* Sucesos puntuales */}
-          {points.map((item) => (
-            <Tooltip key={item.id}>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={`${formatPlantTime(item.at)} · ${item.title}`}
-                  onClick={() => onSelect(item.id)}
-                  className={cn(
-                    "absolute top-[34px] h-3 w-3 -translate-x-1/2 rounded-full ring-2 ring-background transition-transform hover:scale-125 focus-visible:outline-none focus-visible:ring-ring",
-                    CRONO_CATALOG[item.kind].bandClass,
-                  )}
-                  style={{ left: `${bandPositionPct(item.at, bandStart, bandEnd)}%` }}
-                />
-              </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-64 text-xs">
-                {formatPlantTime(item.at)} · {item.title}
-              </TooltipContent>
-            </Tooltip>
-          ))}
-
-          {/* Alertas (rombos arriba del riel) */}
-          {alerts.map((item) => (
-            <Tooltip key={item.id}>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={`${formatPlantTime(item.at)} · ${item.title}`}
-                  onClick={() => onSelect(item.id)}
-                  className={cn(
-                    "absolute top-1.5 h-2.5 w-2.5 -translate-x-1/2 rotate-45 ring-1 ring-background transition-transform hover:scale-125 focus-visible:outline-none focus-visible:ring-ring",
-                    item.severity ? ALERT_SEVERITY_STYLES[item.severity].dot : "bg-rose-500",
-                  )}
-                  style={{ left: `${bandPositionPct(item.at, bandStart, bandEnd)}%` }}
-                />
-              </TooltipTrigger>
-              <TooltipContent side="top" className="max-w-64 text-xs">
-                {formatPlantTime(item.at)} · {item.title}
-              </TooltipContent>
-            </Tooltip>
-          ))}
-
-          {/* Línea de "ahora" */}
+      <div className="overflow-x-auto pb-1">
+        <div ref={innerRef} className="relative min-w-[680px]" style={{ height: totalH }}>
+          {/* Línea de "ahora" detrás de todo */}
           {nowPct !== null ? (
             <div
-              className="absolute top-3 bottom-6 w-px bg-red-500/80"
-              style={{ left: `${nowPct}%` }}
+              className="absolute z-0 w-px bg-red-500/70"
+              style={{ left: `${nowPct}%`, top: 0, height: axisTop }}
               aria-hidden
             />
           ) : null}
 
-          {/* Eje de horas */}
+          {/* ---- Pista de estatus LED ---- */}
+          <div
+            className="absolute inset-x-0 overflow-hidden rounded-md bg-muted/40 ring-1 ring-border/60"
+            style={{ top: trackTop, height: TRACK_H }}
+          >
+            {statusSegments.map((seg, i) => {
+              const w = Math.max(seg.endPct - seg.startPct, 0)
+              if (w <= 0) return null
+              return (
+                <Tooltip key={i}>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label={`${formatPlantTime(seg.from)}–${formatPlantTime(seg.to)} · ${LED_STATUS_LABELS[seg.status]}`}
+                      className={cn(
+                        "absolute inset-y-0 border-r-2 border-background transition-opacity hover:opacity-90 focus-visible:outline-none",
+                        MACHINE_STATUS_DOT_COLORS[seg.status],
+                      )}
+                      style={{ left: `${seg.startPct}%`, width: `${w}%` }}
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="text-xs">
+                    {formatPlantTime(seg.from)}–{formatPlantTime(seg.to)} ·{" "}
+                    {LED_STATUS_LABELS[seg.status]}
+                  </TooltipContent>
+                </Tooltip>
+              )
+            })}
+            {statusSegments.length === 0 ? (
+              <div className="absolute inset-0 flex items-center justify-center text-[11px] text-muted-foreground">
+                Sin datos de estatus
+              </div>
+            ) : null}
+          </div>
+
+          {/* ---- Alertas (encima de la pista) ---- */}
+          {alertPack.packed.map(({ item, leftPct, row }) => {
+            const chipTop = trackTop - LANE_GAP - (row + 1) * ROW_H + (ROW_H - CHIP) / 2
+            const Icon = item.alertKind ? alertIcon(item.alertKind) : CRONO_CATALOG.alert.icon
+            const sev = item.severity ? ALERT_SEVERITY_STYLES[item.severity] : null
+            return (
+              <BandChip
+                key={item.id}
+                item={item}
+                leftPct={leftPct}
+                chipTop={chipTop}
+                stemFrom={chipTop + CHIP}
+                stemTo={trackTop}
+                icon={<Icon className="h-4 w-4" />}
+                chipClass={cn(sev?.chipBg, sev?.chipText, "ring-background")}
+                onSelect={onSelect}
+              />
+            )
+          })}
+          {alertPack.clusters.map((cluster, i) => {
+            const chipTop = trackTop - LANE_GAP - (cluster.row + 1) * ROW_H + (ROW_H - CHIP) / 2
+            return (
+              <BandCluster
+                key={`ac-${i}`}
+                cluster={cluster}
+                chipTop={chipTop}
+                stemFrom={chipTop + CHIP}
+                stemTo={trackTop}
+                chipClass="bg-rose-100 text-rose-700 ring-background dark:bg-rose-900/40 dark:text-rose-300"
+                onSelect={onSelect}
+              />
+            )
+          })}
+
+          {/* ---- Sucesos (debajo de la pista) ---- */}
+          {eventPack.packed.map(({ item, leftPct, row }) => {
+            const chipTop = eventsTop + row * ROW_H + (ROW_H - CHIP) / 2
+            const catalog = CRONO_CATALOG[item.kind]
+            const Icon = catalog.icon
+            return (
+              <BandChip
+                key={item.id}
+                item={item}
+                leftPct={leftPct}
+                chipTop={chipTop}
+                stemFrom={trackTop + TRACK_H}
+                stemTo={chipTop}
+                icon={<Icon className="h-4 w-4" />}
+                chipClass={cn(catalog.dotClass, "ring-background")}
+                onSelect={onSelect}
+              />
+            )
+          })}
+          {eventPack.clusters.map((cluster, i) => {
+            const chipTop = eventsTop + cluster.row * ROW_H + (ROW_H - CHIP) / 2
+            return (
+              <BandCluster
+                key={`ec-${i}`}
+                cluster={cluster}
+                chipTop={chipTop}
+                stemFrom={trackTop + TRACK_H}
+                stemTo={chipTop}
+                chipClass="bg-muted text-muted-foreground ring-background"
+                onSelect={onSelect}
+              />
+            )
+          })}
+
+          {/* ---- Eje de horas ---- */}
           {ticks.map((tick, i) => (
             <div
               key={tick.label + i}
-              className="absolute bottom-0 -translate-x-1/2 text-center"
-              style={{ left: `${tick.leftPct}%` }}
+              className="absolute -translate-x-1/2 text-center"
+              style={{ left: `${tick.leftPct}%`, top: axisTop }}
             >
               <div className="mx-auto h-1.5 w-px bg-border" />
-              {/* Con muchas horas (día completo) se etiqueta cada 2 para que no se encimen. */}
               {ticks.length <= 12 || i % 2 === 0 ? (
                 <span className="text-[10px] tabular-nums text-muted-foreground">{tick.label}</span>
               ) : null}
@@ -139,26 +227,136 @@ export function TimelineBand({ items, bandStart, bandEnd, nowMs, onSelect }: Tim
         </div>
       </div>
 
-      {/* Leyenda: qué significa cada forma de la banda. */}
-      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-3 w-5 rounded-sm bg-emerald-500" />
-          Producción
+      {/* ---- Leyenda ---- */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+        <span className="font-medium text-muted-foreground">Estatus:</span>
+        {LED_ORDER.map((s) => (
+          <span key={s} className="flex items-center gap-1.5 text-muted-foreground">
+            <span className={cn("inline-block h-3 w-4 rounded-sm", MACHINE_STATUS_DOT_COLORS[s])} />
+            {LED_STATUS_LABELS[s]}
+          </span>
+        ))}
+        <span className="mx-1 hidden h-4 w-px bg-border sm:inline-block" />
+        <span className="flex items-center gap-1.5 text-muted-foreground">
+          <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+            <span className="h-1.5 w-1.5 rounded-full bg-current" />
+          </span>
+          Suceso
         </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-3 w-5 rounded-sm bg-amber-400" />
-          Sin atribuir
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-blue-500" />
-          Suceso (check-in, reset, SKU…)
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2 w-2 rotate-45 bg-rose-500" />
+        <span className="flex items-center gap-1.5 text-muted-foreground">
+          <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
+            <span className="h-1.5 w-1.5 rounded-full bg-current" />
+          </span>
           Alerta
         </span>
         <span className="text-muted-foreground/70">Pasa el cursor o haz clic en cualquier marca.</span>
       </div>
     </TooltipProvider>
+  )
+}
+
+function BandChip({
+  item,
+  leftPct,
+  chipTop,
+  stemFrom,
+  stemTo,
+  icon,
+  chipClass,
+  onSelect,
+}: {
+  item: TimelineItem
+  leftPct: number
+  chipTop: number
+  stemFrom: number
+  stemTo: number
+  icon: React.ReactNode
+  chipClass: string
+  onSelect: (anchorId: string) => void
+}) {
+  const label = `${formatPlantTime(item.at)} · ${item.title}`
+  return (
+    <>
+      {/* Tallo hacia la pista */}
+      <div
+        className="absolute z-0 w-px -translate-x-1/2 bg-border"
+        style={{
+          left: `${leftPct}%`,
+          top: Math.min(stemFrom, stemTo),
+          height: Math.abs(stemTo - stemFrom),
+        }}
+        aria-hidden
+      />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            onClick={() => onSelect(item.id)}
+            className={cn(
+              "absolute z-10 flex -translate-x-1/2 items-center justify-center rounded-full ring-2 shadow-sm transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-ring",
+              chipClass,
+            )}
+            style={{ left: `${leftPct}%`, top: chipTop, height: CHIP, width: CHIP }}
+          >
+            {icon}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-64 text-xs">
+          {label}
+        </TooltipContent>
+      </Tooltip>
+    </>
+  )
+}
+
+/** Chip "+N" para una ráfaga de sucesos casi simultáneos que no cupieron escalonados. */
+function BandCluster({
+  cluster,
+  chipTop,
+  stemFrom,
+  stemTo,
+  chipClass,
+  onSelect,
+}: {
+  cluster: MarkerCluster
+  chipTop: number
+  stemFrom: number
+  stemTo: number
+  chipClass: string
+  onSelect: (anchorId: string) => void
+}) {
+  const first = cluster.items[0]
+  return (
+    <>
+      <div
+        className="absolute z-0 w-px -translate-x-1/2 bg-border"
+        style={{
+          left: `${cluster.leftPct}%`,
+          top: Math.min(stemFrom, stemTo),
+          height: Math.abs(stemTo - stemFrom),
+        }}
+        aria-hidden
+      />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`${cluster.items.length} sucesos más alrededor de ${formatPlantTime(first.at)}`}
+            onClick={() => onSelect(first.id)}
+            className={cn(
+              "absolute z-10 flex -translate-x-1/2 items-center justify-center rounded-full text-[11px] font-semibold ring-2 shadow-sm transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-ring",
+              chipClass,
+            )}
+            style={{ left: `${cluster.leftPct}%`, top: chipTop, height: CHIP, width: CHIP }}
+          >
+            +{cluster.items.length}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-64 text-xs">
+          {cluster.items.length} sucesos más cerca de {formatPlantTime(first.at)}
+        </TooltipContent>
+      </Tooltip>
+    </>
   )
 }

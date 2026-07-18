@@ -5,15 +5,18 @@ import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { RequireModule } from "@/components/auth/require-module"
 import { useAuth } from "@/contexts/auth-context"
 import {
+  attributeOrphanProduction,
   getAlerts,
   getApiErrorMessage,
   getEmployees,
   getMachines,
   getProductionEvents,
+  getProductSkus,
   type ApiAlert,
   type ApiEmployee,
   type ApiMachine,
   type ApiProductionEvent,
+  type ApiProductSku,
 } from "@/lib/api"
 import {
   buildCronoContext,
@@ -22,8 +25,10 @@ import {
   personCodeSet,
   type CronologiaMode,
   type CronologiaShift,
+  type TimelineItem,
   formatUnits,
 } from "@/lib/cronologia"
+import { isFloorOperatorCandidate, isFloorPackerCandidate } from "@/lib/employee-production-role"
 import { TimelineBand } from "@/components/cronologia/timeline-band"
 import { TimelineList } from "@/components/cronologia/timeline-list"
 import { PLANT_TIMEZONE } from "@/lib/tablero-operator-goal"
@@ -42,8 +47,14 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { TextAutocomplete, type TextAutocompleteOption } from "@/components/ui/text-autocomplete"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
-import { Factory, History, RefreshCw, User } from "lucide-react"
+import { Factory, History, Loader2, RefreshCw, User } from "lucide-react"
 import { toast } from "sonner"
 
 /** Tope de eventos por consulta; si llega justo al tope el día viene truncado. */
@@ -65,6 +76,13 @@ export default function CronologiaPage() {
   // Catálogos base
   const [machines, setMachines] = useState<ApiMachine[]>([])
   const [employees, setEmployees] = useState<ApiEmployee[]>([])
+  const [skus, setSkus] = useState<ApiProductSku[]>([])
+
+  // Atribución de piezas pendientes (mismo flujo que en Alertas)
+  const [assignItem, setAssignItem] = useState<TimelineItem | null>(null)
+  const [assignPerson, setAssignPerson] = useState("")
+  const [assignSku, setAssignSku] = useState("")
+  const [assigning, setAssigning] = useState(false)
 
   // Selección
   const [mode, setMode] = useState<CronologiaMode>("machine")
@@ -89,13 +107,15 @@ export default function CronologiaPage() {
       try {
         const token = await getAccessToken()
         if (!token) return
-        const [machineRows, employeeRows] = await Promise.all([
+        const [machineRows, employeeRows, skuRows] = await Promise.all([
           getMachines(token),
           getEmployees(token),
+          getProductSkus(token).catch(() => [] as ApiProductSku[]),
         ])
         if (cancelled) return
         setMachines(machineRows)
         setEmployees(employeeRows)
+        setSkus(skuRows)
       } catch (err) {
         if (!cancelled) toast.error(getApiErrorMessage(err))
       }
@@ -179,8 +199,9 @@ export default function CronologiaPage() {
       mode,
       personCodes: selectedEmployee ? personCodeSet(selectedEmployee) : undefined,
       ctx,
+      window: window_ ? { bandStart: window_.bandStart, bandEnd: window_.bandEnd } : undefined,
     })
-  }, [alerts, ctx, events, mode, selectedEmployee])
+  }, [alerts, ctx, events, mode, selectedEmployee, window_])
 
   const partialData = events !== null && events.length >= EVENTS_LIMIT
 
@@ -218,6 +239,56 @@ export default function CronologiaPage() {
     },
     [],
   )
+
+  const assignTargetsPackager = assignItem?.attribution?.target === "packager"
+  const assignCandidates = useMemo(
+    () =>
+      employees.filter((e) =>
+        e.employeeCode && (assignTargetsPackager ? isFloorPackerCandidate(e) : isFloorOperatorCandidate(e)),
+      ),
+    [employees, assignTargetsPackager],
+  )
+
+  const openAssign = useCallback((item: TimelineItem) => {
+    setAssignPerson("")
+    setAssignSku("")
+    setAssignItem(item)
+  }, [])
+
+  const submitAssign = useCallback(async () => {
+    const attribution = assignItem?.attribution
+    if (!attribution || !assignItem?.machineId || !assignPerson) return
+    setAssigning(true)
+    try {
+      const token = await getAccessToken()
+      if (!token) {
+        toast.error("Sesión no válida o expirada.")
+        return
+      }
+      const res = await attributeOrphanProduction(token, assignItem.machineId, {
+        alertId: attribution.alertId,
+        operatorCode: attribution.target === "operator" ? assignPerson : null,
+        packager1Code: attribution.target === "packager" ? assignPerson : null,
+        sku: attribution.target === "operator" ? assignSku || null : null,
+      })
+      const roleLabel = attribution.target === "packager" ? "empacador" : "operador"
+      if (res.assigned) {
+        toast.success(`Se atribuyeron ${res.attributed} piezas y quedó asignado a la máquina.`)
+      } else {
+        toast.warning(
+          res.assignError
+            ? `Se atribuyeron ${res.attributed} piezas, pero no se pudo asignar el ${roleLabel}: ${res.assignError}`
+            : `Se atribuyeron ${res.attributed} piezas.`,
+        )
+      }
+      setAssignItem(null)
+      await loadTimeline(true)
+    } catch (err) {
+      toast.error(getApiErrorMessage(err))
+    } finally {
+      setAssigning(false)
+    }
+  }, [assignItem, assignPerson, assignSku, getAccessToken, loadTimeline])
 
   const subjectLabel =
     mode === "machine"
@@ -398,6 +469,7 @@ export default function CronologiaPage() {
                   <>
                     <TimelineBand
                       items={result.items}
+                      statusSegments={result.statusSegments}
                       bandStart={window_.bandStart}
                       bandEnd={window_.bandEnd}
                       nowMs={dateIso === todayPlantIso() ? Date.now() : null}
@@ -409,6 +481,7 @@ export default function CronologiaPage() {
                       orphanUnits={result.orphanUnits}
                       highlightId={highlightId}
                       showMachine={mode === "operator"}
+                      onAttribute={openAssign}
                     />
                   </>
                 )}
@@ -416,6 +489,72 @@ export default function CronologiaPage() {
             </Card>
           ) : null}
         </div>
+
+        {/* Diálogo de atribución de piezas pendientes (mismo flujo que en Alertas) */}
+        <Dialog open={assignItem !== null} onOpenChange={(o) => !o && setAssignItem(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                Asignar {assignTargetsPackager ? "empacador" : "producción huérfana"}
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Hay{" "}
+                <span className="font-medium text-foreground">
+                  {formatUnits(assignItem?.attribution?.units ?? 0)} piezas
+                </span>{" "}
+                producidas sin {assignTargetsPackager ? "empacador asignado" : "estar en verde"}.
+                Elige el {assignTargetsPackager ? "empacador" : "operador"}
+                {assignTargetsPackager ? "" : " y SKU"} a quien se le acreditarán.
+              </p>
+              <div className="space-y-1.5">
+                <Label>{assignTargetsPackager ? "Empacador" : "Operador"}</Label>
+                <Select value={assignPerson} onValueChange={setAssignPerson}>
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={assignTargetsPackager ? "Selecciona empacador" : "Selecciona operador"}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {assignCandidates.map((e) => (
+                      <SelectItem key={e.id} value={e.employeeCode as string}>
+                        {e.fullName}
+                        {e.nfcCardUid ? ` (NFC: ${e.nfcCardUid})` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {!assignTargetsPackager ? (
+                <div className="space-y-1.5">
+                  <Label>SKU (opcional — si no, el actual de la máquina)</Label>
+                  <Select value={assignSku} onValueChange={setAssignSku}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="SKU" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {skus.map((s) => (
+                        <SelectItem key={s.id} value={s.code}>
+                          {s.code}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setAssignItem(null)} disabled={assigning}>
+                  Cancelar
+                </Button>
+                <Button onClick={submitAssign} disabled={assigning || !assignPerson}>
+                  {assigning && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                  Atribuir
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </RequireModule>
     </DashboardLayout>
   )

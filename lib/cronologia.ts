@@ -19,7 +19,12 @@ import type {
   ApiMachine,
   ApiProductionEvent,
 } from "@/lib/api"
-import { ALERT_KIND_ICONS, ALERT_KIND_LABELS, resolveAlertKind } from "@/lib/alert-ui"
+import {
+  ALERT_KIND_ICONS,
+  ALERT_KIND_LABELS,
+  resolveAlertKind,
+} from "@/lib/alert-ui"
+import { parsePendingUnitsFromAlertMessage } from "@/lib/production-goal-events"
 import { PLANT_TIMEZONE } from "@/lib/tablero-operator-goal"
 import { SHIFT_SCHEDULE } from "@/lib/shift-schedule"
 import { getPlantDayBoundsForCalendarDate, makeZonedDate } from "@/lib/shift-timezone"
@@ -47,6 +52,15 @@ export interface TimelineBadge {
   tone: "warning" | "info" | "neutral"
 }
 
+/** Datos para atribuir piezas pendientes desde la cronología (igual que en Alertas). */
+export interface TimelineAttribution {
+  /** Operador para huérfanas sin check-in; empacador para producción sin empacador. */
+  target: "operator" | "packager"
+  /** Alerta a la que se ligan las piezas (el backend la usa para cerrar el episodio). */
+  alertId: string
+  units: number
+}
+
 export interface TimelineItem {
   /** Ancla DOM (`tl-…`) para saltar de la banda al detalle. */
   id: string
@@ -66,6 +80,8 @@ export interface TimelineItem {
   cumulativeUnits?: number
   /** `false` en volcados atribuidos: no son piezas del contador de la máquina. */
   countsInTotal?: boolean
+  /** Si trae valor, se puede atribuir estas piezas desde la cronología. */
+  attribution?: TimelineAttribution
   sourceEventIds: string[]
 }
 
@@ -339,6 +355,11 @@ export function normalizeEvent(e: ApiProductionEvent, ctx: CronoContext): Timeli
             .map((c) => resolveName(ctx, String(c ?? "").trim() || null))
             .filter(Boolean)
         : []
+      // El reset a media sesión es el que amerita atención; el de inicio de sesión/turno es
+      // el esperado (poner el contador en 0 antes de arrancar). Se etiquetan distinto.
+      const badge: TimelineBadge = midSession
+        ? { label: "a media sesión", tone: "warning" }
+        : { label: "al iniciar sesión", tone: "info" }
       return {
         ...base,
         kind: "counter_reset",
@@ -347,7 +368,7 @@ export function normalizeEvent(e: ApiProductionEvent, ctx: CronoContext): Timeli
             ? `Reset de contador (${formatUnits(from)} → ${formatUnits(to)})`
             : "Reset de contador",
         detail: ops.length ? `Operador: ${ops.join(", ")}` : undefined,
-        badges: midSession ? [{ label: "a media sesión", tone: "warning" }] : undefined,
+        badges: [badge],
       }
     }
     case "SKU_CHANGE": {
@@ -383,6 +404,13 @@ export function normalizeAlert(a: ApiAlert, ctx: CronoContext): TimelineItem | n
   const at = new Date(a.createdAt)
   if (Number.isNaN(at.getTime())) return null
   const kind = resolveAlertKind(a)
+  // Producción sin empacador: las piezas pendientes viven solo en el mensaje de la alerta
+  // (no hay evento por pieza), así que la atribución de empacador se ofrece desde la alerta.
+  let attribution: TimelineAttribution | undefined
+  if (kind === "no_packager" && a.status === "open" && a.machineId) {
+    const units = parsePendingUnitsFromAlertMessage(a.message)
+    if (units > 0) attribution = { target: "packager", alertId: a.id, units }
+  }
   return {
     id: `tl-alert-${a.id}`,
     kind: "alert",
@@ -393,6 +421,7 @@ export function normalizeAlert(a: ApiAlert, ctx: CronoContext): TimelineItem | n
     detail: a.message ?? undefined,
     severity: a.severity,
     alertKind: kind,
+    attribution,
     sourceEventIds: [a.id],
   }
 }
@@ -417,6 +446,8 @@ interface ProdPiece {
   attributed: boolean
   /** Volcado de empacadora / ajuste atribuido — no es pieza del contador de la máquina. */
   isDump: boolean
+  /** Alerta (no_checkin) a la que se ligan las piezas huérfanas pendientes. */
+  orphanAlertId: string | null
 }
 
 function prodPieceFromEvent(e: ApiProductionEvent): ProdPiece | null {
@@ -443,6 +474,7 @@ function prodPieceFromEvent(e: ApiProductionEvent): ProdPiece | null {
     orphanPending: type === "ORPHAN_PROD" && payload["assignmentStatus"] !== "assigned",
     attributed: payload["assignmentStatus"] === "assigned",
     isDump: attr === "orphan" || attr === "packager_orphan",
+    orphanAlertId: payloadStr(payload, "orphanAlertId"),
   }
 }
 
@@ -494,6 +526,7 @@ export function groupProductionSpans(
     operators: Set<string>
     orphanPending: boolean
     attributed: boolean
+    orphanAlertId: string | null
   }
   let open: OpenSpan | null = null
 
@@ -510,6 +543,11 @@ export function groupProductionSpans(
     if (span.orphanPending) badges.push({ label: "sin atribuir", tone: "warning" })
     else if (span.attributed) badges.push({ label: "atribuida después", tone: "info" })
     const first = span.pieces[0]
+    // Piezas huérfanas pendientes con alerta ligada: se pueden atribuir desde aquí.
+    const attribution: TimelineAttribution | undefined =
+      span.orphanPending && span.orphanAlertId && first.machineId
+        ? { target: "operator", alertId: span.orphanAlertId, units: span.units }
+        : undefined
     items.push({
       id: `tl-span-${first.eventId}`,
       kind,
@@ -524,6 +562,7 @@ export function groupProductionSpans(
       badges: badges.length ? badges : undefined,
       units: span.units,
       countsInTotal: true,
+      attribution,
       sourceEventIds: span.pieces.map((p) => p.eventId),
     })
   }
@@ -552,6 +591,8 @@ export function groupProductionSpans(
       open !== null &&
       open.pieces[0].machineId === piece.machineId &&
       open.orphanPending === piece.orphanPending &&
+      // Episodios huérfanos distintos (otra alerta) no se mezclan: cada uno se atribuye aparte.
+      open.orphanAlertId === piece.orphanAlertId &&
       piece.start.getTime() - open.end.getTime() <= gapMs &&
       (piece.sku === null || open.skus.size === 0 || open.skus.has(piece.sku)) &&
       !hasBreakerBetween(piece.machineId, open.end.getTime(), piece.start.getTime())
@@ -574,6 +615,7 @@ export function groupProductionSpans(
         operators: new Set(piece.operators),
         orphanPending: piece.orphanPending,
         attributed: piece.attributed,
+        orphanAlertId: piece.orphanAlertId,
       }
     }
   }
@@ -614,6 +656,8 @@ export interface CronologiaResult {
   /** Parte del total que sigue sin atribuir a un operador. */
   orphanUnits: number
   alertCount: number
+  /** Estatus LED reconstruido a lo largo del día (solo en modo máquina). */
+  statusSegments: StatusSegment[]
 }
 
 export function buildTimeline(args: {
@@ -624,6 +668,8 @@ export function buildTimeline(args: {
   personCodes?: ReadonlySet<string>
   ctx: CronoContext
   gapMinutes?: number
+  /** Ventana de la banda; con ella se reconstruye la pista de estatus LED (modo máquina). */
+  window?: { bandStart: Date; bandEnd: Date }
 }): CronologiaResult {
   const { alerts, mode, personCodes, ctx } = args
   let events = [...args.events].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt))
@@ -680,7 +726,20 @@ export function buildTimeline(args: {
     }
   }
 
-  return { items, totalUnits: running, orphanUnits, alertCount: alertItems.length }
+  // La pista de estatus solo tiene sentido para una máquina concreta (un operador rota entre
+  // varias). Se reconstruye de los eventos de esa máquina en la ventana.
+  const statusSegments =
+    mode === "machine" && args.window
+      ? buildStatusSegments(events, spanItems, args.window.bandStart, args.window.bandEnd)
+      : []
+
+  return {
+    items,
+    totalUnits: running,
+    orphanUnits,
+    alertCount: alertItems.length,
+    statusSegments,
+  }
 }
 
 // --- Banda horizontal --------------------------------------------------------
@@ -706,4 +765,192 @@ export function bandHourTicks(
     ticks.push({ leftPct: bandPositionPct(d, bandStart, bandEnd), label: formatPlantTime(d) })
   }
   return ticks
+}
+
+// --- Pista de estatus LED (código de colores del piso de producción) ---------
+
+/** Igual que MachineStatus: verde activa · amarillo esperando · azul mantenimiento · rojo apagada. */
+export type LedStatus = "active" | "waiting" | "maintenance" | "inactive"
+
+export const LED_STATUS_LABELS: Record<LedStatus, string> = {
+  active: "Produciendo",
+  waiting: "Encendida sin producir",
+  maintenance: "Mantenimiento",
+  inactive: "Apagada / sin señal",
+}
+
+export interface StatusSegment {
+  status: LedStatus
+  startPct: number
+  endPct: number
+  from: Date
+  to: Date
+}
+
+interface Interval {
+  from: number
+  to: number
+}
+
+function inAny(t: number, intervals: Interval[]): boolean {
+  return intervals.some((iv) => t >= iv.from && t < iv.to)
+}
+
+/**
+ * Reconstruye el estatus del LED de la máquina a lo largo de la ventana, con el mismo código de
+ * colores del piso: **verde** produciendo (tramos de producción atribuida), **azul**
+ * mantenimiento (entre MAINTENANCE_IN/OUT), **rojo** apagada/sin señal (antes del primer BOOT y
+ * de OFFLINE al siguiente BOOT), **amarillo** el resto (encendida pero sin producir). Es una
+ * aproximación derivada de los eventos, no el estado exacto del backend, pero suficiente para
+ * ver de un vistazo qué hacía la máquina en cada momento. Solo tiene sentido por máquina.
+ */
+export function buildStatusSegments(
+  events: ApiProductionEvent[],
+  spanItems: TimelineItem[],
+  bandStart: Date,
+  bandEnd: Date,
+): StatusSegment[] {
+  const startMs = bandStart.getTime()
+  const endMs = bandEnd.getTime()
+  const evs = [...events].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt))
+  const timeOf = (e: ApiProductionEvent) => new Date(e.occurredAt).getTime()
+
+  const boots = evs
+    .filter((e) => (e.eventType ?? "").toUpperCase() === "BOOT")
+    .map(timeOf)
+    .sort((a, b) => a - b)
+
+  // Intervalos apagada: antes del primer BOOT de la ventana, y de cada OFFLINE al siguiente BOOT.
+  const off: Interval[] = []
+  if (boots.length && boots[0] > startMs) off.push({ from: startMs, to: boots[0] })
+  for (const e of evs) {
+    if ((e.eventType ?? "").toUpperCase() !== "OFFLINE") continue
+    const t = timeOf(e)
+    const nextBoot = boots.find((b) => b > t)
+    off.push({ from: t, to: nextBoot ?? endMs })
+  }
+
+  // Intervalos mantenimiento: de MAINTENANCE_IN al siguiente MAINTENANCE_OUT.
+  const maint: Interval[] = []
+  let maintOpen: number | null = null
+  for (const e of evs) {
+    const t = (e.eventType ?? "").toUpperCase()
+    if (t === "MAINTENANCE_IN") maintOpen = maintOpen ?? timeOf(e)
+    else if (t === "MAINTENANCE_OUT" && maintOpen !== null) {
+      maint.push({ from: maintOpen, to: timeOf(e) })
+      maintOpen = null
+    }
+  }
+  if (maintOpen !== null) maint.push({ from: maintOpen, to: endMs })
+
+  // Intervalos produciendo: tramos de producción atribuida (verde real del LED).
+  const green: Interval[] = spanItems
+    .filter((s) => s.kind === "production_span" && s.endAt)
+    .map((s) => ({ from: s.at.getTime(), to: (s.endAt as Date).getTime() }))
+
+  // Puntos de corte: todos los bordes de intervalos dentro de la ventana.
+  const points = new Set<number>([startMs, endMs])
+  for (const iv of [...off, ...maint, ...green]) {
+    if (iv.from > startMs && iv.from < endMs) points.add(iv.from)
+    if (iv.to > startMs && iv.to < endMs) points.add(iv.to)
+  }
+  const sorted = [...points].sort((a, b) => a - b)
+
+  const statusAt = (mid: number): LedStatus => {
+    if (inAny(mid, maint)) return "maintenance"
+    if (inAny(mid, green)) return "active"
+    if (inAny(mid, off)) return "inactive"
+    return "waiting"
+  }
+
+  const raw: { status: LedStatus; from: number; to: number }[] = []
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i]
+    const b = sorted[i + 1]
+    if (b <= a) continue
+    const status = statusAt((a + b) / 2)
+    const last = raw[raw.length - 1]
+    if (last && last.status === status) last.to = b
+    else raw.push({ status, from: a, to: b })
+  }
+
+  return raw.map((seg) => ({
+    status: seg.status,
+    from: new Date(seg.from),
+    to: new Date(seg.to),
+    startPct: bandPositionPct(new Date(seg.from), bandStart, bandEnd),
+    endPct: bandPositionPct(new Date(seg.to), bandStart, bandEnd),
+  }))
+}
+
+// --- Anti-colisión de marcas (escalonado en filas) ---------------------------
+
+export interface PackedMarker {
+  item: TimelineItem
+  leftPct: number
+  row: number
+}
+
+/** Grupo de marcas que no cupieron en el escalonado (ráfaga de sucesos casi simultáneos). */
+export interface MarkerCluster {
+  leftPct: number
+  items: TimelineItem[]
+  row: number
+}
+
+/**
+ * Reparte marcas en filas para que dos sucesos cercanos en el tiempo no se encimen: cada marca
+ * baja a la primera fila libre. Se acota a `maxRows` filas; lo que no cabe (ráfagas de eventos
+ * casi simultáneos, p. ej. el arranque o el cambio de turno) se agrupa en un chip "+N" para no
+ * estirar la banda sin control. Necesita el ancho real en px de la banda para medir el solape.
+ */
+export function packMarkers(
+  items: TimelineItem[],
+  bandStart: Date,
+  bandEnd: Date,
+  widthPx: number,
+  chipPx: number,
+  gapPx: number,
+  maxRows = 4,
+): { packed: PackedMarker[]; clusters: MarkerCluster[]; rows: number } {
+  const sorted = [...items].sort((a, b) => a.at.getTime() - b.at.getTime())
+  const rowsRight: number[] = []
+  const packed: PackedMarker[] = []
+  const overflow: { item: TimelineItem; centerPx: number; leftPct: number }[] = []
+
+  for (const item of sorted) {
+    const leftPct = bandPositionPct(item.at, bandStart, bandEnd)
+    const centerPx = (leftPct / 100) * widthPx
+    const leftEdge = centerPx - chipPx / 2
+    let row = rowsRight.findIndex((right) => right + gapPx <= leftEdge)
+    if (row === -1) {
+      if (rowsRight.length < maxRows) {
+        row = rowsRight.length
+        rowsRight.push(0)
+      } else {
+        overflow.push({ item, centerPx, leftPct })
+        continue
+      }
+    }
+    rowsRight[row] = centerPx + chipPx / 2
+    packed.push({ item, leftPct, row })
+  }
+
+  // Agrupar el exceso en clusters por cercanía en x; cada cluster va en la fila extra.
+  const clusters: MarkerCluster[] = []
+  const overflowRow = Math.min(rowsRight.length, maxRows)
+  for (const o of overflow) {
+    const last = clusters[clusters.length - 1]
+    if (last && o.centerPx - (last.leftPct / 100) * widthPx <= chipPx + gapPx) {
+      last.items.push(o.item)
+    } else {
+      clusters.push({ leftPct: o.leftPct, items: [o.item], row: overflowRow })
+    }
+  }
+
+  return {
+    packed,
+    clusters,
+    rows: (rowsRight.length || 1) + (clusters.length ? 1 : 0),
+  }
 }
