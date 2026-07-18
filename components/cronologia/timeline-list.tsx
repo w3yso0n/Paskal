@@ -8,6 +8,7 @@ import {
   alertIcon,
   CRONO_CATALOG,
   formatPlantTime,
+  formatPlantTimeSeconds,
   formatUnits,
   type TimelineItem,
 } from "@/lib/cronologia"
@@ -41,19 +42,24 @@ export function TimelineList({
   showMachine = false,
   onAttribute,
 }: TimelineListProps) {
-  if (items.length === 0) return null
+  // La producción normal ya no se lista como fila: su conteo va en la barra de estatus (hover).
+  // Quedan los sucesos discretos y la producción sin atribuir (que necesita el botón Asignar).
+  const rows = items.filter((i) => i.kind !== "production_span")
+  if (rows.length === 0) return null
 
   return (
     <div>
       <ol className="relative ml-[120px] border-l border-border">
-        {items.map((item) => {
+        {rows.map((item) => {
           const catalog = CRONO_CATALOG[item.kind]
           const Icon =
             item.kind === "alert" && item.alertKind ? alertIcon(item.alertKind) : catalog.icon
           const isSpan = Boolean(item.endAt && item.endAt.getTime() > item.at.getTime())
+          // Sucesos puntuales con segundos para desempatar los del mismo minuto; los tramos
+          // (rangos) siguen en HH:mm.
           const timeLabel = isSpan
             ? `${formatPlantTime(item.at)}–${formatPlantTime(item.endAt as Date)}`
-            : formatPlantTime(item.at)
+            : formatPlantTimeSeconds(item.at)
           return (
             <li
               key={item.id}
@@ -109,14 +115,6 @@ export function TimelineList({
               </div>
               {item.detail ? (
                 <p className="mt-0.5 text-xs text-muted-foreground">{item.detail}</p>
-              ) : null}
-              {item.cumulativeUnits !== undefined ? (
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Piezas del día hasta aquí:{" "}
-                  <span className="font-medium tabular-nums text-foreground">
-                    {formatUnits(item.cumulativeUnits)}
-                  </span>
-                </p>
               ) : null}
               {item.attribution && onAttribute ? (
                 <Button

@@ -16,6 +16,7 @@ import type {
   ApiAlertKind,
   ApiAlertSeverity,
   ApiEmployee,
+  ApiGoalShift,
   ApiMachine,
   ApiProductionEvent,
 } from "@/lib/api"
@@ -176,11 +177,6 @@ const SOURCE_LABELS: Record<string, string> = {
   presence: "presencia",
 }
 
-const ROLE_BADGES: Record<string, string> = {
-  PACKAGER: "empacadora",
-  MAINTENANCE: "mantenimiento",
-}
-
 /** Margen antes del turno: el BOOT/reset/check-in ocurre ~06:45, antes del arranque de 07:00. */
 const WINDOW_LEAD_MINUTES = 60
 /** Margen después del turno: check-out/apagado tardíos. */
@@ -231,25 +227,45 @@ export function computeCronologiaWindow(
 export interface CronoContext {
   /** employeeCode y nfcCardUid (minúsculas) → nombre completo. */
   nameByCode: Map<string, string>
+  /** employeeCode y nfcCardUid (minúsculas) → turno asignado. */
+  shiftByCode: Map<string, ApiGoalShift>
   machineCodeById: Map<string, string>
 }
 
 export function buildCronoContext(
-  employees: ReadonlyArray<Pick<ApiEmployee, "employeeCode" | "nfcCardUid" | "fullName">>,
+  employees: ReadonlyArray<
+    Pick<ApiEmployee, "employeeCode" | "nfcCardUid" | "fullName" | "shift">
+  >,
   machines: ReadonlyArray<Pick<ApiMachine, "id" | "code">>,
 ): CronoContext {
   const nameByCode = new Map<string, string>()
+  const shiftByCode = new Map<string, ApiGoalShift>()
   for (const emp of employees) {
+    const shift: ApiGoalShift | null =
+      emp.shift === 1 ? "matutino" : emp.shift === 2 ? "vespertino" : null
     for (const key of [emp.employeeCode, emp.nfcCardUid]) {
       const k = key?.trim().toLowerCase()
-      if (k && emp.fullName) nameByCode.set(k, emp.fullName)
+      if (!k) continue
+      if (emp.fullName) nameByCode.set(k, emp.fullName)
+      if (shift) shiftByCode.set(k, shift)
     }
   }
   const machineCodeById = new Map<string, string>()
   for (const mach of machines) {
     if (mach.id && mach.code) machineCodeById.set(mach.id, mach.code)
   }
-  return { nameByCode, machineCodeById }
+  return { nameByCode, shiftByCode, machineCodeById }
+}
+
+const SHIFT_LABELS: Record<ApiGoalShift, string> = {
+  matutino: "matutino",
+  vespertino: "vespertino",
+}
+
+const CHECKIN_ROLE_LABELS: Record<string, string> = {
+  OPERATOR: "operador",
+  PACKAGER: "empacadora",
+  MAINTENANCE: "mantenimiento",
 }
 
 export function formatPlantTime(at: Date | string): string {
@@ -258,6 +274,19 @@ export function formatPlantTime(at: Date | string): string {
   return d.toLocaleTimeString("es-MX", {
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
+    timeZone: PLANT_TIMEZONE,
+  })
+}
+
+/** Hora con segundos — para desempatar sucesos del mismo minuto en la lista y tooltips. */
+export function formatPlantTimeSeconds(at: Date | string): string {
+  const d = typeof at === "string" ? new Date(at) : at
+  if (Number.isNaN(d.getTime())) return "--:--:--"
+  return d.toLocaleTimeString("es-MX", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
     hour12: false,
     timeZone: PLANT_TIMEZONE,
   })
@@ -334,16 +363,21 @@ export function normalizeEvent(e: ApiProductionEvent, ctx: CronoContext): Timeli
     case "CHECK_IN":
     case "CHECK_OUT": {
       const isIn = type === "CHECK_IN"
-      const name = resolveName(ctx, payloadStr(payload, "employee")) ?? "Sin nombre"
+      const code = payloadStr(payload, "employee")
+      const name = resolveName(ctx, code) ?? "Sin nombre"
       const via = sourceLabel(payload)
       const role = payloadStr(payload, "role")?.toUpperCase() ?? ""
-      const roleBadge = ROLE_BADGES[role]
+      const roleLabel = CHECKIN_ROLE_LABELS[role]
+      const shift = code ? ctx.shiftByCode.get(code.trim().toLowerCase()) : undefined
+      const badges: TimelineBadge[] = []
+      if (roleLabel) badges.push({ label: roleLabel, tone: "neutral" })
+      if (shift) badges.push({ label: `turno ${SHIFT_LABELS[shift]}`, tone: "info" })
       return {
         ...base,
         kind: isIn ? "checkin" : "checkout",
         title: `${isIn ? "Check-in" : "Check-out"}: ${name}`,
         detail: via ? `Vía ${via}` : undefined,
-        badges: roleBadge ? [{ label: roleBadge, tone: "neutral" }] : undefined,
+        badges: badges.length ? badges : undefined,
       }
     }
     case "COUNTER_RESET": {
@@ -785,6 +819,10 @@ export interface StatusSegment {
   endPct: number
   from: Date
   to: Date
+  /** Piezas válidas producidas dentro de este tramo (delta). */
+  producedUnits: number
+  /** Total de producción válida acumulada del día hasta el fin de este tramo. */
+  cumulativeValid: number
 }
 
 interface Interval {
@@ -874,13 +912,27 @@ export function buildStatusSegments(
     else raw.push({ status, from: a, to: b })
   }
 
-  return raw.map((seg) => ({
-    status: seg.status,
-    from: new Date(seg.from),
-    to: new Date(seg.to),
-    startPct: bandPositionPct(new Date(seg.from), bandStart, bandEnd),
-    endPct: bandPositionPct(new Date(seg.to), bandStart, bandEnd),
-  }))
+  // Producción válida (atribuida) por tramo: se acredita al tramo que contiene el inicio del
+  // tramo de producción; el acumulado corre en orden temporal para el total al pasar el mouse.
+  const validSpans = spanItems.filter((s) => s.kind === "production_span" && s.units)
+  let cumulative = 0
+  return raw.map((seg) => {
+    let delta = 0
+    for (const sp of validSpans) {
+      const st = sp.at.getTime()
+      if (st >= seg.from && st < seg.to) delta += sp.units ?? 0
+    }
+    cumulative += delta
+    return {
+      status: seg.status,
+      from: new Date(seg.from),
+      to: new Date(seg.to),
+      startPct: bandPositionPct(new Date(seg.from), bandStart, bandEnd),
+      endPct: bandPositionPct(new Date(seg.to), bandStart, bandEnd),
+      producedUnits: delta,
+      cumulativeValid: cumulative,
+    }
+  })
 }
 
 // --- Anti-colisión de marcas (escalonado en filas) ---------------------------

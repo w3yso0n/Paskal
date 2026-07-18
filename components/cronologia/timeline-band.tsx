@@ -2,11 +2,15 @@
 
 import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip"
+import { Button } from "@/components/ui/button"
+import { Minus, Plus, RotateCcw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   bandHourTicks,
   bandPositionPct,
   formatPlantTime,
+  formatPlantTimeSeconds,
+  formatUnits,
   packMarkers,
   CRONO_CATALOG,
   LED_STATUS_LABELS,
@@ -18,6 +22,10 @@ import {
 } from "@/lib/cronologia"
 import { ALERT_SEVERITY_STYLES } from "@/lib/alert-ui"
 import { MACHINE_STATUS_DOT_COLORS } from "@/components/production/machine-status-dot"
+
+const ZOOM_MIN = 1
+const ZOOM_MAX = 8
+const ZOOM_STEP = 1.5
 
 interface TimelineBandProps {
   items: TimelineItem[]
@@ -54,25 +62,33 @@ export function TimelineBand({
   nowMs,
   onSelect,
 }: TimelineBandProps) {
-  const innerRef = useRef<HTMLDivElement>(null)
-  const [width, setWidth] = useState(960)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [viewport, setViewport] = useState(960)
+  const [zoom, setZoom] = useState(1)
 
   useLayoutEffect(() => {
-    const el = innerRef.current
+    const el = scrollRef.current
     if (!el) return
-    const update = () => setWidth(el.clientWidth || 960)
+    const update = () => setViewport(el.clientWidth || 960)
     update()
     const ro = new ResizeObserver(update)
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
 
+  // Ancho interno de la banda = viewport × zoom (a zoom 1 cabe justo; a más, hace scroll y los
+  // sucesos cercanos en el tiempo se separan para distinguirse mejor).
+  const width = Math.max(viewport * zoom, 680)
+
   const ticks = bandHourTicks(bandStart, bandEnd)
   const alerts = useMemo(() => items.filter((i) => i.kind === "alert"), [items])
+  // La producción normal ya la muestra la pista verde (con delta/total al pasar el mouse), así
+  // que NO se repite como chip aquí; solo quedan los sucesos discretos y la huérfana sin atribuir.
   const events = useMemo(
-    () => items.filter((i) => i.kind !== "alert"),
+    () => items.filter((i) => i.kind !== "alert" && i.kind !== "production_span"),
     [items],
   )
+  const labelEveryTick = ticks.length > 0 && width / ticks.length >= 58
 
   const alertPack = useMemo(
     () => packMarkers(alerts, bandStart, bandEnd, width, CHIP, CHIP_GAP, MAX_ALERT_ROWS),
@@ -97,8 +113,50 @@ export function TimelineBand({
 
   return (
     <TooltipProvider delayDuration={100}>
-      <div className="overflow-x-auto pb-1">
-        <div ref={innerRef} className="relative min-w-[680px]" style={{ height: totalH }}>
+      {/* Control de zoom */}
+      <div className="mb-2 flex items-center justify-end gap-1.5">
+        <span className="mr-1 text-xs text-muted-foreground">Zoom</span>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => setZoom((z) => Math.max(ZOOM_MIN, +(z / ZOOM_STEP).toFixed(2)))}
+          disabled={zoom <= ZOOM_MIN}
+          aria-label="Alejar"
+        >
+          <Minus className="h-4 w-4" />
+        </Button>
+        <span className="w-10 text-center text-xs tabular-nums text-muted-foreground">
+          {Math.round(zoom * 100)}%
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => setZoom((z) => Math.min(ZOOM_MAX, +(z * ZOOM_STEP).toFixed(2)))}
+          disabled={zoom >= ZOOM_MAX}
+          aria-label="Acercar"
+        >
+          <Plus className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-7 w-7"
+          onClick={() => setZoom(1)}
+          disabled={zoom === 1}
+          aria-label="Restablecer zoom"
+          title="Restablecer"
+        >
+          <RotateCcw className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <div ref={scrollRef} className="overflow-x-auto pb-1">
+        <div className="relative" style={{ height: totalH, width, minWidth: "100%" }}>
           {/* Línea de "ahora" detrás de todo */}
           {nowPct !== null ? (
             <div
@@ -129,9 +187,21 @@ export function TimelineBand({
                       style={{ left: `${seg.startPct}%`, width: `${w}%` }}
                     />
                   </TooltipTrigger>
-                  <TooltipContent side="top" className="text-xs">
-                    {formatPlantTime(seg.from)}–{formatPlantTime(seg.to)} ·{" "}
-                    {LED_STATUS_LABELS[seg.status]}
+                  <TooltipContent side="top" className="space-y-0.5 text-xs">
+                    <div className="font-semibold">
+                      {formatPlantTimeSeconds(seg.from)}–{formatPlantTimeSeconds(seg.to)}
+                    </div>
+                    <div>{LED_STATUS_LABELS[seg.status]}</div>
+                    {seg.producedUnits > 0 ? (
+                      <div className="opacity-80">
+                        En este tramo:{" "}
+                        <span className="font-semibold">
+                          +{formatUnits(seg.producedUnits)} pzas
+                        </span>{" "}
+                        · Total válido:{" "}
+                        <span className="font-semibold">{formatUnits(seg.cumulativeValid)}</span>
+                      </div>
+                    ) : null}
                   </TooltipContent>
                 </Tooltip>
               )
@@ -219,7 +289,7 @@ export function TimelineBand({
               style={{ left: `${tick.leftPct}%`, top: axisTop }}
             >
               <div className="mx-auto h-1.5 w-px bg-border" />
-              {ticks.length <= 12 || i % 2 === 0 ? (
+              {labelEveryTick || i % 2 === 0 ? (
                 <span className="text-[10px] tabular-nums text-muted-foreground">{tick.label}</span>
               ) : null}
             </div>
@@ -274,7 +344,7 @@ function BandChip({
   chipClass: string
   onSelect: (anchorId: string) => void
 }) {
-  const label = `${formatPlantTime(item.at)} · ${item.title}`
+  const label = `${formatPlantTimeSeconds(item.at)} · ${item.title}`
   return (
     <>
       {/* Tallo hacia la pista */}
@@ -353,8 +423,19 @@ function BandCluster({
             +{cluster.items.length}
           </button>
         </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-64 text-xs">
-          {cluster.items.length} sucesos más cerca de {formatPlantTime(first.at)}
+        <TooltipContent side="top" className="max-w-72 text-xs">
+          <div className="mb-1 font-semibold">{cluster.items.length} sucesos más aquí:</div>
+          <ul className="space-y-0.5">
+            {cluster.items.slice(0, 8).map((it) => (
+              <li key={it.id}>
+                <span className="tabular-nums opacity-70">{formatPlantTimeSeconds(it.at)}</span>{" "}
+                {it.title}
+              </li>
+            ))}
+            {cluster.items.length > 8 ? (
+              <li className="opacity-70">…y {cluster.items.length - 8} más</li>
+            ) : null}
+          </ul>
         </TooltipContent>
       </Tooltip>
     </>
