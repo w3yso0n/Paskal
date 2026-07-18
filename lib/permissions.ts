@@ -145,6 +145,7 @@ export const ROUTE_MODULES: Record<string, PlatformModule[]> = {
   ],
   "/metas": ["metas"],
   "/alertas": ["alertas"],
+  "/cronologia": ["cronologia"],
   "/administracion/usuarios": ["gestion_usuarios"],
   "/empleados": [...EMPLOYEE_MODULES, "metricas_asistencia_rotacion_bono"],
   "/administracion/gestion-skus": ["skus"],
