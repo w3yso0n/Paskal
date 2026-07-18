@@ -2,18 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import {
-  Bell,
-  AlertTriangle,
-  AlertCircle,
-  Info,
-  CheckCircle2,
-  X,
-  Factory,
-  Users,
-  Monitor,
-  Loader2,
-} from "lucide-react"
+import { Bell, X, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -21,8 +10,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
-import { ALERT_KIND_LABELS } from "@/lib/alert-ui"
-import type { Alert, AlertType, AlertCategory } from "@/lib/types"
+import { ALERT_KIND_ICONS, ALERT_KIND_LABELS, ALERT_SEVERITY_STYLES } from "@/lib/alert-ui"
+import type { Alert } from "@/lib/types"
 
 interface AlertsDropdownProps {
   alerts: Alert[]
@@ -32,27 +21,6 @@ interface AlertsDropdownProps {
   onMarkAsRead: (id: string) => void
   onDismiss: (id: string) => void
   onMarkAllAsRead: () => void
-}
-
-const typeIcons: Record<AlertType, typeof AlertCircle> = {
-  error: AlertCircle,
-  warning: AlertTriangle,
-  info: Info,
-  success: CheckCircle2,
-}
-
-const typeColors: Record<AlertType, string> = {
-  error: "text-red-500 bg-red-50",
-  warning: "text-amber-500 bg-amber-50",
-  info: "text-blue-500 bg-blue-50",
-  success: "text-green-500 bg-green-50",
-}
-
-const categoryIcons: Record<AlertCategory, typeof Factory> = {
-  machine: Factory,
-  production: Monitor,
-  employee: Users,
-  system: Info,
 }
 
 function formatTimeAgo(date: Date): string {
@@ -158,25 +126,21 @@ export function AlertsDropdown({
             </div>
           ) : (
             alerts.slice(0, 12).map((alert) => {
-              const TypeIcon = typeIcons[alert.type]
-              const CategoryIcon = categoryIcons[alert.category]
+              const KindIcon = ALERT_KIND_ICONS[alert.kind]
+              const sevStyle = ALERT_SEVERITY_STYLES[alert.severity]
 
               return (
                 <div
                   key={alert.id}
                   className={cn(
-                    "relative flex gap-3 border-b border-border px-4 py-3 transition-colors hover:bg-muted/50 cursor-pointer",
+                    "relative flex gap-3 border-b border-l-4 border-border px-4 py-3 transition-colors hover:bg-muted/50 cursor-pointer",
+                    sevStyle.border,
                     !alert.isRead && "bg-primary/5",
                   )}
                   onClick={() => !alert.isRead && onMarkAsRead(alert.id)}
                 >
-                  <div
-                    className={cn(
-                      "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-                      typeColors[alert.type],
-                    )}
-                  >
-                    <TypeIcon className="h-5 w-5" />
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted">
+                    <KindIcon className="h-[18px] w-[18px] text-foreground/70" />
                   </div>
 
                   <div className="flex-1 min-w-0">
@@ -191,7 +155,7 @@ export function AlertsDropdown({
                           {alert.title}
                         </p>
                         {alert.actionRequired && !alert.isRead && (
-                          <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                          <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
                             Acción
                           </span>
                         )}
@@ -199,6 +163,7 @@ export function AlertsDropdown({
                       {canDismiss && (
                         <button
                           type="button"
+                          aria-label="Descartar alerta"
                           onClick={(e) => {
                             e.stopPropagation()
                             onDismiss(alert.id)
@@ -216,7 +181,16 @@ export function AlertsDropdown({
                       <span className="rounded bg-muted px-1 py-0.5 font-medium">
                         {ALERT_KIND_LABELS[alert.kind]}
                       </span>
-                      <CategoryIcon className="h-3 w-3" />
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium",
+                          sevStyle.chipBg,
+                          sevStyle.chipText,
+                        )}
+                      >
+                        <span className={cn("h-1.5 w-1.5 rounded-full", sevStyle.dot)} />
+                        {sevStyle.label}
+                      </span>
                       <span>{formatTimeAgo(alert.timestamp)}</span>
                       {!alert.isRead && (
                         <span className="h-1.5 w-1.5 rounded-full bg-primary" />

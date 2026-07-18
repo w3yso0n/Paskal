@@ -1,12 +1,10 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react"
 import {
   Bell,
   AlertTriangle,
-  AlertCircle,
   Info,
-  CheckCircle2,
   Users,
   Monitor,
   Filter,
@@ -20,6 +18,11 @@ import {
   StickyNote,
   MoreHorizontal,
   CalendarDays,
+  Timer,
+  ListOrdered,
+  Gauge,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react"
 import { DashboardLayout } from "@/components/dashboard/dashboard-layout"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
@@ -41,7 +44,7 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart"
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts"
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts"
 import {
   Dialog,
   DialogContent,
@@ -65,12 +68,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
-import {
-  type Alert,
-  type AlertType,
-} from "@/lib/types"
+import { type Alert } from "@/lib/types"
 import { useAuth } from "@/contexts/auth-context"
 import { hasPermission } from "@/lib/permissions"
 import {
@@ -97,18 +97,31 @@ import {
 } from "@/lib/production-goal-events"
 import {
   mapApiAlertToUi,
-  severityRank,
   ALERTS_POLL_MS,
   ALERT_KIND_LABELS,
   ALERT_KIND_FILTER_ORDER,
+  ALERT_KIND_ICONS,
+  ALERT_KIND_EXPLAINERS,
+  ALERT_SEVERITY_STYLES,
+  ALERT_SEVERITY_RANK,
+  buildAlertDetailRows,
   isOperatorOrphanAlertKind,
   isPackagerOrphanAlertKind,
 } from "@/lib/alert-ui"
 import {
   addPlantDays,
+  ALERT_KIND_CHART_COLORS,
   buildAlertsByKindChartConfig,
   buildDailyAlertsByKindSeries,
 } from "@/lib/alert-role-metrics"
+import {
+  buildAlertRangeSummary,
+  buildHourKindHeatmap,
+  buildIdleMinutesByDay,
+  buildMachineAlertPareto,
+  formatMinutesShort,
+  type HourKindHeatmap,
+} from "@/lib/alert-analytics"
 import {
   isFloorOperatorCandidate,
   isFloorPackerCandidate,
@@ -123,22 +136,6 @@ import {
   PLANT_TIMEZONE,
   productionShiftFromMeasuredAt,
 } from "@/lib/tablero-operator-goal"
-
-// --- Constants ---
-
-const typeIcons: Record<AlertType, typeof AlertCircle> = {
-  error: AlertCircle,
-  warning: AlertTriangle,
-  info: Info,
-  success: CheckCircle2,
-}
-
-const typeColors: Record<AlertType, { bg: string; text: string; border: string }> = {
-  error: { bg: "bg-red-50", text: "text-red-600", border: "border-red-200" },
-  warning: { bg: "bg-amber-50", text: "text-amber-600", border: "border-amber-200" },
-  info: { bg: "bg-blue-50", text: "text-blue-600", border: "border-blue-200" },
-  success: { bg: "bg-green-50", text: "text-green-600", border: "border-green-200" },
-}
 
 // --- Helpers ---
 
@@ -197,6 +194,59 @@ function isAttributableOrphanAlert(a: Alert): boolean {
   return isOperatorOrphanProductionAlert(a) || isPackagerOrphanProductionAlert(a)
 }
 
+const HEATMAP_HOURS = Array.from({ length: 24 }, (_, i) => i)
+
+/** Un solo tono (azul, ya usado en el panel para "Sin leer"), más opaco = más alertas —
+ * escala secuencial, nunca arcoíris. La causa va en la etiqueta de fila, no en el color. */
+function heatCellBackground(count: number, maxCount: number): string {
+  if (count === 0) return "transparent"
+  const intensity = maxCount > 0 ? count / maxCount : 0
+  const alpha = 0.12 + intensity * 0.78
+  return `rgba(37, 99, 235, ${alpha.toFixed(2)})`
+}
+
+/** Heatmap hora (TZ planta) × causa. Grid simple en vez de un componente de gráficas — no hay
+ * un tipo "heatmap" nativo en recharts y esto es más liviano que forzarlo con un scatter. */
+function AlertHourHeatmap({ heatmap }: { heatmap: HourKindHeatmap }) {
+  return (
+    <div className="overflow-x-auto">
+      <div
+        className="grid min-w-[680px] gap-[2px]"
+        style={{ gridTemplateColumns: "104px repeat(24, minmax(22px, 1fr))" }}
+      >
+        <div />
+        {HEATMAP_HOURS.map((h) => (
+          <div key={h} className="pb-1 text-center text-[9px] text-muted-foreground">
+            {h % 3 === 0 ? `${h}h` : ""}
+          </div>
+        ))}
+        {heatmap.kindsInRange.map((kind) => (
+          <Fragment key={kind}>
+            <div className="flex items-center truncate pr-2 text-xs text-muted-foreground">
+              {ALERT_KIND_LABELS[kind]}
+            </div>
+            {HEATMAP_HOURS.map((h) => {
+              const count = heatmap.counts[h]?.[kind] ?? 0
+              return (
+                <div
+                  key={h}
+                  title={`${ALERT_KIND_LABELS[kind]} · ${h}:00–${h}:59 (TZ planta) · ${count}`}
+                  className="aspect-square rounded-sm"
+                  style={{ backgroundColor: heatCellBackground(count, heatmap.maxCount) }}
+                />
+              )
+            })}
+          </Fragment>
+        ))}
+      </div>
+      <p className="mt-2 text-[10px] text-muted-foreground">
+        Hora del día en zona de planta · más oscuro = más alertas (pasa el cursor por una celda
+        para ver el número exacto; máximo {heatmap.maxCount} en una sola celda)
+      </p>
+    </div>
+  )
+}
+
 // --- Component ---
 
 export default function AlertasClient() {
@@ -212,9 +262,10 @@ export default function AlertasClient() {
   const [searchQuery, setSearchQuery] = useState("")
   const [activeTab, setActiveTab] = useState("all")
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
-  // Rango de la gráfica "Alertas por día": independiente del filtro de día de la tabla (ese es
-  // para operar hoy; la gráfica es para ver tendencia de los últimos días).
+  // Rango del análisis (gráfica + KPIs + Pareto + heatmap + minutos de paro): independiente
+  // del filtro de día de la tabla (ese es para operar hoy; esto es para ver tendencia).
   const [chartRangeDays, setChartRangeDays] = useState(14)
+  const [analysisView, setAnalysisView] = useState("daily")
 
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [apiAlertsById, setApiAlertsById] = useState<Map<string, ApiAlert>>(new Map())
@@ -347,15 +398,51 @@ export default function AlertasClient() {
   // sin fetch adicional — con el poll de 30 s queda casi en vivo.
   const apiAlerts = useMemo(() => [...apiAlertsById.values()], [apiAlertsById])
 
-  const alertsByKindDaily = useMemo(() => {
+  // Un solo rango para TODO el análisis (gráfica diaria + KPIs + Pareto + heatmap + minutos de
+  // paro): un solo control arriba, todas las vistas contra el mismo corte de fechas.
+  const analysisRange = useMemo(() => {
     const endDay = todayPlantDayKey()
-    const startDay = addPlantDays(endDay, -(chartRangeDays - 1))
-    return buildDailyAlertsByKindSeries(apiAlerts, startDay, endDay)
-  }, [apiAlerts, chartRangeDays])
+    return { startDay: addPlantDays(endDay, -(chartRangeDays - 1)), endDay }
+  }, [chartRangeDays])
+
+  const alertsByKindDaily = useMemo(
+    () => buildDailyAlertsByKindSeries(apiAlerts, analysisRange.startDay, analysisRange.endDay),
+    [apiAlerts, analysisRange],
+  )
 
   const alertsByKindChartConfig = useMemo(
     () => buildAlertsByKindChartConfig(alertsByKindDaily.kindsInRange),
     [alertsByKindDaily.kindsInRange],
+  )
+
+  const rangeSummary = useMemo(
+    () => buildAlertRangeSummary(apiAlerts, analysisRange.startDay, analysisRange.endDay),
+    [apiAlerts, analysisRange],
+  )
+
+  const machinePareto = useMemo(
+    () =>
+      buildMachineAlertPareto(
+        apiAlerts,
+        analysisRange.startDay,
+        analysisRange.endDay,
+        machineCodeById,
+      ),
+    [apiAlerts, analysisRange, machineCodeById],
+  )
+  const machineParetoConfig = useMemo(
+    () => buildAlertsByKindChartConfig(machinePareto.kindsInRange),
+    [machinePareto.kindsInRange],
+  )
+
+  const hourHeatmap = useMemo(
+    () => buildHourKindHeatmap(apiAlerts, analysisRange.startDay, analysisRange.endDay),
+    [apiAlerts, analysisRange],
+  )
+
+  const idleMinutesDaily = useMemo(
+    () => buildIdleMinutesByDay(apiAlerts, analysisRange.startDay, analysisRange.endDay),
+    [apiAlerts, analysisRange],
   )
 
   const unreadCount = alerts.filter((a) => !a.isRead).length
@@ -437,8 +524,11 @@ export default function AlertasClient() {
         const bUnread = !b.isRead ? 1 : 0
         if (aUnread !== bUnread) return bUnread - aUnread
 
-        if (severityRank[a.type] !== severityRank[b.type])
-          return severityRank[b.type] - severityRank[a.type]
+        // Gravedad REAL, no el bucket visual — antes un overtime_hours (siempre "critical" en
+        // el backend) podía ordenar por debajo de un idle "alto" porque el bucket los agrupaba
+        // distinto; con la gravedad cruda ya no pasa.
+        if (ALERT_SEVERITY_RANK[a.severity] !== ALERT_SEVERITY_RANK[b.severity])
+          return ALERT_SEVERITY_RANK[b.severity] - ALERT_SEVERITY_RANK[a.severity]
 
         return b.timestamp.getTime() - a.timestamp.getTime()
       }),
@@ -523,19 +613,24 @@ export default function AlertasClient() {
 
   const orphanUnitsForAlert = (alert: Alert | null): number => {
     if (!alert) return 0
+    const api = apiAlertsById.get(alert.id)
     if (isOperatorOrphanProductionAlert(alert)) {
-      const fromEvents = sumOrphanPendingForAlert(productionEvents, alert.id)
-      if (fromEvents > 0) return fromEvents
+      // Se confía en la suma real de eventos ORPHAN_PROD ligados a esta alerta — incluyendo un
+      // 0 real (ya atribuida) — nunca en el mensaje de texto, que NO se limpia al cerrar la
+      // alerta (antes un 0 real caía a un regex sobre el mensaje viejo y una alerta ya
+      // atribuida resucitaba con "Asignar" para las mismas piezas: bug reportado en M-016). Un
+      // episodio cerrado por límite de turno con piezas reales aún sin atribuir (quedan
+      // ligadas a la alerta cerrada, ver `closeOrphanEpisode`) se sigue detectando igual, porque
+      // la suma es sobre eventos reales, no sobre el status de la alerta.
+      return sumOrphanPendingForAlert(productionEvents, alert.id)
     }
     if (isPackagerOrphanProductionAlert(alert)) {
-      const api = apiAlertsById.get(alert.id)
-      const fromMessage = parsePendingUnitsFromAlertMessage(api?.message ?? alert.message)
-      if (fromMessage > 0) return fromMessage
+      // El acumulado de empacador no tiene un respaldo por evento — solo el mensaje. Una vez
+      // cerrada la alerta (atribuida, o descartada por cambio de día) no queda nada pendiente.
+      if (api && api.status !== "open") return 0
+      return parsePendingUnitsFromAlertMessage(api?.message ?? alert.message)
     }
-    const api = apiAlertsById.get(alert.id)
-    const msg = api?.message ?? alert.message ?? ""
-    const m = msg.match(/(\d+)\s*piezas/i)
-    return m ? Number(m[1]) : 0
+    return 0
   }
 
   const openAssign = (alert: Alert) => {
@@ -717,15 +812,14 @@ export default function AlertasClient() {
         </div>
 
         <Card>
-          <CardContent className="p-4">
-            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <CardContent className="space-y-4 p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h3 className="text-sm font-semibold text-foreground">Alertas por día</h3>
+                <h3 className="text-sm font-semibold text-foreground">Análisis de alertas</h3>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  Cantidad diaria apilada por tipo de alerta
                   {alertsByKindDaily.total > 0
-                    ? ` · ${alertsByKindDaily.total} en el rango`
-                    : ""}
+                    ? `${alertsByKindDaily.total} alertas en el rango`
+                    : "Sin alertas en el rango seleccionado"}
                 </p>
               </div>
               <Select
@@ -742,37 +836,187 @@ export default function AlertasClient() {
                 </SelectContent>
               </Select>
             </div>
-            {alertsByKindDaily.series.length === 0 ? (
-              <p className="py-10 text-center text-sm text-muted-foreground">
-                Sin alertas en el rango seleccionado.
-              </p>
-            ) : (
-              <ChartContainer
-                className="h-[280px] w-full aspect-auto"
-                config={alertsByKindChartConfig}
-              >
-                <BarChart data={alertsByKindDaily.series} margin={{ left: 8, right: 8 }}>
-                  <CartesianGrid vertical={false} />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
-                  <ChartTooltip content={<ChartTooltipContent />} />
-                  <ChartLegend content={<ChartLegendContent />} />
-                  {alertsByKindDaily.kindsInRange.map((kind, idx) => (
-                    <Bar
-                      key={kind}
-                      dataKey={kind}
-                      stackId="alerts"
-                      fill={`var(--color-${kind})`}
-                      radius={
-                        idx === alertsByKindDaily.kindsInRange.length - 1
-                          ? [4, 4, 0, 0]
-                          : [0, 0, 0, 0]
-                      }
-                    />
-                  ))}
-                </BarChart>
-              </ChartContainer>
-            )}
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <ListOrdered className="h-3.5 w-3.5" />
+                  <span className="text-[10px] font-medium uppercase tracking-wide">
+                    En el rango
+                  </span>
+                </div>
+                <p className="mt-1 text-xl font-semibold text-foreground">
+                  {rangeSummary.total}
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Timer className="h-3.5 w-3.5" />
+                  <span className="text-[10px] font-medium uppercase tracking-wide">
+                    Mediana a resolución
+                  </span>
+                </div>
+                <p className="mt-1 text-xl font-semibold text-foreground">
+                  {rangeSummary.medianResolutionMinutes != null
+                    ? formatMinutesShort(rangeSummary.medianResolutionMinutes)
+                    : "—"}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {rangeSummary.closedCount} cerradas en el rango
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Gauge className="h-3.5 w-3.5" />
+                  <span className="text-[10px] font-medium uppercase tracking-wide">
+                    Backlog activo
+                  </span>
+                </div>
+                <p className="mt-1 text-xl font-semibold text-foreground">
+                  {rangeSummary.activeBacklogCount}
+                </p>
+                <p className="text-[10px] text-muted-foreground">ahora mismo, no solo el rango</p>
+              </div>
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  <span className="text-[10px] font-medium uppercase tracking-wide">
+                    Más vieja del backlog
+                  </span>
+                </div>
+                <p className="mt-1 text-xl font-semibold text-foreground">
+                  {rangeSummary.oldestBacklogAgeMinutes != null
+                    ? formatMinutesShort(rangeSummary.oldestBacklogAgeMinutes)
+                    : "—"}
+                </p>
+              </div>
+            </div>
+
+            <Tabs value={analysisView} onValueChange={setAnalysisView}>
+              <TabsList>
+                <TabsTrigger value="daily">Por día</TabsTrigger>
+                <TabsTrigger value="machines">Por máquina</TabsTrigger>
+                <TabsTrigger value="hours">Por hora</TabsTrigger>
+                <TabsTrigger value="idle-minutes">Minutos de paro</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="daily" className="mt-3">
+                {alertsByKindDaily.series.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-muted-foreground">
+                    Sin alertas en el rango seleccionado.
+                  </p>
+                ) : (
+                  <ChartContainer
+                    className="h-[280px] w-full aspect-auto"
+                    config={alertsByKindChartConfig}
+                  >
+                    <BarChart data={alertsByKindDaily.series} margin={{ left: 8, right: 8 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <ChartLegend content={<ChartLegendContent />} />
+                      {alertsByKindDaily.kindsInRange.map((kind, idx) => (
+                        <Bar
+                          key={kind}
+                          dataKey={kind}
+                          stackId="alerts"
+                          fill={`var(--color-${kind})`}
+                          radius={
+                            idx === alertsByKindDaily.kindsInRange.length - 1
+                              ? [4, 4, 0, 0]
+                              : [0, 0, 0, 0]
+                          }
+                        />
+                      ))}
+                    </BarChart>
+                  </ChartContainer>
+                )}
+              </TabsContent>
+
+              <TabsContent value="machines" className="mt-3">
+                {machinePareto.rows.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-muted-foreground">
+                    Sin alertas con máquina asociada en el rango seleccionado.
+                  </p>
+                ) : (
+                  <ChartContainer
+                    className="h-[280px] w-full aspect-auto"
+                    config={machineParetoConfig}
+                  >
+                    <BarChart
+                      data={machinePareto.rows}
+                      layout="vertical"
+                      margin={{ left: 8, right: 8 }}
+                    >
+                      <CartesianGrid horizontal={false} />
+                      <XAxis type="number" allowDecimals={false} tick={{ fontSize: 12 }} />
+                      <YAxis
+                        type="category"
+                        dataKey="machineCode"
+                        tick={{ fontSize: 12 }}
+                        width={64}
+                      />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <ChartLegend content={<ChartLegendContent />} />
+                      {machinePareto.kindsInRange.map((kind, idx) => (
+                        <Bar
+                          key={kind}
+                          dataKey={kind}
+                          stackId="alerts"
+                          fill={`var(--color-${kind})`}
+                          radius={
+                            idx === machinePareto.kindsInRange.length - 1
+                              ? [0, 4, 4, 0]
+                              : [0, 0, 0, 0]
+                          }
+                        />
+                      ))}
+                    </BarChart>
+                  </ChartContainer>
+                )}
+              </TabsContent>
+
+              <TabsContent value="hours" className="mt-3">
+                {hourHeatmap.kindsInRange.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-muted-foreground">
+                    Sin alertas en el rango seleccionado.
+                  </p>
+                ) : (
+                  <AlertHourHeatmap heatmap={hourHeatmap} />
+                )}
+              </TabsContent>
+
+              <TabsContent value="idle-minutes" className="mt-3">
+                {idleMinutesDaily.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-muted-foreground">
+                    Sin paros (idle) cerrados en el rango seleccionado.
+                  </p>
+                ) : (
+                  <ChartContainer
+                    className="h-[240px] w-full aspect-auto"
+                    config={{
+                      minutes: { label: "Minutos de paro", color: ALERT_KIND_CHART_COLORS.idle },
+                    }}
+                  >
+                    <AreaChart data={idleMinutesDaily} margin={{ left: 8, right: 8 }}>
+                      <CartesianGrid vertical={false} />
+                      <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 12 }} allowDecimals={false} />
+                      <ChartTooltip content={<ChartTooltipContent />} />
+                      <Area
+                        type="monotone"
+                        dataKey="minutes"
+                        stroke="var(--color-minutes)"
+                        fill="var(--color-minutes)"
+                        fillOpacity={0.15}
+                        strokeWidth={2}
+                      />
+                    </AreaChart>
+                  </ChartContainer>
+                )}
+              </TabsContent>
+            </Tabs>
           </CardContent>
         </Card>
 
@@ -906,6 +1150,28 @@ export default function AlertasClient() {
                 </Select>
               </div>
             </div>
+
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-border pt-3 text-xs text-muted-foreground">
+              <span className="font-medium">Gravedad:</span>
+              {(Object.keys(ALERT_SEVERITY_STYLES) as Array<keyof typeof ALERT_SEVERITY_STYLES>).map(
+                (sev) => {
+                  const style = ALERT_SEVERITY_STYLES[sev]
+                  return (
+                    <span
+                      key={sev}
+                      className={cn(
+                        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 font-medium",
+                        style.chipBg,
+                        style.chipText,
+                      )}
+                    >
+                      <span className={cn("h-1.5 w-1.5 rounded-full", style.dot)} />
+                      {style.label}
+                    </span>
+                  )
+                },
+              )}
+            </div>
           </CardHeader>
           <CardContent className="px-0 pb-0 sm:px-0">
             {alertsLoading ? (
@@ -938,14 +1204,14 @@ export default function AlertasClient() {
                       <TableHead className="w-[88px]">Turno</TableHead>
                       <TableHead className="w-[100px]">Máquina</TableHead>
                       <TableHead className="w-[150px]">Causa</TableHead>
-                      <TableHead>Detalle</TableHead>
+                      <TableHead className="w-[260px]">Detalle</TableHead>
                       <TableHead className="w-[1%] whitespace-nowrap text-right">Acciones</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {sortedAlerts.map((alert) => {
-                      const TypeIcon = typeIcons[alert.type]
-                      const colors = typeColors[alert.type]
+                      const KindIcon = ALERT_KIND_ICONS[alert.kind]
+                      const sevStyle = ALERT_SEVERITY_STYLES[alert.severity]
                       const apiAlert = apiAlertsById.get(alert.id)
                       const noteCtx = apiAlert
                         ? buildDowntimeNoteContextFromAlert(apiAlert)
@@ -965,24 +1231,24 @@ export default function AlertasClient() {
                       const machineCode = alert.machineId
                         ? (machineCodeById.get(alert.machineId) ?? "—")
                         : "—"
+                      const detailRows = buildAlertDetailRows(alert.kind, alert.metadata)
 
                       return (
                         <TableRow
                           key={alert.id}
                           className={cn(
                             "align-top",
-                            !alert.isRead && colors.bg,
+                            !alert.isRead && sevStyle.rowTint,
                           )}
                         >
-                          <TableCell className="px-3 py-2">
+                          <TableCell
+                            className={cn("border-l-4 py-2 pl-2 pr-3", sevStyle.border)}
+                          >
                             <div
-                              className={cn(
-                                "flex h-8 w-8 items-center justify-center rounded-full",
-                                colors.bg,
-                              )}
-                              title={alert.type}
+                              className="flex h-8 w-8 items-center justify-center rounded-full bg-muted"
+                              title={ALERT_KIND_LABELS[alert.kind]}
                             >
-                              <TypeIcon className={cn("h-4 w-4", colors.text)} />
+                              <KindIcon className="h-4 w-4 text-foreground/70" />
                             </div>
                           </TableCell>
                           <TableCell className="py-2 tabular-nums text-xs">
@@ -1018,13 +1284,23 @@ export default function AlertasClient() {
                             <span className="text-xs font-medium text-foreground">
                               {ALERT_KIND_LABELS[alert.kind]}
                             </span>
-                            {alert.actionRequired && !alert.isRead && (
-                              <div className="mt-1">
-                                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                            <div className="mt-1 flex flex-wrap items-center gap-1">
+                              <span
+                                className={cn(
+                                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                                  sevStyle.chipBg,
+                                  sevStyle.chipText,
+                                )}
+                              >
+                                <span className={cn("h-1.5 w-1.5 rounded-full", sevStyle.dot)} />
+                                {sevStyle.label}
+                              </span>
+                              {alert.actionRequired && !alert.isRead && (
+                                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
                                   Acción
                                 </span>
-                              </div>
-                            )}
+                              )}
+                            </div>
                           </TableCell>
                           <TableCell className="py-2">
                             <button
@@ -1048,27 +1324,60 @@ export default function AlertasClient() {
                                   >
                                     {alert.title}
                                   </p>
-                                  {alert.message ? (
-                                    <p
-                                      className={cn(
-                                        "mt-0.5 text-xs text-muted-foreground",
-                                        !expanded && "line-clamp-1",
+                                  {expanded && (
+                                    <>
+                                      {alert.message ? (
+                                        <p className="mt-0.5 text-xs text-muted-foreground">
+                                          {alert.message}
+                                        </p>
+                                      ) : null}
+                                      {detailRows.length > 0 && (
+                                        <dl className="mt-1.5 space-y-0.5 rounded border border-border bg-background px-2 py-1.5">
+                                          {detailRows.map((row, i) => (
+                                            <div
+                                              key={`${row.label}-${i}`}
+                                              className="flex items-baseline gap-1.5 text-xs"
+                                            >
+                                              <dt className="shrink-0 font-medium text-foreground">
+                                                {row.label}:
+                                              </dt>
+                                              <dd className="min-w-0 text-muted-foreground">
+                                                {row.value}
+                                              </dd>
+                                            </div>
+                                          ))}
+                                        </dl>
                                       )}
-                                    >
-                                      {alert.message}
-                                    </p>
-                                  ) : null}
-                                  {expanded && alertNote ? (
-                                    <p className="mt-1.5 rounded border border-border bg-muted/50 px-2 py-1 text-xs">
-                                      <span className="font-medium text-foreground">Nota:</span>{" "}
-                                      {alertNote}
-                                    </p>
-                                  ) : null}
-                                  {expanded ? (
-                                    <p className="mt-1 text-[10px] text-muted-foreground">
-                                      {formatDateTime(alert.timestamp)} · clic para comprimir
-                                    </p>
-                                  ) : null}
+                                      <div className="mt-1.5 flex items-start gap-1.5 rounded bg-muted/60 px-2 py-1.5">
+                                        <Info className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+                                        <p className="text-xs text-muted-foreground">
+                                          {ALERT_KIND_EXPLAINERS[alert.kind]}
+                                        </p>
+                                      </div>
+                                      {alertNote ? (
+                                        <p className="mt-1.5 rounded border border-border bg-muted/50 px-2 py-1 text-xs">
+                                          <span className="font-medium text-foreground">Nota:</span>{" "}
+                                          {alertNote}
+                                        </p>
+                                      ) : null}
+                                      <p className="mt-1 text-[10px] text-muted-foreground">
+                                        {formatDateTime(alert.timestamp)}
+                                      </p>
+                                    </>
+                                  )}
+                                  <p className="mt-1 flex items-center gap-0.5 text-[10px] font-medium text-primary">
+                                    {expanded ? (
+                                      <>
+                                        <ChevronUp className="h-3 w-3" />
+                                        Menos info
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ChevronDown className="h-3 w-3" />
+                                        Más info
+                                      </>
+                                    )}
+                                  </p>
                                 </div>
                               </div>
                             </button>

@@ -719,6 +719,9 @@ export interface ApiAlert {
   type: ApiAlertKind | null;
   title: string;
   message: string | null;
+  /** Detalle estructurado por causa (check-in, límites, quién quedó asignado, etc.), separado
+   * del mensaje de texto libre — forma varía según `type`, ver `buildAlertDetailRows`. */
+  metadata: Record<string, unknown> | null;
   severity: ApiAlertSeverity;
   status: ApiAlertStatus;
   createdAt: string;
@@ -735,8 +738,28 @@ export interface UpdateAlertPayload {
   machineId?: string | null;
 }
 
-export async function getAlerts(accessToken: string): Promise<ApiAlert[]> {
-  const res = await fetchWithAuth("/alert", { accessToken });
+export async function getAlerts(
+  accessToken: string,
+  params: {
+    status?: string | string[];
+    type?: string;
+    machineId?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+  } = {},
+): Promise<ApiAlert[]> {
+  const q = new URLSearchParams();
+  if (params.status) {
+    q.set("status", Array.isArray(params.status) ? params.status.join(",") : params.status);
+  }
+  if (params.type) q.set("type", params.type);
+  if (params.machineId) q.set("machineId", params.machineId);
+  if (params.from) q.set("from", params.from);
+  if (params.to) q.set("to", params.to);
+  if (params.limit != null) q.set("limit", String(params.limit));
+  const qs = q.toString();
+  const res = await fetchWithAuth(`/alert${qs ? `?${qs}` : ""}`, { accessToken });
   return parseResponse<ApiAlert[]>(res);
 }
 

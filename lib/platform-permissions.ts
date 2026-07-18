@@ -11,6 +11,7 @@ export type PlatformModule =
   | "metricas_mantenimiento"
   | "metas"
   | "alertas"
+  | "cronologia"
   | "gestion_usuarios"
   | "empleados_gestionar"
   | "empleados_asignar_tarjetas"
@@ -109,6 +110,7 @@ export const MODULE_ACCESS: Record<PlatformModule, readonly UserRole[]> = {
     "director",
     "droven",
   ],
+  cronologia: ["jefe_produccion", "gerente_operaciones", "director", "droven"],
   gestion_usuarios: ["droven"],
   /** Consulta del directorio de empleados. La escritura se controla con employees.write. */
   empleados_gestionar: [

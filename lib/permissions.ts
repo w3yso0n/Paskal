@@ -94,9 +94,12 @@ export function hasPermission(
   permission: Permission,
 ): boolean {
   if (!user) return false
-  // Borrar todas las alertas: solo Droven / admin de plataforma.
+  // Borrar todas las alertas: exclusivo del equipo de Droven. Se checa el rol directamente
+  // (no `isPlatformAdmin`, que en teoría podría marcarse en una cuenta con otro rol, p. ej.
+  // por una edición manual desde /datos) para que esta acción irreversible dependa únicamente
+  // de la señal inequívoca de "es Droven".
   if (permission === "alerts.clear") {
-    return user.isPlatformAdmin === true || user.role === "droven"
+    return user.role === "droven"
   }
   // Matriz de permisos por rol: solo Droven / admin de plataforma.
   if (permission === "roles.matrix") {
@@ -142,6 +145,7 @@ export const ROUTE_MODULES: Record<string, PlatformModule[]> = {
   ],
   "/metas": ["metas"],
   "/alertas": ["alertas"],
+  "/cronologia": ["cronologia"],
   "/administracion/usuarios": ["gestion_usuarios"],
   "/empleados": [...EMPLOYEE_MODULES, "metricas_asistencia_rotacion_bono"],
   "/administracion/gestion-skus": ["skus"],

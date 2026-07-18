@@ -659,8 +659,8 @@ export default function ProductionFloorPage() {
         return
       }
 
-      // Persistir a backend (machines.currentSku + c?digos). UI usa nombres, aqu? convertimos a employeeCode.
-      const updates = machineData.map(async (m) => {
+      // Persistir a backend (machines.currentSku + códigos). UI usa nombres, aquí convertimos a employeeCode.
+      const items = machineData.map((m) => {
         const operatorCode = m.operator ? employeeCodeByName.get(m.operator) ?? null : null
         const operator2Code = m.operator2 ? employeeCodeByName.get(m.operator2) ?? null : null
         const packer1Code = m.packers?.[0] ? employeeCodeByName.get(m.packers[0]) ?? null : null
@@ -678,26 +678,51 @@ export default function ProductionFloorPage() {
           packager3Code: packer3Code,
           packager4Code: packer4Code,
         } as const
-        const saved = await updateMachine(token, m.id, payload)
-        return { machineId: m.id, machineName: m.name, payload, saved }
+        return { machineId: m.id, machineName: m.name, payload }
       })
 
       try {
-        const settled = await Promise.allSettled(updates)
-        const rejected = settled.filter((r) => r.status === "rejected")
-        if (rejected.length > 0) {
-          const first = rejected[0] as PromiseRejectedResult
+        // Primera pasada: todas las máquinas en paralelo (rápido en el caso normal, sin conflictos).
+        const firstPass = await Promise.allSettled(
+          items.map((it) => updateMachine(token, it.machineId, it.payload)),
+        )
+
+        // Si mueves a un operador de una máquina a otra en el MISMO guardado, dos PATCH
+        // concurrentes pueden pisarse: la validación de "operador ya asignado" de la máquina
+        // destino corre antes de que el check-out de la máquina origen termine de comitearse
+        // en la BD, y rechaza algo que en realidad es válido (bug reportado: banner rojo de
+        // error aunque el cambio sí terminaba aplicándose). Reintento SECUENCIAL, una sola vez,
+        // solo de las que fallaron, después de que TODAS las demás ya asentaron — para entonces
+        // cualquier carrera transitoria ya se resolvió. Si el conflicto es real, el reintento
+        // también falla y sí se reporta.
+        const results: Array<{ machineId: string; machineName: string; payload: any; saved: ApiMachine }> = []
+        const failures: Array<{ machineName: string; reason: unknown }> = []
+        for (let i = 0; i < items.length; i++) {
+          const r = firstPass[i]
+          if (r.status === "fulfilled") {
+            results.push({ ...items[i], saved: r.value })
+            continue
+          }
+          try {
+            const saved = await updateMachine(token, items[i].machineId, items[i].payload)
+            results.push({ ...items[i], saved })
+          } catch (retryErr) {
+            failures.push({ machineName: items[i].machineName, reason: retryErr })
+          }
+        }
+
+        if (failures.length > 0) {
+          const first = failures[0]
+          const reason = first.reason as { message?: unknown } | undefined
           toast.error("No se pudo guardar en el backend.")
-          setError(first.reason?.message ? String(first.reason.message) : "Error al guardar en el backend.")
+          setError(
+            typeof reason?.message === "string" ? reason.message : "Error al guardar en el backend.",
+          )
           setHasUnsavedChanges(true)
           return
         }
 
-        const results = (settled as PromiseFulfilledResult<
-          { machineId: string; machineName: string; payload: any; saved: ApiMachine }
-        >[]).map((r) => r.value)
-
-        // No mostrar "guardado" si el backend regres? valores distintos a lo enviado.
+        // No mostrar "guardado" si el backend regresó valores distintos a lo enviado.
         const mismatches: Array<{ name: string; field: string; expected: string | null; got: string | null }> = []
         for (const r of results) {
           const expectedSku = r.payload.currentSku ?? null
@@ -712,10 +737,17 @@ export default function ProductionFloorPage() {
             mismatches.push({ name: r.machineName, field: "operatorCode", expected: expectedOp, got: gotOp })
           }
 
-          const expectedOp2 = r.payload.operator2Code ?? null
-          const gotOp2 = r.saved.operator2Code ?? null
-          if (expectedOp2 !== gotOp2) {
-            mismatches.push({ name: r.machineName, field: "operator2Code", expected: expectedOp2, got: gotOp2 })
+          // Sin operador titular no puede haber "2º operador" (el rol depende de un titular) —
+          // el backend lo limpia por diseño, así que ese campo específico no se compara en ese
+          // caso. Los empacadores SÍ deben seguir asignados sin operador (se puede quitar al
+          // operador desde plataforma dejándolos trabajando), así que esos campos se comparan
+          // siempre: si no coinciden, es una falla real de persistencia.
+          if (expectedOp != null) {
+            const expectedOp2 = r.payload.operator2Code ?? null
+            const gotOp2 = r.saved.operator2Code ?? null
+            if (expectedOp2 !== gotOp2) {
+              mismatches.push({ name: r.machineName, field: "operator2Code", expected: expectedOp2, got: gotOp2 })
+            }
           }
 
           const expectedP1 = r.payload.packager1Code ?? null
@@ -745,9 +777,9 @@ export default function ProductionFloorPage() {
 
         if (mismatches.length > 0) {
           const first = mismatches[0]
-          toast.error("No se guard? en la base de datos. Cambios no persistidos.")
+          toast.error("No se guardó en la base de datos. Cambios no persistidos.")
           setError(
-            `El backend no persisti? los cambios. Ejemplo: "${first.name}" ${first.field} esperado=${String(first.expected)} recibido=${String(first.got)}.`,
+            `El backend no persistió los cambios. Ejemplo: "${first.name}" ${first.field} esperado=${String(first.expected)} recibido=${String(first.got)}.`,
           )
           setHasUnsavedChanges(true)
           return

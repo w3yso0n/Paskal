@@ -2,12 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { Alert } from "@/lib/types"
-import {
-  deleteAlert,
-  getAlerts,
-  getProductionEvents,
-  updateAlert,
-} from "@/lib/api"
+import { deleteAlert, getAlerts, updateAlert } from "@/lib/api"
 import { ALERTS_POLL_MS, mapApiAlertToUi } from "@/lib/alert-ui"
 import { useAuth } from "@/contexts/auth-context"
 import { hasModuleAccess } from "@/lib/permissions"
@@ -32,11 +27,12 @@ export function useAlertsNotifications() {
         setAlerts([])
         return
       }
-      const [apiAlerts, events] = await Promise.all([
-        getAlerts(token),
-        getProductionEvents(token, { limit: 1500 }),
-      ])
-      const mapped = apiAlerts.map((a) => mapApiAlertToUi(a, events))
+      // Solo activas: la campana es para "qué sigue pendiente", no historial. Antes traía TODAS
+      // las alertas (con su historial completo) más 1500 eventos de producción en cada página de
+      // la app cada 30 s, solo para calcular piezas huérfanas pendientes — ese total ya viene en
+      // el mensaje de la alerta (`mapApiAlertToUi` cae a parsearlo cuando no hay eventos a mano).
+      const apiAlerts = await getAlerts(token, { status: ["open", "acknowledged"] })
+      const mapped = apiAlerts.map((a) => mapApiAlertToUi(a, []))
       mapped.sort((a, b) => {
         const aPri = a.actionRequired && !a.isRead ? 1 : 0
         const bPri = b.actionRequired && !b.isRead ? 1 : 0

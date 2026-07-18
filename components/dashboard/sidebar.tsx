@@ -20,6 +20,7 @@ import {
   Scale,
   Tags,
   Database,
+  History,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
@@ -55,6 +56,7 @@ const productionItems: MenuItem[] = [
   },
   { icon: Target, label: "Metas", href: "/metas", modules: ["metas"] },
   { icon: Bell, label: "Alertas", href: "/alertas", modules: ["alertas"] },
+  { icon: History, label: "Cronología", href: "/cronologia", modules: ["cronologia"] },
 ]
 
 const adminItems: MenuItem[] = [
