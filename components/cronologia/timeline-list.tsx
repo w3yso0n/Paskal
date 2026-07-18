@@ -114,9 +114,19 @@ export function TimelineList({
                     {ALERT_SEVERITY_STYLES[item.severity].label}
                   </Badge>
                 ) : null}
+                {item.resolvedBy ? (
+                  <Badge className="border-transparent bg-green-100 text-[10px] text-green-700 dark:bg-green-900/40 dark:text-green-300">
+                    resuelta · {item.resolvedBy === "auto" ? "automática" : "por supervisor"}
+                  </Badge>
+                ) : null}
               </div>
               {item.detail ? (
                 <p className="mt-0.5 text-xs text-muted-foreground">{item.detail}</p>
+              ) : null}
+              {item.resolvesAlertId ? (
+                <p className="mt-0.5 text-xs text-emerald-600 dark:text-emerald-400">
+                  Resuelve la alerta de producción sin empacador
+                </p>
               ) : null}
               {item.kind === "alert" ? <AlertDetail item={item} /> : null}
               {item.attribution && onAttribute ? (

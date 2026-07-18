@@ -87,6 +87,10 @@ export interface TimelineItem {
   countsInTotal?: boolean
   /** Si trae valor, se puede atribuir estas piezas desde la cronología. */
   attribution?: TimelineAttribution
+  /** Este item (volcado de atribución) resuelve la alerta con este id. */
+  resolvesAlertId?: string
+  /** Esta alerta fue resuelta por una atribución ('auto' | 'manual'). */
+  resolvedBy?: "auto" | "manual"
   sourceEventIds: string[]
 }
 
@@ -498,8 +502,12 @@ interface ProdPiece {
   attributed: boolean
   /** Volcado de empacadora / ajuste atribuido — no es pieza del contador de la máquina. */
   isDump: boolean
-  /** Alerta (no_checkin) a la que se ligan las piezas huérfanas pendientes. */
+  /** Alerta (no_checkin / no_packager) a la que se ligan/resuelven las piezas. */
   orphanAlertId: string | null
+  /** 'auto' (dispositivo al check-in de empacadora) | 'manual' (supervisor en plataforma). */
+  attributionMode: string | null
+  /** 'orphan' | 'packager_orphan' — de qué tipo de huérfana proviene el volcado. */
+  attributedFrom: string | null
 }
 
 function prodPieceFromEvent(e: ApiProductionEvent): ProdPiece | null {
@@ -527,6 +535,8 @@ function prodPieceFromEvent(e: ApiProductionEvent): ProdPiece | null {
     attributed: payload["assignmentStatus"] === "assigned",
     isDump: attr === "orphan" || attr === "packager_orphan",
     orphanAlertId: payloadStr(payload, "orphanAlertId"),
+    attributionMode: payloadStr(payload, "attributionMode"),
+    attributedFrom: attr,
   }
 }
 
@@ -622,6 +632,22 @@ export function groupProductionSpans(
   for (const piece of pieces) {
     // Volcados/ajustes atribuidos: item puntual aparte, fuera del contador de la máquina.
     if (piece.isDump) {
+      const isPackager = piece.attributedFrom === "packager_orphan"
+      const what = isPackager ? "Producción de empaque" : "Producción"
+      // Auto = el dispositivo al hacer check-in la empacadora; manual = supervisor en plataforma.
+      // Eventos viejos (sin attributionMode) caen a una etiqueta neutra.
+      const title =
+        piece.attributionMode === "auto"
+          ? `${what} atribuida automáticamente: ${formatUnits(piece.units)} pzas`
+          : piece.attributionMode === "manual"
+            ? `${what} atribuida por supervisor: ${formatUnits(piece.units)} pzas`
+            : `${what} atribuida: ${formatUnits(piece.units)} pzas`
+      const modeBadge: TimelineBadge =
+        piece.attributionMode === "auto"
+          ? { label: "automática", tone: "info" }
+          : piece.attributionMode === "manual"
+            ? { label: "por supervisor", tone: "info" }
+            : { label: "volcado atribuido", tone: "info" }
       items.push({
         id: `tl-span-${piece.eventId}`,
         kind: "orphan_span",
@@ -629,11 +655,12 @@ export function groupProductionSpans(
         endAt: piece.end.getTime() > piece.start.getTime() ? piece.end : undefined,
         machineId: piece.machineId,
         machineCode: machineCodeFor(ctx, piece.machineId),
-        title: `Producción atribuida manualmente: ${formatUnits(piece.units)} pzas`,
+        title,
         detail: piece.sku ? `SKU ${piece.sku}` : undefined,
-        badges: [{ label: "volcado atribuido", tone: "info" }],
+        badges: [modeBadge],
         units: piece.units,
         countsInTotal: false,
+        resolvesAlertId: piece.orphanAlertId ?? undefined,
         sourceEventIds: [piece.eventId],
       })
       continue
@@ -862,6 +889,14 @@ export function buildTimeline(args: {
   const overlapsMaintenance = (from: number, to: number) =>
     maint.some((m) => from < m.to && to > m.from)
 
+  // A8: alertas resueltas por una atribución (el volcado liga con su alerta vía orphanAlertId).
+  const resolvedByAttribution = new Map<string, "auto" | "manual">()
+  for (const s of spanItems) {
+    if (!s.resolvesAlertId) continue
+    const mode = s.badges?.[0]?.label === "automática" ? "auto" : "manual"
+    resolvedByAttribution.set(s.resolvesAlertId, mode)
+  }
+
   const alertItems = relevantAlerts
     .map((a) => normalizeAlert(a, ctx))
     .filter((i): i is TimelineItem => i !== null)
@@ -873,6 +908,10 @@ export function buildTimeline(args: {
         if (r && overlapsMaintenance(r.from.getTime(), (r.to ?? i.at).getTime())) return false
       }
       return true
+    })
+    .map((i) => {
+      const resolved = resolvedByAttribution.get(i.sourceEventIds[0])
+      return resolved ? { ...i, resolvedBy: resolved } : i
     })
 
   const items = [...plainItems, ...spanItems, ...alertItems].sort(
