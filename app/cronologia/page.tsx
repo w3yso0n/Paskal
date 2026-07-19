@@ -24,7 +24,6 @@ import {
   computeCronologiaWindow,
   personCodeSet,
   type CronologiaMode,
-  type CronologiaShift,
   type TimelineItem,
   formatUnits,
 } from "@/lib/cronologia"
@@ -33,7 +32,6 @@ import { TimelineBand } from "@/components/cronologia/timeline-band"
 import { TimelineList } from "@/components/cronologia/timeline-list"
 import { PLANT_TIMEZONE } from "@/lib/tablero-operator-goal"
 import { getPartsInTimeZone } from "@/lib/shift-timezone"
-import { classifyProductionTimestamp, SHIFT_SCHEDULE } from "@/lib/shift-schedule"
 import { ALERTS_POLL_MS } from "@/lib/alert-ui"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -66,10 +64,6 @@ function todayPlantIso(): string {
   return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`
 }
 
-function currentShiftFilter(): CronologiaShift {
-  return classifyProductionTimestamp(new Date().toISOString()).shift ?? "all"
-}
-
 export default function CronologiaPage() {
   const { getAccessToken } = useAuth()
 
@@ -89,7 +83,6 @@ export default function CronologiaPage() {
   const [machineId, setMachineId] = useState("")
   const [personCode, setPersonCode] = useState("")
   const [dateIso, setDateIso] = useState(todayPlantIso)
-  const [shiftFilter, setShiftFilter] = useState<CronologiaShift>(currentShiftFilter)
 
   // Datos del timeline
   const [events, setEvents] = useState<ApiProductionEvent[] | null>(null)
@@ -126,14 +119,9 @@ export default function CronologiaPage() {
     }
   }, [getAccessToken])
 
-  // Por máquina no tiene sentido el turno (una máquina trabaja el día entero): día completo.
-  // El selector de turno solo aplica al ver por operador.
-  const effectiveShift: CronologiaShift = mode === "machine" ? "all" : shiftFilter
-
-  const window_ = useMemo(
-    () => computeCronologiaWindow(dateIso, effectiveShift),
-    [dateIso, effectiveShift],
-  )
+  // Siempre día completo: la cronología cuenta la historia entera — de la máquina en su día, o
+  // del operador en todo aquello en lo que estuvo involucrado sin importar la hora.
+  const window_ = useMemo(() => computeCronologiaWindow(dateIso, "all"), [dateIso])
 
   const loadTimeline = useCallback(
     async (silent = false) => {
@@ -202,6 +190,7 @@ export default function CronologiaPage() {
       alerts,
       mode,
       personCodes: selectedEmployee ? personCodeSet(selectedEmployee) : undefined,
+      personName: selectedEmployee?.fullName,
       ctx,
       window: window_ ? { bandStart: window_.bandStart, bandEnd: window_.bandEnd } : undefined,
     })
@@ -217,10 +206,12 @@ export default function CronologiaPage() {
     [machines],
   )
 
+  // Solo operadoras (rol primordial operador, o empaque cubriendo como operadora): la
+  // cronología por persona cuenta la historia de quien OPERA la máquina.
   const personOptions = useMemo<TextAutocompleteOption[]>(
     () =>
       employees
-        .filter((e) => e.employeeCode && e.status !== "terminated")
+        .filter((e) => e.employeeCode && isFloorOperatorCandidate(e))
         .sort((a, b) => a.fullName.localeCompare(b.fullName, "es-MX"))
         .map((e) => ({
           value: e.employeeCode as string,
@@ -370,7 +361,7 @@ export default function CronologiaPage() {
                 </div>
               ) : (
                 <div className="space-y-1.5">
-                  <Label htmlFor="crono-person">Operador / empacadora</Label>
+                  <Label htmlFor="crono-person">Operadora</Label>
                   <TextAutocomplete
                     id="crono-person"
                     value={personCode}
@@ -397,30 +388,6 @@ export default function CronologiaPage() {
                 />
               </div>
 
-              {/* El turno solo aplica al ver por operador; por máquina siempre es el día completo. */}
-              {mode === "operator" ? (
-                <div className="space-y-1.5">
-                  <Label>Turno</Label>
-                  <ToggleGroup
-                    type="single"
-                    value={shiftFilter}
-                    onValueChange={(v) => {
-                      if (v === "all" || v === "matutino" || v === "vespertino") setShiftFilter(v)
-                    }}
-                    className="justify-start gap-2"
-                  >
-                    <ToggleGroupItem value="all" size="sm" className="rounded-md px-3 shadow-none">
-                      Todos
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value="matutino" size="sm" className="rounded-md px-3 shadow-none">
-                      Matutino
-                    </ToggleGroupItem>
-                    <ToggleGroupItem value="vespertino" size="sm" className="rounded-md px-3 shadow-none">
-                      Vespertino
-                    </ToggleGroupItem>
-                  </ToggleGroup>
-                </div>
-              ) : null}
             </CardContent>
           </Card>
 
@@ -446,12 +413,7 @@ export default function CronologiaPage() {
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-base">
-                  <span>
-                    {subjectLabel ?? "Cronología"} ·{" "}
-                    {effectiveShift === "all"
-                      ? "día completo"
-                      : `turno ${SHIFT_SCHEDULE[effectiveShift].label.toLowerCase()}`}
-                  </span>
+                  <span>{subjectLabel ?? "Cronología"} · día completo</span>
                   <span className="text-sm font-normal text-muted-foreground">
                     {result.items.length} sucesos · {result.alertCount} alertas · Total del día:{" "}
                     {formatUnits(result.totalUnits)} pzas

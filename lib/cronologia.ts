@@ -568,10 +568,20 @@ export function groupProductionSpans(
   ctx: CronoContext,
   gapMinutes = SPAN_GAP_MINUTES,
 ): TimelineItem[] {
-  const pieces = prodEvents
+  const allPieces = prodEvents
     .map(prodPieceFromEvent)
     .filter((p): p is ProdPiece => p !== null)
     .sort((a, b) => a.start.getTime() - b.start.getTime())
+
+  // Agrupar POR MÁQUINA: con 2+ máquinas intercaladas (modo operador) una sola pasada cerraba
+  // el tramo en cada alternancia y fragmentaba la producción en pedazos por hora.
+  const piecesByMachine = new Map<string, ProdPiece[]>()
+  for (const p of allPieces) {
+    const key = p.machineId ?? "∅"
+    const list = piecesByMachine.get(key)
+    if (list) list.push(p)
+    else piecesByMachine.set(key, [p])
+  }
 
   const sortedBreakers = breakers
     .filter((b) => BREAKER_KINDS.has(b.kind))
@@ -636,6 +646,7 @@ export function groupProductionSpans(
     })
   }
 
+  for (const pieces of piecesByMachine.values())
   for (const piece of pieces) {
     // Volcados/ajustes atribuidos: item puntual aparte, fuera del contador de la máquina.
     if (piece.isDump) {
@@ -754,42 +765,90 @@ function secondsBetween(a: ApiProductionEvent, b: ApiProductionEvent): number {
   return Math.abs(new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()) / 1000
 }
 
+/** Segundos máximos entre dos CHECK_IN idénticos (misma persona/máquina, sin salida entre
+ * medio) para tratarlos como registro duplicado (p. ej. doble guardado desde plataforma). */
+const DUPLICATE_TAP_SECONDS = 120
+
+/** ¿El evento demuestra que el DISPOSITIVO está vivo? (para cerrar intervalos OFFLINE y
+ * deduplicar OFFLINEs). Los eventos de plataforma no cuentan: los genera el backend. */
+function isDeviceProofEvent(e: ApiProductionEvent): boolean {
+  const t = evType(e)
+  if (t === "BOOT" || t === "PROD" || t === "ORPHAN_PROD" || t === "COUNTER_RESET") return true
+  if (t === "CHECK_IN" || t === "CHECK_OUT") {
+    return payloadStr(e.payload ?? {}, "source") === "nfc"
+  }
+  return false
+}
+
 /**
  * Quita el ruido de la doble lectura del lector NFC y del doble OFFLINE, SOLO para la vista
  * (el dato crudo sigue en BD / sección Datos):
- *  - OFFLINE consecutivos sin BOOT ni producción entre medio → deja el primero.
+ *  - OFFLINE consecutivos sin señal de vida del dispositivo entre medio → deja el primero.
  *  - CHECK_IN + CHECK_OUT (o al revés) del mismo empleado en ≤5 s → rebote, quita ambos.
  *  - MAINTENANCE_IN + MAINTENANCE_OUT del mismo empleado en ≤5 s → rebote, quita ambos.
+ *  - CHECK_IN (o MAINTENANCE_IN) repetido de la misma persona en la misma máquina en ≤2 min
+ *    sin salida entre medio → registro duplicado, deja el primero.
  * Recibe los eventos ya ordenados ascendentemente.
  */
 export function collapseSpuriousEvents(events: ApiProductionEvent[]): ApiProductionEvent[] {
   const drop = new Set<string>()
 
-  // Rebotes de tap: pares adyacentes opuestos del mismo empleado en ventana corta.
+  // Rebotes de tap: pares opuestos consecutivos DE LA MISMA PERSONA en ventana corta. Se escanea
+  // la secuencia de taps de cada persona (no la lista global): con varias máquinas a la vez, un
+  // evento ajeno en medio rompía la adyacencia y el mismo rebote se veía en un modo y en otro no.
   const CHECK = new Set(["CHECK_IN", "CHECK_OUT"])
   const MAINT = new Set(["MAINTENANCE_IN", "MAINTENANCE_OUT"])
-  for (let i = 0; i < events.length - 1; i++) {
-    const a = events[i]
-    const b = events[i + 1]
-    if (drop.has(a.id)) continue
-    const ta = evType(a)
-    const tb = evType(b)
-    const opposite =
-      (CHECK.has(ta) && CHECK.has(tb) && ta !== tb) ||
-      (MAINT.has(ta) && MAINT.has(tb) && ta !== tb)
-    if (
-      opposite &&
-      evEmployee(a) &&
-      evEmployee(a) === evEmployee(b) &&
-      secondsBetween(a, b) <= SPURIOUS_TAP_SECONDS
-    ) {
-      drop.add(a.id)
-      drop.add(b.id)
-      i++ // consumir el par
+  const tapsByPerson = new Map<string, ApiProductionEvent[]>()
+  for (const e of events) {
+    const type = evType(e)
+    if (!CHECK.has(type) && !MAINT.has(type)) continue
+    const emp = evEmployee(e)
+    if (!emp) continue
+    const list = tapsByPerson.get(emp)
+    if (list) list.push(e)
+    else tapsByPerson.set(emp, [e])
+  }
+  for (const taps of tapsByPerson.values()) {
+    for (let i = 0; i < taps.length - 1; i++) {
+      const a = taps[i]
+      const b = taps[i + 1]
+      if (drop.has(a.id)) continue
+      const ta = evType(a)
+      const tb = evType(b)
+      const opposite =
+        (CHECK.has(ta) && CHECK.has(tb) && ta !== tb) ||
+        (MAINT.has(ta) && MAINT.has(tb) && ta !== tb)
+      if (opposite && a.machineId === b.machineId && secondsBetween(a, b) <= SPURIOUS_TAP_SECONDS) {
+        drop.add(a.id)
+        drop.add(b.id)
+        i++ // consumir el par
+      }
     }
   }
 
-  // OFFLINE consecutivos sin BOOT/producción entre medio (por máquina).
+  // Entradas duplicadas: mismo empleado+máquina+tipo de entrada sin la salida correspondiente
+  // entre medio, en ventana corta (doble guardado de asignaciones desde plataforma).
+  const lastIn = new Map<string, number>() // emp|máquina|tipo → ms del IN vigente
+  for (const e of events) {
+    if (drop.has(e.id)) continue
+    const type = evType(e)
+    const emp = evEmployee(e)
+    if (!emp || !e.machineId) continue
+    const isIn = type === "CHECK_IN" || type === "MAINTENANCE_IN"
+    const isOut = type === "CHECK_OUT" || type === "MAINTENANCE_OUT"
+    if (!isIn && !isOut) continue
+    const key = `${emp}|${e.machineId}|${type.startsWith("CHECK") ? "C" : "M"}`
+    const ms = new Date(e.occurredAt).getTime()
+    if (isOut) {
+      lastIn.delete(key)
+    } else {
+      const prev = lastIn.get(key)
+      if (prev !== undefined && ms - prev <= DUPLICATE_TAP_SECONDS * 1000) drop.add(e.id)
+      else lastIn.set(key, ms)
+    }
+  }
+
+  // OFFLINE consecutivos sin señal de vida del dispositivo entre medio (por máquina).
   const lastOffline = new Map<string, string>() // machineId → id del OFFLINE previo vigente
   for (const e of events) {
     if (drop.has(e.id)) continue
@@ -798,8 +857,8 @@ export function collapseSpuriousEvents(events: ApiProductionEvent[]): ApiProduct
     if (type === "OFFLINE") {
       if (lastOffline.has(mid)) drop.add(e.id) // ya hay un OFFLINE vigente → este es duplicado
       else lastOffline.set(mid, e.id)
-    } else if (type === "BOOT" || type === "PROD" || type === "ORPHAN_PROD") {
-      lastOffline.delete(mid) // hubo actividad → el siguiente OFFLINE ya no es duplicado
+    } else if (isDeviceProofEvent(e)) {
+      lastOffline.delete(mid) // el dispositivo dio señales de vida → el siguiente OFFLINE es real
     }
   }
 
@@ -836,12 +895,22 @@ export interface CronologiaResult {
   statusSegments: StatusSegment[]
 }
 
+/** Margen alrededor de la presencia (check-in→check-out) para incluir contexto pegado al borde
+ * (el OFFLINE que tumbó la sesión, el reset justo antes de entrar, etc.). */
+const PRESENCE_MARGIN_MS = 2 * 60_000
+
+/** Alertas idénticas (misma causa y máquina) separadas por menos de esto se cuentan como UNA
+ * ráfaga (p. ej. re-taps sin resetear, idle que parpadea en el cambio de turno). */
+const ALERT_BURST_WINDOW_MS = 3 * 60_000
+
 export function buildTimeline(args: {
   events: ApiProductionEvent[]
   alerts: ApiAlert[]
   mode: CronologiaMode
   /** Requerido en modo operador: claves de la persona (ver `personCodeSet`). */
   personCodes?: ReadonlySet<string>
+  /** Modo operador: nombre completo, para reconocer alertas que la mencionan por nombre. */
+  personName?: string
   ctx: CronoContext
   gapMinutes?: number
   /** Ventana de la banda; con ella se reconstruye la pista de estatus LED (modo máquina). */
@@ -858,23 +927,52 @@ export function buildTimeline(args: {
   let relevantAlerts = alerts
 
   if (mode === "operator" && personCodes) {
+    // La historia de la persona: sus propios eventos + TODO lo que pasó en sus máquinas
+    // MIENTRAS estuvo dentro (check-in→check-out). Lo que ocurre en esas máquinas cuando ella
+    // no está (otros turnos, otras horas) no es parte de su historia y solo mete ruido.
     const personEvents = events.filter((e) => eventInvolvesPerson(e, personCodes))
-    // Contexto de las máquinas donde la persona tuvo actividad: BOOT/OFFLINE explican huecos
-    // (apagones) y sus alertas son parte de la historia; las de máquinas ajenas son ruido.
-    const machineIds = new Set(personEvents.map((e) => e.machineId).filter(Boolean))
-    const contextEvents = events.filter((e) => {
-      const type = (e.eventType ?? "").trim().toUpperCase()
-      return (
-        (type === "BOOT" || type === "OFFLINE") &&
-        e.machineId !== null &&
-        machineIds.has(e.machineId)
+    const fallback = events.length
+      ? { start: new Date(events[0].occurredAt), end: new Date(events[events.length - 1].occurredAt) }
+      : { start: new Date(0), end: new Date(0) }
+    const bandStart = args.window?.bandStart ?? fallback.start
+    const bandEnd = args.window?.bandEnd ?? fallback.end
+    const intervals = operatorMachineIntervals(events, personCodes, bandStart, bandEnd)
+    const inPresence = (mid: string | null, t: number) =>
+      mid !== null &&
+      intervals.some(
+        (iv) =>
+          iv.machineId === mid &&
+          t >= iv.from - PRESENCE_MARGIN_MS &&
+          t <= iv.to + PRESENCE_MARGIN_MS,
       )
-    })
     const seen = new Set(personEvents.map((e) => e.id))
-    events = [...personEvents, ...contextEvents.filter((e) => !seen.has(e.id))].sort((a, b) =>
+    const contextEvents = events.filter(
+      (e) => !seen.has(e.id) && inPresence(e.machineId, new Date(e.occurredAt).getTime()),
+    )
+    events = [...personEvents, ...contextEvents].sort((a, b) =>
       a.occurredAt.localeCompare(b.occurredAt),
     )
-    relevantAlerts = alerts.filter((a) => a.machineId !== null && machineIds.has(a.machineId))
+    // Alertas: las que solapan su presencia en la máquina, o que la mencionan por código o
+    // nombre (rechazos de tap, horas excedidas…) aunque ocurran fuera de su sesión.
+    const personName = args.personName?.trim().toLowerCase()
+    const mentionsPerson = (a: ApiAlert): boolean => {
+      const hay = `${a.title} ${a.message ?? ""} ${JSON.stringify(a.metadata ?? {})}`.toLowerCase()
+      if (personName && hay.includes(personName)) return true
+      return [...personCodes].some((c) => c && hay.includes(c))
+    }
+    relevantAlerts = alerts.filter((a) => {
+      const from = new Date(a.createdAt).getTime()
+      const to = a.closedAt ? new Date(a.closedAt).getTime() : from
+      const overlapsPresence =
+        a.machineId !== null &&
+        intervals.some(
+          (iv) =>
+            iv.machineId === a.machineId &&
+            from <= iv.to + PRESENCE_MARGIN_MS &&
+            to >= iv.from - PRESENCE_MARGIN_MS,
+        )
+      return overlapsPresence || mentionsPerson(a)
+    })
   }
 
   const prodEvents: ApiProductionEvent[] = []
@@ -887,6 +985,31 @@ export function buildTimeline(args: {
     }
     const item = normalizeEvent(e, ctx)
     if (item) plainItems.push(item)
+  }
+
+  // Reset fuera de sesión: sin operadores dentro y sin un check-in inmediato después, el reset
+  // no "arranca" nada (es la limpieza del contador tras el check-out / cierre del turno).
+  const checkinTimesByMachine = new Map<string, number[]>()
+  for (const e of events) {
+    if (evType(e) !== "CHECK_IN" || !e.machineId) continue
+    const arr = checkinTimesByMachine.get(e.machineId) ?? []
+    arr.push(new Date(e.occurredAt).getTime())
+    checkinTimesByMachine.set(e.machineId, arr)
+  }
+  const resetWithOperators = new Set<string>()
+  for (const e of events) {
+    const ops = (e.payload ?? {})["operators"]
+    if (evType(e) === "COUNTER_RESET" && Array.isArray(ops) && ops.length > 0)
+      resetWithOperators.add(e.id)
+  }
+  for (const item of plainItems) {
+    if (item.kind !== "counter_reset") continue
+    if (item.badges?.[0]?.label !== "al iniciar sesión") continue
+    if (resetWithOperators.has(item.sourceEventIds[0])) continue
+    const t = item.at.getTime()
+    const times = item.machineId ? checkinTimesByMachine.get(item.machineId) ?? [] : []
+    const checkinSoon = times.some((c) => c >= t && c - t <= 15 * 60_000)
+    if (!checkinSoon) item.badges = [{ label: "fuera de sesión", tone: "neutral" }]
   }
 
   const spanItems = groupProductionSpans(prodEvents, plainItems, ctx, args.gapMinutes)
@@ -928,7 +1051,38 @@ export function buildTimeline(args: {
       return resolved ? { ...i, resolvedBy: resolved } : i
     })
 
-  const items = [...plainItems, ...spanItems, ...alertItems].sort(
+  // Ráfagas de la misma alerta (misma causa y máquina en minutos): re-taps sin resetear o idle
+  // parpadeando crean 3-4 idénticas seguidas; para la historia basta UNA con su repetición.
+  const alertChains = new Map<string, { item: TimelineItem; count: number; lastAt: number }[]>()
+  for (const it of [...alertItems].sort((a, b) => a.at.getTime() - b.at.getTime())) {
+    const key = `${it.machineId}|${it.alertKind}`
+    const chains = alertChains.get(key) ?? []
+    const last = chains[chains.length - 1]
+    if (last && it.at.getTime() - last.lastAt <= ALERT_BURST_WINDOW_MS) {
+      last.count += 1
+      last.lastAt = it.at.getTime()
+      last.item.sourceEventIds = [...last.item.sourceEventIds, ...it.sourceEventIds]
+      if (it.closedAt && (!last.item.closedAt || it.closedAt > last.item.closedAt))
+        last.item.closedAt = it.closedAt
+      if (it.resolvedBy) last.item.resolvedBy = it.resolvedBy
+    } else {
+      chains.push({ item: { ...it }, count: 1, lastAt: it.at.getTime() })
+    }
+    alertChains.set(key, chains)
+  }
+  const mergedAlertItems = [...alertChains.values()].flat().map((g) =>
+    g.count > 1
+      ? {
+          ...g.item,
+          badges: [
+            ...(g.item.badges ?? []),
+            { label: `se repitió ×${g.count}`, tone: "warning" as const },
+          ],
+        }
+      : g.item,
+  )
+
+  const items = [...plainItems, ...spanItems, ...mergedAlertItems].sort(
     (a, b) => a.at.getTime() - b.at.getTime(),
   )
 
@@ -956,7 +1110,7 @@ export function buildTimeline(args: {
     items,
     totalUnits: running,
     orphanUnits,
-    alertCount: alertItems.length,
+    alertCount: mergedAlertItems.length,
     statusSegments,
   }
 }
@@ -1069,14 +1223,20 @@ export function buildStatusSegments(
     .map(timeOf)
     .sort((a, b) => a - b)
 
-  // Intervalos apagada: antes del primer BOOT de la ventana, y de cada OFFLINE al siguiente BOOT.
+  // Momentos en que el dispositivo dio señales de vida (BOOT, producción, reset, tap NFC):
+  // cierran un intervalo OFFLINE aunque no haya habido re-BOOT (el equipo puede recuperar señal
+  // sin reiniciarse; sin esto una máquina viva se pintaba "apagada" horas).
+  const proofs = evs.filter(isDeviceProofEvent).map(timeOf).sort((a, b) => a - b)
+
+  // Intervalos apagada: antes del primer BOOT de la ventana, y de cada OFFLINE a la siguiente
+  // señal de vida.
   const off: Interval[] = []
   if (boots.length && boots[0] > startMs) off.push({ from: startMs, to: boots[0] })
   for (const e of evs) {
     if ((e.eventType ?? "").toUpperCase() !== "OFFLINE") continue
     const t = timeOf(e)
-    const nextBoot = boots.find((b) => b > t)
-    off.push({ from: t, to: nextBoot ?? endMs })
+    const nextProof = proofs.find((p) => p > t)
+    off.push({ from: t, to: nextProof ?? endMs })
   }
 
   // Intervalos mantenimiento: de MAINTENANCE_IN al siguiente MAINTENANCE_OUT.
@@ -1190,6 +1350,9 @@ function operatorMachineIntervals(
       if (from !== undefined) {
         out.push({ machineId: mid, from, to: ms })
         open.delete(mid)
+      } else {
+        // Check-out sin check-in en la ventana: la sesión venía de antes → cuenta desde el inicio.
+        out.push({ machineId: mid, from: startMs, to: ms })
       }
     }
   }
@@ -1233,15 +1396,34 @@ export function buildOperatorStatusSegments(
       if (to > from) raw.push({ status: s.status, from, to, machineId: iv.machineId })
     }
   }
-  raw.sort((a, b) => a.from - b.from || a.to - b.to)
 
+  // La persona puede estar en 2+ máquinas A LA VEZ: los tramos se traslapan y pintarlos tal
+  // cual encimaba uno sobre otro (p. ej. el rojo de una máquina caída tapaba el verde de la que
+  // sí producía). En cada instante gana el estatus de mayor prioridad, diciendo de qué máquina es.
+  const PRIORITY: Record<LedStatus, number> = { active: 3, maintenance: 2, waiting: 1, inactive: 0 }
+  const cuts = new Set<number>()
+  for (const s of raw) {
+    cuts.add(s.from)
+    cuts.add(s.to)
+  }
+  const sortedCuts = [...cuts].sort((a, b) => a - b)
   const merged: typeof raw = []
-  for (const seg of raw) {
+  for (let i = 0; i < sortedCuts.length - 1; i++) {
+    const a = sortedCuts[i]
+    const b = sortedCuts[i + 1]
+    if (b <= a) continue
+    const mid = (a + b) / 2
+    let winner: (typeof raw)[number] | null = null
+    for (const s of raw) {
+      if (mid < s.from || mid >= s.to) continue
+      if (!winner || PRIORITY[s.status] > PRIORITY[winner.status]) winner = s
+    }
+    if (!winner) continue
     const last = merged[merged.length - 1]
-    if (last && last.status === seg.status && last.machineId === seg.machineId && seg.from <= last.to) {
-      last.to = Math.max(last.to, seg.to)
+    if (last && last.status === winner.status && last.machineId === winner.machineId && last.to === a) {
+      last.to = b
     } else {
-      merged.push({ ...seg })
+      merged.push({ status: winner.status, from: a, to: b, machineId: winner.machineId })
     }
   }
 

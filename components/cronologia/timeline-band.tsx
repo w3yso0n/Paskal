@@ -322,13 +322,18 @@ export function TimelineBand({
           })}
 
           {/* ---- Eje de tiempo (escala adaptiva al zoom: horas → minutos → segundos) ---- */}
+          {/* En los bordes la etiqueta se alinea hacia adentro: centrada se salía del contenedor
+              y el overflow la recortaba ("00" en vez de "06:00"). */}
           {ticks.map((tick, i) => (
             <div
               key={tick.label + i}
-              className="absolute -translate-x-1/2 text-center"
+              className={cn(
+                "absolute",
+                tick.leftPct < 2 ? "text-left" : tick.leftPct > 98 ? "-translate-x-full text-right" : "-translate-x-1/2 text-center",
+              )}
               style={{ left: `${tick.leftPct}%`, top: axisTop }}
             >
-              <div className="mx-auto h-1.5 w-px bg-border" />
+              <div className={cn("h-1.5 w-px bg-border", tick.leftPct < 2 ? "ml-0" : tick.leftPct > 98 ? "ml-auto" : "mx-auto")} />
               <span className="text-[10px] tabular-nums text-muted-foreground">{tick.label}</span>
             </div>
           ))}
