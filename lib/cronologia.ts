@@ -1102,27 +1102,26 @@ export function buildTimeline(args: {
         : i
     })
     .map((i) => {
-      // Horas excedidas: anclar la historia — a qué hora ENTRÓ la persona y que la alerta nació
-      // justo al cumplirse el límite (el mensaje trae el "lleva X h" de la ÚLTIMA actualización,
-      // que sin el ancla se leía como si la alerta hubiera llegado tarde). El check-in se busca
-      // en los propios eventos, así funciona también en históricos sin metadata.
+      // Horas excedidas SIN metadata (históricas): anclar desde cuándo — el "lleva X h" del
+      // mensaje es la última actualización y sin ancla se leía como si la alerta llegara tarde.
+      // Se usa el PRIMER check-in de la persona en los eventos cargados (el último-antes-de-la-
+      // alerta mentía con gente que salta de máquina: "entró a las 16:20" cuando entró 06:54).
+      // Las alertas nuevas traen metadata.violators y el detalle expandido ya lo cuenta exacto.
       if (i.alertKind !== "overtime_hours") return i
+      if (Array.isArray((i.alertMetadata ?? {})["violators"])) return i
       const codeMatch = /\(([\w-]+)\)/.exec(i.detail ?? "")
       const code = codeMatch?.[1]?.trim().toLowerCase()
       if (!code) return i
-      const checkin = [...events]
-        .reverse()
-        .find(
-          (e) =>
-            evType(e) === "CHECK_IN" &&
-            String((e.payload ?? {})["employee"] ?? "").trim().toLowerCase() === code &&
-            new Date(e.occurredAt).getTime() <= i.at.getTime(),
-        )
+      const checkin = events.find(
+        (e) =>
+          evType(e) === "CHECK_IN" &&
+          String((e.payload ?? {})["employee"] ?? "").trim().toLowerCase() === code &&
+          new Date(e.occurredAt).getTime() <= i.at.getTime(),
+      )
       if (!checkin) return i
-      const entered = formatPlantTime(new Date(checkin.occurredAt))
       return {
         ...i,
-        detail: `${i.detail} · Entró a las ${entered}; el límite se cumplió a las ${formatPlantTime(i.at)}`,
+        detail: `${i.detail} · Primer check-in visto: ${formatPlantTime(new Date(checkin.occurredAt))}`,
       }
     })
 
