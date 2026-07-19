@@ -198,8 +198,10 @@ export function TimelineBand({
       : null
 
   // Canalón izquierdo FIJO con las etiquetas de los carriles: fuera del área que scrollea,
-  // así se leen con cualquier zoom y nunca tapan las barras que documentan.
-  const hasGutter = multiLane || persons.length > 0
+  // así se leen con cualquier zoom y nunca tapan las barras que documentan. En modo operador
+  // con UNA sola máquina también: la gráfica siempre dice de qué máquina es la pista.
+  const singleMachineLane = !multiLane && laneCodes.length === 1
+  const hasGutter = multiLane || singleMachineLane || persons.length > 0
   const GUTTER_W = 172
 
   return (
@@ -253,29 +255,31 @@ export function TimelineBand({
             style={{ width: GUTTER_W, height: totalH }}
             aria-hidden={false}
           >
-            {multiLane
-              ? laneCodes.map((code, li) => {
-                  const accent = machineAccents?.get(code)
-                  return (
-                    <button
-                      key={code}
-                      type="button"
-                      onClick={onMachineLaneClick ? () => onMachineLaneClick(code) : undefined}
-                      disabled={!onMachineLaneClick}
-                      title={onMachineLaneClick ? `Ver la cronología de ${code}` : undefined}
-                      className={cn(
-                        "absolute right-2 flex items-center rounded-sm border px-1.5 text-[11px] font-semibold leading-none",
-                        accent?.badge ?? "border-border bg-muted text-foreground",
-                        onMachineLaneClick &&
-                          "hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      )}
-                      style={{ top: trackTop + li * (LANE_H + LANE_SP), height: LANE_H }}
-                    >
-                      {code}
-                    </button>
-                  )
-                })
-              : null}
+            {laneCodes.map((code, li) => {
+              const accent = machineAccents?.get(code)
+              return (
+                <button
+                  key={code}
+                  type="button"
+                  onClick={onMachineLaneClick ? () => onMachineLaneClick(code) : undefined}
+                  disabled={!onMachineLaneClick}
+                  title={onMachineLaneClick ? `Ver la cronología de ${code}` : undefined}
+                  className={cn(
+                    "absolute right-2 flex items-center rounded-sm border px-1.5 text-[11px] font-semibold leading-none",
+                    accent?.badge ?? "border-border bg-muted text-foreground",
+                    onMachineLaneClick &&
+                      "hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  )}
+                  style={
+                    multiLane
+                      ? { top: trackTop + li * (LANE_H + LANE_SP), height: LANE_H }
+                      : { top: trackTop + (TRACK_H - 20) / 2, height: 20 }
+                  }
+                >
+                  {code}
+                </button>
+              )
+            })}
             {persons.map((lane, li) => (
               <button
                 key={lane.code}
