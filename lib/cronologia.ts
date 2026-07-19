@@ -190,6 +190,7 @@ const SOURCE_LABELS: Record<string, string> = {
   "tap-out": "tap de salida",
   mqtt: "dispositivo",
   presence: "presencia",
+  nightly: "cierre automático de turno",
 }
 
 /** Margen antes del turno: el BOOT/reset/check-in ocurre ~06:45, antes del arranque de 07:00. */
