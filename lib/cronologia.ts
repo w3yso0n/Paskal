@@ -1179,6 +1179,42 @@ export function buildTimeline(args: {
   }
   for (const item of items) item.unitsSoFar = unitsAt(item.at.getTime())
 
+  // Piso del riel con el dato de las alertas de huérfanas: en días compactados por rollup el
+  // registro de la hora en curso aún no cierra y el observado va atrás ("70 piezas pendientes"
+  // con el riel en 0). El pendiente que reporta la alerta es dato REAL del acumulador de la
+  // máquina → la producción del día era ≥ N en ese momento; no es estimación. Solo se
+  // transfiere al riel cuando TODA la producción de esa máquina hasta ese momento es del
+  // sujeto (en modo máquina siempre; en modo operador, si no hubo piezas de otros).
+  const machinePiecesAll = (mode === "operator" ? allEvents : prodEvents)
+    .map(prodPieceFromEvent)
+    .filter((p): p is ProdPiece => p !== null && !p.isDump && p.units > 0)
+  const observedOn = (pieces: ProdPiece[], machineId: string, t: number): number => {
+    let sum = 0
+    for (const p of pieces)
+      if (p.machineId === machineId && p.end.getTime() <= t) sum += p.units
+    return sum
+  }
+  for (const item of items) {
+    if (item.kind !== "alert" || !item.machineId) continue
+    if (item.alertKind !== "no_packager" && item.alertKind !== "no_checkin") continue
+    const pending = parsePendingUnitsFromAlertMessage(item.detail)
+    if (pending <= 0) continue
+    const t = item.at.getTime()
+    const machineObs = observedOn(machinePiecesAll, item.machineId, t)
+    const subjectObs = observedOn(counterPieces, item.machineId, t)
+    if (subjectObs !== machineObs) continue // hubo producción de otros: el piso no es transferible
+    const floored = (item.unitsSoFar ?? 0) - subjectObs + Math.max(subjectObs, pending)
+    if (floored > (item.unitsSoFar ?? 0)) item.unitsSoFar = floored
+  }
+  // La producción del día nunca baja: cada valor del riel es un mínimo garantizado — se
+  // propaga el mayor hacia adelante para que el piso no "rebote" en la siguiente fila.
+  let runningRail = 0
+  for (const item of items) {
+    if (typeof item.unitsSoFar !== "number") continue
+    runningRail = Math.max(runningRail, item.unitsSoFar)
+    item.unitsSoFar = runningRail
+  }
+
   // La producción NORMAL ya no va como renglón del listado: el riel (columna derecha) y el
   // hover de la banda cuentan el conteo, y el renglón "Produjo X · 06:49–15:44" anclado a su
   // hora de inicio rompía la lectura cronológica. Se conservan los tramos que SÍ son sucesos:
