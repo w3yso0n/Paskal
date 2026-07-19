@@ -41,6 +41,12 @@ interface TimelineBandProps {
   machineAccents?: Map<string, MachineAccent>
   /** Modo máquina: carril de presencia por persona (espejo de los carriles por máquina). */
   presenceLanes?: PresenceLane[]
+  /** Momento del cambio de turno (16:00): línea vertical punteada en la banda. */
+  shiftChangeAt?: Date | null
+  /** Clic en la etiqueta de un carril de máquina → cronología de esa máquina. */
+  onMachineLaneClick?: (machineCode: string) => void
+  /** Clic en la etiqueta de un carril de persona → cronología de esa persona. */
+  onPersonLaneClick?: (personCode: string) => void
   onSelect: (anchorId: string) => void
 }
 
@@ -69,6 +75,9 @@ export function TimelineBand({
   nowMs,
   machineAccents,
   presenceLanes,
+  shiftChangeAt,
+  onMachineLaneClick,
+  onPersonLaneClick,
   onSelect,
 }: TimelineBandProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -181,6 +190,18 @@ export function TimelineBand({
       ? bandPositionPct(new Date(nowMs), bandStart, bandEnd)
       : null
 
+  const shiftPct =
+    shiftChangeAt &&
+    shiftChangeAt.getTime() > bandStart.getTime() &&
+    shiftChangeAt.getTime() < bandEnd.getTime()
+      ? bandPositionPct(shiftChangeAt, bandStart, bandEnd)
+      : null
+
+  // Canalón izquierdo FIJO con las etiquetas de los carriles: fuera del área que scrollea,
+  // así se leen con cualquier zoom y nunca tapan las barras que documentan.
+  const hasGutter = multiLane || persons.length > 0
+  const GUTTER_W = 172
+
   return (
     <TooltipProvider delayDuration={100}>
       {/* Control de zoom */}
@@ -225,13 +246,83 @@ export function TimelineBand({
         </Button>
       </div>
 
-      <div ref={scrollRef} className="overflow-x-auto pb-1">
+      <div className="flex">
+        {hasGutter ? (
+          <div
+            className="relative shrink-0 pr-2"
+            style={{ width: GUTTER_W, height: totalH }}
+            aria-hidden={false}
+          >
+            {multiLane
+              ? laneCodes.map((code, li) => {
+                  const accent = machineAccents?.get(code)
+                  return (
+                    <button
+                      key={code}
+                      type="button"
+                      onClick={onMachineLaneClick ? () => onMachineLaneClick(code) : undefined}
+                      disabled={!onMachineLaneClick}
+                      title={onMachineLaneClick ? `Ver la cronología de ${code}` : undefined}
+                      className={cn(
+                        "absolute right-2 flex items-center rounded-sm border px-1.5 text-[11px] font-semibold leading-none",
+                        accent?.badge ?? "border-border bg-muted text-foreground",
+                        onMachineLaneClick &&
+                          "hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      )}
+                      style={{ top: trackTop + li * (LANE_H + LANE_SP), height: LANE_H }}
+                    >
+                      {code}
+                    </button>
+                  )
+                })
+              : null}
+            {persons.map((lane, li) => (
+              <button
+                key={lane.code}
+                type="button"
+                onClick={onPersonLaneClick ? () => onPersonLaneClick(lane.code) : undefined}
+                disabled={!onPersonLaneClick}
+                title={onPersonLaneClick ? `Ver la cronología de ${lane.name}` : undefined}
+                className={cn(
+                  "absolute left-0 right-2 flex items-center gap-1.5 rounded-sm px-1 text-left",
+                  onPersonLaneClick &&
+                    "hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                )}
+                style={{ top: personsTop + li * (P_LANE_H + P_LANE_SP), height: P_LANE_H }}
+              >
+                <span className={cn("h-2 w-2 shrink-0 rounded-full", lane.accent.dot)} />
+                <span className="min-w-0 truncate text-[11px] font-medium leading-none">
+                  {shortPersonName(lane.name)}
+                  <span className="text-muted-foreground"> · {lane.role}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto pb-1">
         <div className="relative" style={{ height: totalH, width, minWidth: "100%" }}>
-          {/* Línea de "ahora" detrás de todo */}
+          {/* Línea de "ahora": color neutro a propósito — el rojo es de "apagada/sin señal". */}
           {nowPct !== null ? (
+            <>
+              <div
+                className="absolute z-0 w-px bg-foreground/50"
+                style={{ left: `${nowPct}%`, top: 10, height: axisTop - 10 }}
+                aria-hidden
+              />
+              <span
+                className="absolute z-10 -translate-x-1/2 rounded bg-foreground px-1 py-px text-[9px] font-semibold leading-none text-background"
+                style={{ left: `${nowPct}%`, top: 0 }}
+              >
+                ahora
+              </span>
+            </>
+          ) : null}
+          {/* Cambio de turno (16:00): línea punteada — el divisor del listado da el contexto. */}
+          {shiftPct !== null ? (
             <div
-              className="absolute z-0 w-px bg-red-500/70"
-              style={{ left: `${nowPct}%`, top: 0, height: axisTop }}
+              className="absolute z-0 w-0 border-l border-dashed border-muted-foreground/50"
+              style={{ left: `${shiftPct}%`, top: trackTop - 6, height: axisTop - trackTop + 6 }}
+              title="Cambio de turno (16:00)"
               aria-hidden
             />
           ) : null}
@@ -252,16 +343,6 @@ export function TimelineBand({
                     {laneSegs.map((seg, i) => (
                       <SegmentButton key={i} seg={seg} />
                     ))}
-                    {/* Etiqueta del carril donde arranca la presencia en esa máquina. */}
-                    <span
-                      className={cn(
-                        "pointer-events-none absolute top-0 z-10 flex h-full items-center rounded-sm border px-1 text-[9px] font-semibold leading-none",
-                        accent?.badge ?? "border-border bg-background/80 text-foreground",
-                      )}
-                      style={{ left: `calc(${firstPct}% + 2px)` }}
-                    >
-                      {code}
-                    </span>
                   </div>
                 )
               })
@@ -282,9 +363,6 @@ export function TimelineBand({
           {/* ---- Carriles de presencia por persona (modo máquina) ---- */}
           {persons.map((lane, li) => {
             const top = personsTop + li * (P_LANE_H + P_LANE_SP)
-            const firstPct = lane.intervals.length
-              ? bandPositionPct(lane.intervals[0].from, bandStart, bandEnd)
-              : 0
             return (
               <div
                 key={lane.code}
@@ -298,10 +376,16 @@ export function TimelineBand({
                   return (
                     <Tooltip key={i}>
                       <TooltipTrigger asChild>
-                        <div
+                        <button
+                          type="button"
+                          aria-label={`${formatPlantTime(iv.from)}–${formatPlantTime(iv.to)} · ${lane.name} · ${lane.role}`}
+                          onClick={
+                            onPersonLaneClick ? () => onPersonLaneClick(lane.code) : undefined
+                          }
                           className={cn(
                             "absolute inset-y-0 rounded-sm opacity-75",
                             lane.accent.dot,
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset focus-visible:opacity-100",
                           )}
                           style={{ left: `${l}%`, width: `${w}%` }}
                         />
@@ -317,15 +401,6 @@ export function TimelineBand({
                     </Tooltip>
                   )
                 })}
-                <span
-                  className={cn(
-                    "pointer-events-none absolute top-0 z-10 flex h-full items-center whitespace-nowrap rounded-sm border px-1 text-[9px] font-semibold leading-none",
-                    lane.accent.badge,
-                  )}
-                  style={{ left: `calc(${firstPct}% + 2px)` }}
-                >
-                  {shortPersonName(lane.name)} · {lane.role}
-                </span>
               </div>
             )
           })}
@@ -415,6 +490,7 @@ export function TimelineBand({
             </div>
           ))}
         </div>
+        </div>
       </div>
 
       {/* ---- Leyenda ---- */}
@@ -457,7 +533,8 @@ function SegmentButton({ seg }: { seg: StatusSegment }) {
           type="button"
           aria-label={`${formatPlantTime(seg.from)}–${formatPlantTime(seg.to)} · ${LED_STATUS_LABELS[seg.status]}`}
           className={cn(
-            "absolute inset-y-0 border-r-2 border-background transition-opacity hover:opacity-90 focus-visible:outline-none",
+            "absolute inset-y-0 border-r-2 border-background transition-opacity hover:opacity-90",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset focus-visible:z-10",
             MACHINE_STATUS_DOT_COLORS[seg.status],
           )}
           style={{ left: `${seg.startPct}%`, width: `${w}%` }}

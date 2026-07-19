@@ -25,6 +25,7 @@ import {
   buildTimeline,
   computeCronologiaWindow,
   personCodeSet,
+  shiftChangeMoment,
   type CronologiaMode,
   type TimelineItem,
   formatUnits,
@@ -54,7 +55,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
-import { Factory, History, Loader2, RefreshCw, User } from "lucide-react"
+import { ChevronLeft, ChevronRight, Factory, History, Loader2, RefreshCw, User } from "lucide-react"
 import { toast } from "sonner"
 
 /** Tope de eventos por consulta; si llega justo al tope el día viene truncado. */
@@ -64,6 +65,14 @@ const EVENTS_LIMIT = 5000
 function todayPlantIso(): string {
   const p = getPartsInTimeZone(new Date(), PLANT_TIMEZONE)
   return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`
+}
+
+/** Suma `delta` días a una fecha `yyyy-mm-dd` (aritmética de calendario, sin zonas). */
+function addDaysIso(iso: string, delta: number): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+  if (!m) return iso
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + delta, 12))
+  return d.toISOString().slice(0, 10)
 }
 
 export default function CronologiaPage() {
@@ -241,7 +250,10 @@ export default function CronologiaPage() {
 
   const handleSelectFromBand = useCallback((anchorId: string) => {
     setHighlightId(anchorId)
-    document.getElementById(anchorId)?.scrollIntoView({ behavior: "smooth", block: "center" })
+    const el = document.getElementById(anchorId)
+    el?.scrollIntoView({ behavior: "smooth", block: "center" })
+    // El foco sigue el salto (teclado/lector de pantalla continúan en el detalle).
+    ;(el as HTMLElement | null)?.focus({ preventScroll: true })
     if (highlightTimer.current !== null) window.clearTimeout(highlightTimer.current)
     highlightTimer.current = window.setTimeout(() => setHighlightId(null), 2000)
   }, [])
@@ -307,6 +319,34 @@ export default function CronologiaPage() {
     mode === "machine"
       ? machineOptions.find((m) => m.id === machineId)?.code ?? null
       : selectedEmployee?.fullName ?? null
+
+  const isToday = dateIso === todayPlantIso()
+  const shiftChangeAt = useMemo(() => shiftChangeMoment(dateIso), [dateIso])
+
+  // Navegación cruzada: de la historia de una operadora a la de su máquina y viceversa,
+  // conservando el día. Empacadoras puras no tienen cronología propia (se ven en su máquina).
+  const goToMachine = useCallback(
+    (machineCode: string) => {
+      const m = machines.find((x) => x.code?.trim() === machineCode)
+      if (!m) return
+      setMode("machine")
+      setMachineId(m.id)
+    },
+    [machines],
+  )
+  const goToPerson = useCallback(
+    (code: string) => {
+      const emp = employees.find((e) => e.employeeCode?.trim() === code.trim())
+      if (!emp) return
+      if (!isFloorOperatorCandidate(emp)) {
+        toast.info("Las empacadoras se consultan desde la cronología de su máquina.")
+        return
+      }
+      setMode("operator")
+      setPersonCode(emp.employeeCode as string)
+    },
+    [employees],
+  )
 
   return (
     <DashboardLayout breadcrumbs={[{ label: "Inicio", href: "/" }, { label: "Cronología" }]}>
@@ -393,17 +433,56 @@ export default function CronologiaPage() {
 
               <div className="space-y-1.5">
                 <Label htmlFor="crono-date">Día</Label>
-                <input
-                  id="crono-date"
-                  type="date"
-                  value={dateIso}
-                  max={todayPlantIso()}
-                  onChange={(e) => setDateIso(e.target.value)}
-                  className={cn(
-                    "h-9 rounded-md border border-input bg-background px-3 text-sm",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                  )}
-                />
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9"
+                    onClick={() => setDateIso((d) => addDaysIso(d, -1))}
+                    aria-label="Día anterior"
+                    title="Día anterior"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <input
+                    id="crono-date"
+                    type="date"
+                    value={dateIso}
+                    max={todayPlantIso()}
+                    onChange={(e) => {
+                      // Borrar la fecha dejaba la vista en blanco: se ignora el vacío.
+                      if (e.target.value) setDateIso(e.target.value)
+                    }}
+                    className={cn(
+                      "h-9 rounded-md border border-input bg-background px-3 text-sm",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                    )}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9"
+                    onClick={() => setDateIso((d) => addDaysIso(d, 1))}
+                    disabled={isToday}
+                    aria-label="Día siguiente"
+                    title="Día siguiente"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                  {!isToday ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-9"
+                      onClick={() => setDateIso(todayPlantIso())}
+                    >
+                      Hoy
+                    </Button>
+                  ) : null}
+                </div>
               </div>
 
             </CardContent>
@@ -430,8 +509,22 @@ export default function CronologiaPage() {
           ) : result && window_ ? (
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-base">
+                <CardTitle className="flex flex-wrap items-center gap-x-3 gap-y-1 text-base">
                   <span>{subjectLabel ?? "Cronología"} · día completo</span>
+                  {/* EN VIVO (hoy, con auto-refresh corriendo) vs Histórico (día pasado). */}
+                  {isToday ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                      <span className="relative flex h-2 w-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                      </span>
+                      EN VIVO
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                      Histórico
+                    </span>
+                  )}
                   <span className="text-sm font-normal text-muted-foreground">
                     {result.items.length} sucesos · {result.alertCount} alertas · Total del día:{" "}
                     {formatUnits(result.totalUnits)} pzas
@@ -449,9 +542,21 @@ export default function CronologiaPage() {
               </CardHeader>
               <CardContent className="space-y-6">
                 {result.items.length === 0 ? (
-                  <p className="py-10 text-center text-sm text-muted-foreground">
-                    Sin sucesos registrados para ese día y turno.
-                  </p>
+                  <div className="space-y-4 py-10 text-center">
+                    <p className="text-sm text-muted-foreground">
+                      Sin sucesos registrados de {subjectLabel ?? "esta selección"} ese día.
+                    </p>
+                    <div className="flex justify-center gap-2">
+                      <Button variant="outline" size="sm" onClick={() => setDateIso((d) => addDaysIso(d, -1))}>
+                        Ver día anterior
+                      </Button>
+                      {!isToday ? (
+                        <Button variant="outline" size="sm" onClick={() => setDateIso(todayPlantIso())}>
+                          Ir a hoy
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
                 ) : (
                   <>
                     <TimelineBand
@@ -459,9 +564,12 @@ export default function CronologiaPage() {
                       statusSegments={result.statusSegments}
                       bandStart={window_.bandStart}
                       bandEnd={window_.bandEnd}
-                      nowMs={dateIso === todayPlantIso() ? Date.now() : null}
+                      nowMs={isToday ? Date.now() : null}
                       machineAccents={machineAccents}
                       presenceLanes={presenceLanes}
+                      shiftChangeAt={shiftChangeAt}
+                      onMachineLaneClick={mode === "operator" ? goToMachine : undefined}
+                      onPersonLaneClick={mode === "machine" ? goToPerson : undefined}
                       onSelect={handleSelectFromBand}
                     />
                     <TimelineList
@@ -471,6 +579,9 @@ export default function CronologiaPage() {
                       highlightId={highlightId}
                       showMachine={mode === "operator"}
                       machineAccents={machineAccents}
+                      shiftChangeAt={shiftChangeAt}
+                      onMachineClick={mode === "operator" ? goToMachine : undefined}
+                      onPersonClick={mode === "machine" ? goToPerson : undefined}
                       onAttribute={openAssign}
                     />
                   </>

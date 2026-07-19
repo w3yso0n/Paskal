@@ -86,6 +86,10 @@ export interface TimelineItem {
   /** Riel de producción del listado: piezas del día acumuladas AL MOMENTO del suceso
    * (según el filtro del modo: máquina = contador de la máquina, operador = lo suyo). */
   unitsSoFar?: number
+  /** Check-in/out: código del empleado (para saltar a su cronología). */
+  personCode?: string
+  /** Check-in/out: "operador" | "empacadora" (etiqueta de rol del evento). */
+  personRole?: string
   /** `false` en volcados atribuidos: no son piezas del contador de la máquina. */
   countsInTotal?: boolean
   /** Si trae valor, se puede atribuir estas piezas desde la cronología. */
@@ -284,6 +288,22 @@ const CHECKIN_ROLE_LABELS: Record<string, string> = {
   MAINTENANCE: "mantenimiento",
 }
 
+/** Momento del cambio de turno (arranque del vespertino, 16:00 hora planta) del día dado —
+ * marca visual en la banda y divisor en el listado. */
+export function shiftChangeMoment(dateIso: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateIso ?? "")
+  if (!m) return null
+  const start = SHIFT_SCHEDULE.vespertino.productionStart
+  return makeZonedDate(
+    Number(m[1]),
+    Number(m[2]),
+    Number(m[3]),
+    start.hour,
+    start.minute,
+    PLANT_TIMEZONE,
+  )
+}
+
 export function formatPlantTime(at: Date | string): string {
   const d = typeof at === "string" ? new Date(at) : at
   if (Number.isNaN(d.getTime())) return "--:--"
@@ -390,18 +410,23 @@ export function normalizeEvent(e: ApiProductionEvent, ctx: CronoContext): Timeli
       const role = payloadStr(payload, "role")?.toUpperCase() ?? ""
       const roleLabel = CHECKIN_ROLE_LABELS[role]
       const shift = code ? ctx.shiftByCode.get(code.trim().toLowerCase()) : undefined
-      const badges: TimelineBadge[] = []
-      if (roleLabel) badges.push({ label: roleLabel, tone: "neutral" })
-      if (shift) badges.push({ label: `turno ${SHIFT_LABELS[shift]}`, tone: "info" })
-      // Autoría: si el movimiento lo hizo un usuario desde plataforma, decir QUIÉN.
+      // Rol y turno van en la LÍNEA DE DETALLE, no como badges: dos etiquetas chicas en cada
+      // check-in/out saturaban el listado y devaluaban las badges que sí son señal (estado
+      // especial, máquina, severidad). Autoría: si lo hizo un usuario de plataforma, decir QUIÉN.
       const by = actorLabel(payload)
-      const viaText = via ? `Vía ${via}${by ? ` · por ${by}` : ""}` : by ? `Por ${by}` : undefined
+      const detailParts = [
+        roleLabel ?? null,
+        shift ? `turno ${SHIFT_LABELS[shift]}` : null,
+        via ? `Vía ${via}` : null,
+        by ? `por ${by}` : null,
+      ].filter(Boolean)
       return {
         ...base,
         kind: isIn ? "checkin" : "checkout",
         title: `${isIn ? "Check-in" : "Check-out"}: ${name}`,
-        detail: viaText,
-        badges: badges.length ? badges : undefined,
+        detail: detailParts.length ? detailParts.join(" · ") : undefined,
+        personCode: code ?? undefined,
+        personRole: roleLabel ?? undefined,
       }
     }
     case "COUNTER_RESET": {
@@ -1047,7 +1072,7 @@ export function buildTimeline(args: {
       (c) =>
         c.kind === "checkin" &&
         c.machineId === dump.machineId &&
-        c.badges?.some((b) => b.label === "empacadora") &&
+        c.personRole === "empacadora" &&
         Math.abs(c.at.getTime() - dump.at.getTime()) <= 2_000,
     )
     if (!checkin) continue
