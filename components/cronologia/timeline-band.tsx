@@ -16,6 +16,7 @@ import {
   LED_STATUS_LABELS,
   alertIcon,
   type LedStatus,
+  type MachineAccent,
   type MarkerCluster,
   type StatusSegment,
   type TimelineItem,
@@ -34,6 +35,8 @@ interface TimelineBandProps {
   bandEnd: Date
   /** Marca vertical de "ahora" (solo cuando el día elegido es hoy). */
   nowMs?: number | null
+  /** Modo operador: color de identidad por máquina (carriles y etiquetas). */
+  machineAccents?: Map<string, MachineAccent>
   onSelect: (anchorId: string) => void
 }
 
@@ -60,6 +63,7 @@ export function TimelineBand({
   bandStart,
   bandEnd,
   nowMs,
+  machineAccents,
   onSelect,
 }: TimelineBandProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -136,10 +140,26 @@ export function TimelineBand({
     [events, bandStart, bandEnd, width],
   )
 
+  // Carriles por máquina (modo operador): la persona pasa por varias máquinas y una sola
+  // pista mezclaba estatus de máquinas distintas; con 2+ máquinas cada una tiene su carril,
+  // etiquetado con su código al arranque.
+  const laneCodes = useMemo(() => {
+    const codes: string[] = []
+    for (const s of statusSegments) {
+      const c = s.machineCode
+      if (c && !codes.includes(c)) codes.push(c)
+    }
+    return codes
+  }, [statusSegments])
+  const multiLane = laneCodes.length > 1
+  const LANE_H = 16
+  const LANE_SP = 4
+  const trackH = multiLane ? laneCodes.length * (LANE_H + LANE_SP) - LANE_SP : TRACK_H
+
   const alertsH = alertPack.rows * ROW_H
   const eventsH = eventPack.rows * ROW_H
   const trackTop = alertsH + LANE_GAP
-  const eventsTop = trackTop + TRACK_H + LANE_GAP
+  const eventsTop = trackTop + trackH + LANE_GAP
   const axisTop = eventsTop + eventsH + 4
   const totalH = axisTop + AXIS_H
 
@@ -203,59 +223,47 @@ export function TimelineBand({
             />
           ) : null}
 
-          {/* ---- Pista de estatus LED ---- */}
-          <div
-            className="absolute inset-x-0 overflow-hidden rounded-md bg-muted/40 ring-1 ring-border/60"
-            style={{ top: trackTop, height: TRACK_H }}
-          >
-            {statusSegments.map((seg, i) => {
-              const w = Math.max(seg.endPct - seg.startPct, 0)
-              if (w <= 0) return null
-              return (
-                <Tooltip key={i}>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label={`${formatPlantTime(seg.from)}–${formatPlantTime(seg.to)} · ${LED_STATUS_LABELS[seg.status]}`}
+          {/* ---- Pista de estatus LED (con 2+ máquinas: un carril por máquina) ---- */}
+          <div className="absolute inset-x-0" style={{ top: trackTop, height: trackH }}>
+            {multiLane ? (
+              laneCodes.map((code, li) => {
+                const laneSegs = statusSegments.filter((s) => s.machineCode === code)
+                const firstPct = laneSegs.length ? Math.min(...laneSegs.map((s) => s.startPct)) : 0
+                const accent = machineAccents?.get(code)
+                return (
+                  <div
+                    key={code}
+                    className="absolute inset-x-0 overflow-hidden rounded-sm bg-muted/40 ring-1 ring-border/40"
+                    style={{ top: li * (LANE_H + LANE_SP), height: LANE_H }}
+                  >
+                    {laneSegs.map((seg, i) => (
+                      <SegmentButton key={i} seg={seg} />
+                    ))}
+                    {/* Etiqueta del carril donde arranca la presencia en esa máquina. */}
+                    <span
                       className={cn(
-                        "absolute inset-y-0 border-r-2 border-background transition-opacity hover:opacity-90 focus-visible:outline-none",
-                        MACHINE_STATUS_DOT_COLORS[seg.status],
+                        "pointer-events-none absolute top-0 z-10 flex h-full items-center rounded-sm border px-1 text-[9px] font-semibold leading-none",
+                        accent?.badge ?? "border-border bg-background/80 text-foreground",
                       )}
-                      style={{ left: `${seg.startPct}%`, width: `${w}%` }}
-                    />
-                  </TooltipTrigger>
-                  <TooltipContent side="top" className="space-y-0.5 text-xs">
-                    <div className="font-semibold">
-                      {formatPlantTimeSeconds(seg.from)}–{formatPlantTimeSeconds(seg.to)}
-                    </div>
-                    <div>
-                      {LED_STATUS_LABELS[seg.status]}
-                      {seg.machineCode ? ` · ${seg.machineCode}` : ""}
-                    </div>
-                    {/* El conteo va SIEMPRE: aunque el tramo no produjo, ver cuánto llevaba
-                        el día en ese momento es parte de la historia. */}
-                    <div className="opacity-80">
-                      {seg.producedUnits > 0 ? (
-                        <>
-                          En este tramo:{" "}
-                          <span className="font-semibold">
-                            +{formatUnits(seg.producedUnits)} pzas
-                          </span>{" "}
-                          ·{" "}
-                        </>
-                      ) : null}
-                      Lleva del día:{" "}
-                      <span className="font-semibold">{formatUnits(seg.cumulativeValid)} pzas</span>
-                    </div>
-                  </TooltipContent>
-                </Tooltip>
-              )
-            })}
-            {statusSegments.length === 0 ? (
-              <div className="absolute inset-0 flex items-center justify-center text-[11px] text-muted-foreground">
-                Sin datos de estatus
+                      style={{ left: `calc(${firstPct}% + 2px)` }}
+                    >
+                      {code}
+                    </span>
+                  </div>
+                )
+              })
+            ) : (
+              <div className="absolute inset-0 overflow-hidden rounded-md bg-muted/40 ring-1 ring-border/60">
+                {statusSegments.map((seg, i) => (
+                  <SegmentButton key={i} seg={seg} />
+                ))}
+                {statusSegments.length === 0 ? (
+                  <div className="absolute inset-0 flex items-center justify-center text-[11px] text-muted-foreground">
+                    Sin datos de estatus
+                  </div>
+                ) : null}
               </div>
-            ) : null}
+            )}
           </div>
 
           {/* ---- Alertas (encima de la pista) ---- */}
@@ -303,7 +311,7 @@ export function TimelineBand({
                 item={item}
                 leftPct={leftPct}
                 chipTop={chipTop}
-                stemFrom={trackTop + TRACK_H}
+                stemFrom={trackTop + trackH}
                 stemTo={chipTop}
                 icon={<Icon className="h-4 w-4" />}
                 chipClass={cn(catalog.dotClass, "ring-background")}
@@ -318,7 +326,7 @@ export function TimelineBand({
                 key={`ec-${i}`}
                 cluster={cluster}
                 chipTop={chipTop}
-                stemFrom={trackTop + TRACK_H}
+                stemFrom={trackTop + trackH}
                 stemTo={chipTop}
                 chipClass="bg-muted text-muted-foreground ring-background"
                 onSelect={onSelect}
@@ -370,6 +378,49 @@ export function TimelineBand({
         <span className="text-muted-foreground/70">Pasa el cursor o haz clic en cualquier marca.</span>
       </div>
     </TooltipProvider>
+  )
+}
+
+/** Tramo de la pista de estatus con su tooltip (rango, estatus, conteo). Compartido entre la
+ * pista única (modo máquina) y los carriles por máquina (modo operador). */
+function SegmentButton({ seg }: { seg: StatusSegment }) {
+  const w = Math.max(seg.endPct - seg.startPct, 0)
+  if (w <= 0) return null
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${formatPlantTime(seg.from)}–${formatPlantTime(seg.to)} · ${LED_STATUS_LABELS[seg.status]}`}
+          className={cn(
+            "absolute inset-y-0 border-r-2 border-background transition-opacity hover:opacity-90 focus-visible:outline-none",
+            MACHINE_STATUS_DOT_COLORS[seg.status],
+          )}
+          style={{ left: `${seg.startPct}%`, width: `${w}%` }}
+        />
+      </TooltipTrigger>
+      <TooltipContent side="top" className="space-y-0.5 text-xs">
+        <div className="font-semibold">
+          {formatPlantTimeSeconds(seg.from)}–{formatPlantTimeSeconds(seg.to)}
+        </div>
+        <div>
+          {LED_STATUS_LABELS[seg.status]}
+          {seg.machineCode ? ` · ${seg.machineCode}` : ""}
+        </div>
+        {/* El conteo va SIEMPRE: aunque el tramo no produjo, ver cuánto llevaba el día en ese
+            momento es parte de la historia. */}
+        <div className="opacity-80">
+          {seg.producedUnits > 0 ? (
+            <>
+              En este tramo:{" "}
+              <span className="font-semibold">+{formatUnits(seg.producedUnits)} pzas</span> ·{" "}
+            </>
+          ) : null}
+          Lleva del día:{" "}
+          <span className="font-semibold">{formatUnits(seg.cumulativeValid)} pzas</span>
+        </div>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 

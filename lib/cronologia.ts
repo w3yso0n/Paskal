@@ -1075,6 +1075,18 @@ export function buildTimeline(args: {
   const overlapsMaintenance = (from: number, to: number) =>
     maint.some((m) => from < m.to && to > m.from)
 
+  // Piezas de máquina (sin volcados) para anclar alertas y para el piso del riel: en modo
+  // operador se usan TODOS los eventos (la máquina completa), no solo lo de la persona.
+  const machinePiecesAll = (mode === "operator" ? allEvents : prodEvents)
+    .map(prodPieceFromEvent)
+    .filter((p): p is ProdPiece => p !== null && !p.isDump && p.units > 0)
+  const observedOn = (pieces: ProdPiece[], machineId: string, t: number): number => {
+    let sum = 0
+    for (const p of pieces)
+      if (p.machineId === machineId && p.end.getTime() <= t) sum += p.units
+    return sum
+  }
+
   // A8: alertas resueltas por una atribución (el volcado liga con su alerta vía orphanAlertId).
   const resolvedByAttribution = new Map<string, { mode: "auto" | "manual"; by: string | null }>()
   for (const s of spanItems) {
@@ -1122,6 +1134,23 @@ export function buildTimeline(args: {
       return {
         ...i,
         detail: `${i.detail} · Primer check-in visto: ${formatPlantTime(new Date(checkin.occurredAt))}`,
+      }
+    })
+    .map((i) => {
+      // Paro/inactividad: ¿a qué hora fue el ÚLTIMO incremento antes del paro? Las alertas
+      // nuevas lo traen en metadata (el detalle expandido pinta el rango completo); para
+      // históricas se busca la última pieza registrada en los eventos.
+      if (i.alertKind !== "idle" || !i.machineId) return i
+      if (typeof (i.alertMetadata ?? {})["lastProductionAt"] === "string") return i
+      let last: Date | null = null
+      for (const p of machinePiecesAll) {
+        if (p.machineId !== i.machineId) continue
+        if (p.end.getTime() <= i.at.getTime() && (!last || p.end > last)) last = p.end
+      }
+      if (!last) return i
+      return {
+        ...i,
+        detail: `${i.detail ?? "Sin producción"} · Último incremento: ${formatPlantTimeSeconds(last)}`,
       }
     })
 
@@ -1185,15 +1214,6 @@ export function buildTimeline(args: {
   // máquina → la producción del día era ≥ N en ese momento; no es estimación. Solo se
   // transfiere al riel cuando TODA la producción de esa máquina hasta ese momento es del
   // sujeto (en modo máquina siempre; en modo operador, si no hubo piezas de otros).
-  const machinePiecesAll = (mode === "operator" ? allEvents : prodEvents)
-    .map(prodPieceFromEvent)
-    .filter((p): p is ProdPiece => p !== null && !p.isDump && p.units > 0)
-  const observedOn = (pieces: ProdPiece[], machineId: string, t: number): number => {
-    let sum = 0
-    for (const p of pieces)
-      if (p.machineId === machineId && p.end.getTime() <= t) sum += p.units
-    return sum
-  }
   for (const item of items) {
     if (item.kind !== "alert" || !item.machineId) continue
     if (item.alertKind !== "no_packager" && item.alertKind !== "no_checkin") continue
@@ -1312,6 +1332,54 @@ export const LED_STATUS_LABELS: Record<LedStatus, string> = {
   waiting: "Encendida sin producir",
   maintenance: "Mantenimiento",
   inactive: "Apagada / sin señal",
+}
+
+/**
+ * Colores de identidad POR MÁQUINA (modo operador): carril de la banda y badge del listado.
+ * Distinguen máquina, no estatus — por eso son tonos distintos a los del LED (verde/amarillo/
+ * azul/rojo del piso).
+ */
+export const MACHINE_ACCENTS = [
+  {
+    badge: "border-sky-400/60 bg-sky-50 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
+    dot: "bg-sky-500",
+  },
+  {
+    badge:
+      "border-violet-400/60 bg-violet-50 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+    dot: "bg-violet-500",
+  },
+  {
+    badge: "border-teal-400/60 bg-teal-50 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300",
+    dot: "bg-teal-500",
+  },
+  {
+    badge:
+      "border-orange-400/60 bg-orange-50 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300",
+    dot: "bg-orange-500",
+  },
+  {
+    badge:
+      "border-fuchsia-400/60 bg-fuchsia-50 text-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300",
+    dot: "bg-fuchsia-500",
+  },
+  {
+    badge: "border-lime-500/60 bg-lime-50 text-lime-700 dark:bg-lime-900/40 dark:text-lime-300",
+    dot: "bg-lime-600",
+  },
+] as const
+
+export type MachineAccent = (typeof MACHINE_ACCENTS)[number]
+
+/** Mapa código de máquina → acento, en orden de aparición en la historia. */
+export function buildMachineAccents(items: TimelineItem[]): Map<string, MachineAccent> {
+  const map = new Map<string, MachineAccent>()
+  for (const it of items) {
+    const code = it.machineCode
+    if (!code || map.has(code)) continue
+    map.set(code, MACHINE_ACCENTS[map.size % MACHINE_ACCENTS.length])
+  }
+  return map
 }
 
 export interface StatusSegment {

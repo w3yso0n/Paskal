@@ -20,6 +20,7 @@ import {
 } from "@/lib/api"
 import {
   buildCronoContext,
+  buildMachineAccents,
   buildTimeline,
   computeCronologiaWindow,
   personCodeSet,
@@ -195,6 +196,13 @@ export default function CronologiaPage() {
       window: window_ ? { bandStart: window_.bandStart, bandEnd: window_.bandEnd } : undefined,
     })
   }, [alerts, ctx, events, mode, selectedEmployee, window_])
+
+  // Modo operador: color de identidad por máquina (carriles de la banda + badges del listado)
+  // para distinguir de un vistazo qué pasó en cada máquina donde estuvo la persona.
+  const machineAccents = useMemo(
+    () => (mode === "operator" && result ? buildMachineAccents(result.items) : undefined),
+    [mode, result],
+  )
 
   const partialData = events !== null && events.length >= EVENTS_LIMIT
 
@@ -442,6 +450,7 @@ export default function CronologiaPage() {
                       bandStart={window_.bandStart}
                       bandEnd={window_.bandEnd}
                       nowMs={dateIso === todayPlantIso() ? Date.now() : null}
+                      machineAccents={machineAccents}
                       onSelect={handleSelectFromBand}
                     />
                     <TimelineList
@@ -450,6 +459,7 @@ export default function CronologiaPage() {
                       orphanUnits={result.orphanUnits}
                       highlightId={highlightId}
                       showMachine={mode === "operator"}
+                      machineAccents={machineAccents}
                       onAttribute={openAssign}
                     />
                   </>

@@ -12,6 +12,7 @@ import {
   formatPlantTimeSeconds,
   formatUnits,
   idleRange,
+  type MachineAccent,
   type TimelineItem,
 } from "@/lib/cronologia"
 import { ALERT_SEVERITY_STYLES, buildAlertDetailRows } from "@/lib/alert-ui"
@@ -24,6 +25,8 @@ interface TimelineListProps {
   highlightId?: string | null
   /** Mostrar de qué máquina es cada suceso (modo operador). */
   showMachine?: boolean
+  /** Color de identidad por máquina (mismo que los carriles de la banda). */
+  machineAccents?: Map<string, MachineAccent>
   /** Abrir el diálogo para atribuir las piezas pendientes de este item. */
   onAttribute?: (item: TimelineItem) => void
 }
@@ -42,6 +45,7 @@ export function TimelineList({
   orphanUnits,
   highlightId,
   showMachine = false,
+  machineAccents,
   onAttribute,
 }: TimelineListProps) {
   // Se listan todos los sucesos. La producción normal (production_span) se muestra en formato
@@ -129,7 +133,10 @@ export function TimelineList({
                   {item.title}
                 </span>
                 {showMachine && item.machineCode ? (
-                  <Badge variant="outline" className="text-[10px]">
+                  <Badge
+                    variant="outline"
+                    className={cn("text-[10px]", machineAccents?.get(item.machineCode)?.badge)}
+                  >
                     {item.machineCode}
                   </Badge>
                 ) : null}
