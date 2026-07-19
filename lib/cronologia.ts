@@ -1382,6 +1382,91 @@ export function buildMachineAccents(items: TimelineItem[]): Map<string, MachineA
   return map
 }
 
+/** Carril de presencia de una persona en la máquina (modo máquina): sus estancias del día. */
+export interface PresenceLane {
+  code: string
+  name: string
+  /** "operador" | "empacadora" (de los eventos de check-in). */
+  role: string
+  accent: MachineAccent
+  intervals: { from: Date; to: Date }[]
+}
+
+/** Nombre corto para la etiqueta del carril: primer nombre + primer apellido. */
+export function shortPersonName(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/)
+  if (parts.length <= 2) return fullName.trim()
+  // Heurística es-MX: [nombre(s)…, apellido paterno, apellido materno] → nombre + ap. paterno.
+  return `${parts[0]} ${parts[parts.length - 2]}`
+}
+
+/**
+ * Espejo de los carriles por máquina del modo operador: en modo MÁQUINA, un carril por PERSONA
+ * (operadoras y empacadoras) con sus estancias check-in→check-out del día. Visualiza de un
+ * vistazo quién estaba dentro en cada momento — y los huecos sin empacadora que explican las
+ * alertas de "producción sin empacador". Orden y color por aparición.
+ */
+export function buildMachinePresenceLanes(
+  events: ApiProductionEvent[],
+  ctx: CronoContext,
+  bandStart: Date,
+  bandEnd: Date,
+): PresenceLane[] {
+  const startMs = bandStart.getTime()
+  const endMs = bandEnd.getTime()
+  const evs = collapseSpuriousEvents(
+    [...events].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)),
+  )
+
+  const lanes = new Map<string, PresenceLane>()
+  const open = new Map<string, number>() // code → inicio de la estancia abierta
+  const laneOf = (code: string, role: string): PresenceLane => {
+    let lane = lanes.get(code)
+    if (!lane) {
+      lane = {
+        code,
+        name: resolveName(ctx, code) ?? code,
+        role,
+        accent: MACHINE_ACCENTS[lanes.size % MACHINE_ACCENTS.length],
+        intervals: [],
+      }
+      lanes.set(code, lane)
+    }
+    return lane
+  }
+
+  for (const e of evs) {
+    const type = evType(e)
+    if (type !== "CHECK_IN" && type !== "CHECK_OUT") continue
+    const payload = e.payload ?? {}
+    const code = payloadStr(payload, "employee")
+    if (!code) continue
+    const role = (payloadStr(payload, "role") ?? "").toUpperCase() === "PACKAGER" ? "empacadora" : "operador"
+    const ms = Math.min(Math.max(new Date(e.occurredAt).getTime(), startMs), endMs)
+    if (type === "CHECK_IN") {
+      laneOf(code, role)
+      if (!open.has(code)) open.set(code, ms)
+    } else {
+      const from = open.get(code)
+      const lane = laneOf(code, role)
+      if (from !== undefined) {
+        if (ms > from) lane.intervals.push({ from: new Date(from), to: new Date(ms) })
+        open.delete(code)
+      } else if (ms > startMs) {
+        // Check-out sin check-in en la ventana: la estancia venía de antes.
+        lane.intervals.push({ from: new Date(startMs), to: new Date(ms) })
+      }
+    }
+  }
+  // Estancias sin check-out: siguen dentro hasta el fin de la banda.
+  for (const [code, from] of open) {
+    const lane = lanes.get(code)
+    if (lane && endMs > from) lane.intervals.push({ from: new Date(from), to: new Date(endMs) })
+  }
+
+  return [...lanes.values()].filter((l) => l.intervals.length > 0)
+}
+
 export interface StatusSegment {
   status: LedStatus
   startPct: number

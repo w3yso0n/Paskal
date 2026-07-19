@@ -21,6 +21,7 @@ import {
 import {
   buildCronoContext,
   buildMachineAccents,
+  buildMachinePresenceLanes,
   buildTimeline,
   computeCronologiaWindow,
   personCodeSet,
@@ -202,6 +203,15 @@ export default function CronologiaPage() {
   const machineAccents = useMemo(
     () => (mode === "operator" && result ? buildMachineAccents(result.items) : undefined),
     [mode, result],
+  )
+
+  // Modo máquina (espejo): carril de presencia por persona — quién estaba dentro en cada momento.
+  const presenceLanes = useMemo(
+    () =>
+      mode === "machine" && events && window_
+        ? buildMachinePresenceLanes(events, ctx, window_.bandStart, window_.bandEnd)
+        : undefined,
+    [ctx, events, mode, window_],
   )
 
   const partialData = events !== null && events.length >= EVENTS_LIMIT
@@ -451,6 +461,7 @@ export default function CronologiaPage() {
                       bandEnd={window_.bandEnd}
                       nowMs={dateIso === todayPlantIso() ? Date.now() : null}
                       machineAccents={machineAccents}
+                      presenceLanes={presenceLanes}
                       onSelect={handleSelectFromBand}
                     />
                     <TimelineList

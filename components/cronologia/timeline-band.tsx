@@ -15,9 +15,11 @@ import {
   CRONO_CATALOG,
   LED_STATUS_LABELS,
   alertIcon,
+  shortPersonName,
   type LedStatus,
   type MachineAccent,
   type MarkerCluster,
+  type PresenceLane,
   type StatusSegment,
   type TimelineItem,
 } from "@/lib/cronologia"
@@ -37,6 +39,8 @@ interface TimelineBandProps {
   nowMs?: number | null
   /** Modo operador: color de identidad por máquina (carriles y etiquetas). */
   machineAccents?: Map<string, MachineAccent>
+  /** Modo máquina: carril de presencia por persona (espejo de los carriles por máquina). */
+  presenceLanes?: PresenceLane[]
   onSelect: (anchorId: string) => void
 }
 
@@ -64,6 +68,7 @@ export function TimelineBand({
   bandEnd,
   nowMs,
   machineAccents,
+  presenceLanes,
   onSelect,
 }: TimelineBandProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -156,10 +161,18 @@ export function TimelineBand({
   const LANE_SP = 4
   const trackH = multiLane ? laneCodes.length * (LANE_H + LANE_SP) - LANE_SP : TRACK_H
 
+  // Carriles de PRESENCIA por persona (modo máquina, espejo de los carriles por máquina):
+  // barras finas debajo de la pista de estatus — quién estaba dentro en cada momento.
+  const persons = presenceLanes ?? []
+  const P_LANE_H = 14
+  const P_LANE_SP = 4
+  const personsH = persons.length ? persons.length * (P_LANE_H + P_LANE_SP) - P_LANE_SP + 8 : 0
+
   const alertsH = alertPack.rows * ROW_H
   const eventsH = eventPack.rows * ROW_H
   const trackTop = alertsH + LANE_GAP
-  const eventsTop = trackTop + trackH + LANE_GAP
+  const personsTop = trackTop + trackH + (persons.length ? 8 : 0)
+  const eventsTop = trackTop + trackH + personsH + LANE_GAP
   const axisTop = eventsTop + eventsH + 4
   const totalH = axisTop + AXIS_H
 
@@ -266,6 +279,57 @@ export function TimelineBand({
             )}
           </div>
 
+          {/* ---- Carriles de presencia por persona (modo máquina) ---- */}
+          {persons.map((lane, li) => {
+            const top = personsTop + li * (P_LANE_H + P_LANE_SP)
+            const firstPct = lane.intervals.length
+              ? bandPositionPct(lane.intervals[0].from, bandStart, bandEnd)
+              : 0
+            return (
+              <div
+                key={lane.code}
+                className="absolute inset-x-0"
+                style={{ top, height: P_LANE_H }}
+              >
+                {lane.intervals.map((iv, i) => {
+                  const l = bandPositionPct(iv.from, bandStart, bandEnd)
+                  const r = bandPositionPct(iv.to, bandStart, bandEnd)
+                  const w = Math.max(r - l, 0.1)
+                  return (
+                    <Tooltip key={i}>
+                      <TooltipTrigger asChild>
+                        <div
+                          className={cn(
+                            "absolute inset-y-0 rounded-sm opacity-75",
+                            lane.accent.dot,
+                          )}
+                          style={{ left: `${l}%`, width: `${w}%` }}
+                        />
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="text-xs">
+                        <div className="font-semibold">
+                          {formatPlantTime(iv.from)}–{formatPlantTime(iv.to)}
+                        </div>
+                        <div>
+                          {lane.name} · {lane.role}
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+                  )
+                })}
+                <span
+                  className={cn(
+                    "pointer-events-none absolute top-0 z-10 flex h-full items-center whitespace-nowrap rounded-sm border px-1 text-[9px] font-semibold leading-none",
+                    lane.accent.badge,
+                  )}
+                  style={{ left: `calc(${firstPct}% + 2px)` }}
+                >
+                  {shortPersonName(lane.name)} · {lane.role}
+                </span>
+              </div>
+            )
+          })}
+
           {/* ---- Alertas (encima de la pista) ---- */}
           {alertPack.packed.map(({ item, leftPct, row }) => {
             const chipTop = trackTop - LANE_GAP - (row + 1) * ROW_H + (ROW_H - CHIP) / 2
@@ -311,7 +375,7 @@ export function TimelineBand({
                 item={item}
                 leftPct={leftPct}
                 chipTop={chipTop}
-                stemFrom={trackTop + trackH}
+                stemFrom={trackTop + trackH + personsH}
                 stemTo={chipTop}
                 icon={<Icon className="h-4 w-4" />}
                 chipClass={cn(catalog.dotClass, "ring-background")}
@@ -326,7 +390,7 @@ export function TimelineBand({
                 key={`ec-${i}`}
                 cluster={cluster}
                 chipTop={chipTop}
-                stemFrom={trackTop + trackH}
+                stemFrom={trackTop + trackH + personsH}
                 stemTo={chipTop}
                 chipClass="bg-muted text-muted-foreground ring-background"
                 onSelect={onSelect}
