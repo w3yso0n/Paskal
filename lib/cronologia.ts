@@ -1136,6 +1136,14 @@ export function buildTimeline(args: {
   }
   for (const item of items) item.unitsSoFar = unitsAt(item.at.getTime())
 
+  // La producción NORMAL ya no va como renglón del listado: el riel (columna derecha) y el
+  // hover de la banda cuentan el conteo, y el renglón "Produjo X · 06:49–15:44" anclado a su
+  // hora de inicio rompía la lectura cronológica. Se conservan los tramos que SÍ son sucesos:
+  // huérfanas pendientes (llevan Asignar) y producción atribuida después (parte de la anomalía).
+  const visibleItems = items.filter(
+    (i) => i.kind !== "production_span" || (i.badges?.length ?? 0) > 0,
+  )
+
   let running = 0
   let orphanUnits = 0
   for (const item of items) {
@@ -1157,7 +1165,7 @@ export function buildTimeline(args: {
         : []
 
   return {
-    items,
+    items: visibleItems,
     totalUnits: running,
     orphanUnits,
     alertCount: mergedAlertItems.length,
