@@ -406,7 +406,6 @@ export function normalizeEvent(e: ApiProductionEvent, ctx: CronoContext): Timeli
     }
     case "COUNTER_RESET": {
       const from = payloadNum(payload, "from")
-      const to = payloadNum(payload, "to")
       const midSession = payload["midSession"] === true
       const ops = Array.isArray(payload["operators"])
         ? (payload["operators"] as unknown[])
@@ -418,12 +417,9 @@ export function normalizeEvent(e: ApiProductionEvent, ctx: CronoContext): Timeli
       const badge: TimelineBadge = midSession
         ? { label: "a media sesión", tone: "warning" }
         : { label: "al iniciar sesión", tone: "info" }
-      // El destino real de un reset SIEMPRE es 0. La telemetría es periódica, así que si ya se
-      // produjeron piezas antes de la muestra, `to` las capta (>0) — no es que reseteara a `to`.
+      // El destino real de un reset SIEMPRE es 0 (si `to` capta >0 es que la telemetría muestreó
+      // después de nuevas piezas — producción normal que ya cuenta el riel; no se anota aquí).
       const detailParts: string[] = []
-      if (to !== null && to > COUNTER_RESET_RESIDUAL_MAX) {
-        detailParts.push(`~${formatUnits(to)} ya producidas tras el reset`)
-      }
       if (ops.length) detailParts.push(`Operador: ${ops.join(", ")}`)
       return {
         ...base,
@@ -778,10 +774,6 @@ export function personCodeSet(
 /** Segundos máximos para considerar un par de eventos un "rebote" de doble lectura de tarjeta. */
 const SPURIOUS_TAP_SECONDS = 5
 
-/** Un `to` de reset por encima de esto significa que ya se produjeron piezas antes de la muestra
- * (el destino real siempre es 0). Igual al COUNTER_ZERO_THRESHOLD del backend. */
-const COUNTER_RESET_RESIDUAL_MAX = 5
-
 function evType(e: ApiProductionEvent): string {
   return (e.eventType ?? "").trim().toUpperCase()
 }
@@ -1043,6 +1035,34 @@ export function buildTimeline(args: {
 
   const spanItems = groupProductionSpans(prodEvents, plainItems, ctx, args.gapMinutes)
 
+  // Volcado AUTOMÁTICO disparado por el check-in de la empacadora (mismo instante): se fusionan
+  // en UN renglón — el check-in es el suceso y la atribución su consecuencia; verlos separados
+  // hacía parecer dos cosas distintas. El volcado MANUAL (supervisor, sin tap) queda como
+  // renglón propio. Funciona igual en vivo: ambos eventos llegan juntos.
+  const fusedDumpIds = new Set<string>()
+  for (const dump of spanItems) {
+    if (dump.kind !== "orphan_span" || !dump.units || dump.countsInTotal !== false) continue
+    if (dump.badges?.some((b) => b.label === "por supervisor")) continue
+    const checkin = plainItems.find(
+      (c) =>
+        c.kind === "checkin" &&
+        c.machineId === dump.machineId &&
+        c.badges?.some((b) => b.label === "empacadora") &&
+        Math.abs(c.at.getTime() - dump.at.getTime()) <= 2_000,
+    )
+    if (!checkin) continue
+    checkin.detail = [
+      checkin.detail,
+      `Se le atribuyen ${formatUnits(dump.units)} pzas de empaque pendientes`,
+    ]
+      .filter(Boolean)
+      .join(" · ")
+    if (dump.resolvesAlertId && !checkin.resolvesAlertId)
+      checkin.resolvesAlertId = dump.resolvesAlertId
+    checkin.sourceEventIds = [...checkin.sourceEventIds, ...dump.sourceEventIds]
+    fusedDumpIds.add(dump.id)
+  }
+
   // Alertas redundantes con lo que ya muestra la cronología (A3/A4/A6):
   //  - counter_reset: el evento COUNTER_RESET ya lo dice todo (incluye midSession).
   //  - no_checkin: ya lo muestra el tramo "sin operador" (orphan_span) con su rango y Asignar.
@@ -1080,6 +1100,30 @@ export function buildTimeline(args: {
       return resolved
         ? { ...i, resolvedBy: resolved.mode, resolvedByName: resolved.by ?? undefined }
         : i
+    })
+    .map((i) => {
+      // Horas excedidas: anclar la historia — a qué hora ENTRÓ la persona y que la alerta nació
+      // justo al cumplirse el límite (el mensaje trae el "lleva X h" de la ÚLTIMA actualización,
+      // que sin el ancla se leía como si la alerta hubiera llegado tarde). El check-in se busca
+      // en los propios eventos, así funciona también en históricos sin metadata.
+      if (i.alertKind !== "overtime_hours") return i
+      const codeMatch = /\(([\w-]+)\)/.exec(i.detail ?? "")
+      const code = codeMatch?.[1]?.trim().toLowerCase()
+      if (!code) return i
+      const checkin = [...events]
+        .reverse()
+        .find(
+          (e) =>
+            evType(e) === "CHECK_IN" &&
+            String((e.payload ?? {})["employee"] ?? "").trim().toLowerCase() === code &&
+            new Date(e.occurredAt).getTime() <= i.at.getTime(),
+        )
+      if (!checkin) return i
+      const entered = formatPlantTime(new Date(checkin.occurredAt))
+      return {
+        ...i,
+        detail: `${i.detail} · Entró a las ${entered}; el límite se cumplió a las ${formatPlantTime(i.at)}`,
+      }
     })
 
   // Ráfagas de la misma alerta (misma causa y máquina en minutos): re-taps sin resetear o idle
@@ -1141,7 +1185,8 @@ export function buildTimeline(args: {
   // hora de inicio rompía la lectura cronológica. Se conservan los tramos que SÍ son sucesos:
   // huérfanas pendientes (llevan Asignar) y producción atribuida después (parte de la anomalía).
   const visibleItems = items.filter(
-    (i) => i.kind !== "production_span" || (i.badges?.length ?? 0) > 0,
+    (i) =>
+      (i.kind !== "production_span" || (i.badges?.length ?? 0) > 0) && !fusedDumpIds.has(i.id),
   )
 
   let running = 0
