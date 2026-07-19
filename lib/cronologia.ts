@@ -1091,7 +1091,9 @@ export function buildTimeline(args: {
 
   // Riel de producción del listado: cuánto llevaba producido el día AL MOMENTO de cada suceso,
   // para leer la lista con el contador subiendo a la derecha ("cuando sonó el paro llevaba
-  // 940"). Los resúmenes de rollup horario se prorratean linealmente dentro de su rango.
+  // 940"). Solo cuenta piezas YA OBSERVADAS (registros con fin ≤ el momento): el contador real
+  // avanza de 10 en 10 y estimar dentro de un resumen horario inventaba números que la máquina
+  // nunca marcó. En días compactados por rollup el valor avanza al cierre de cada hora.
   const counterPieces = prodEvents
     .map(prodPieceFromEvent)
     .filter((p): p is ProdPiece => p !== null && !p.isDump && p.units > 0)
@@ -1099,11 +1101,8 @@ export function buildTimeline(args: {
   const unitsAt = (t: number): number => {
     let sum = 0
     for (const p of counterPieces) {
-      const s = p.start.getTime()
-      if (s > t) break // ordenadas por inicio: las que siguen empiezan aún después
-      const e = p.end.getTime()
-      if (t >= e) sum += p.units
-      else sum += Math.round((p.units * (t - s)) / (e - s))
+      if (p.start.getTime() > t) break // ordenadas por inicio: las que siguen empiezan aún después
+      if (p.end.getTime() <= t) sum += p.units
     }
     return sum
   }
@@ -1450,14 +1449,30 @@ export function buildOperatorStatusSegments(
     }
   }
 
+  // Conteo del hover: piezas DE LA PERSONA (mismo criterio que el riel del listado — solo lo
+  // ya observado, sin estimar dentro de resúmenes). "En este tramo" = su máquina en ese rango;
+  // "lleva del día" = todo lo suyo hasta el fin del tramo, converge con su Total del día.
+  const personPieces = allEvents
+    .filter((e) => eventInvolvesPerson(e, codes))
+    .map(prodPieceFromEvent)
+    .filter((p): p is ProdPiece => p !== null && !p.isDump && p.units > 0)
+  const observedUpTo = (t: number, machineId?: string): number => {
+    let sum = 0
+    for (const p of personPieces) {
+      if (machineId && p.machineId !== machineId) continue
+      if (p.end.getTime() <= t) sum += p.units
+    }
+    return sum
+  }
+
   return merged.map((seg) => ({
     status: seg.status,
     from: new Date(seg.from),
     to: new Date(seg.to),
     startPct: bandPositionPct(new Date(seg.from), bandStart, bandEnd),
     endPct: bandPositionPct(new Date(seg.to), bandStart, bandEnd),
-    producedUnits: 0,
-    cumulativeValid: 0,
+    producedUnits: observedUpTo(seg.to, seg.machineId) - observedUpTo(seg.from, seg.machineId),
+    cumulativeValid: observedUpTo(seg.to),
     machineCode: ctx.machineCodeById.get(seg.machineId),
   }))
 }

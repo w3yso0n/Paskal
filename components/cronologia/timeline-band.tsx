@@ -232,16 +232,21 @@ export function TimelineBand({
                       {LED_STATUS_LABELS[seg.status]}
                       {seg.machineCode ? ` · ${seg.machineCode}` : ""}
                     </div>
-                    {seg.producedUnits > 0 ? (
-                      <div className="opacity-80">
-                        En este tramo:{" "}
-                        <span className="font-semibold">
-                          +{formatUnits(seg.producedUnits)} pzas
-                        </span>{" "}
-                        · Total válido:{" "}
-                        <span className="font-semibold">{formatUnits(seg.cumulativeValid)}</span>
-                      </div>
-                    ) : null}
+                    {/* El conteo va SIEMPRE: aunque el tramo no produjo, ver cuánto llevaba
+                        el día en ese momento es parte de la historia. */}
+                    <div className="opacity-80">
+                      {seg.producedUnits > 0 ? (
+                        <>
+                          En este tramo:{" "}
+                          <span className="font-semibold">
+                            +{formatUnits(seg.producedUnits)} pzas
+                          </span>{" "}
+                          ·{" "}
+                        </>
+                      ) : null}
+                      Lleva del día:{" "}
+                      <span className="font-semibold">{formatUnits(seg.cumulativeValid)} pzas</span>
+                    </div>
                   </TooltipContent>
                 </Tooltip>
               )
