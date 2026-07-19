@@ -83,6 +83,9 @@ export interface TimelineItem {
   units?: number
   /** Piezas de la máquina acumuladas en el día al cierre de este tramo. */
   cumulativeUnits?: number
+  /** Riel de producción del listado: piezas del día acumuladas AL MOMENTO del suceso
+   * (según el filtro del modo: máquina = contador de la máquina, operador = lo suyo). */
+  unitsSoFar?: number
   /** `false` en volcados atribuidos: no son piezas del contador de la máquina. */
   countsInTotal?: boolean
   /** Si trae valor, se puede atribuir estas piezas desde la cronología. */
@@ -1085,6 +1088,26 @@ export function buildTimeline(args: {
   const items = [...plainItems, ...spanItems, ...mergedAlertItems].sort(
     (a, b) => a.at.getTime() - b.at.getTime(),
   )
+
+  // Riel de producción del listado: cuánto llevaba producido el día AL MOMENTO de cada suceso,
+  // para leer la lista con el contador subiendo a la derecha ("cuando sonó el paro llevaba
+  // 940"). Los resúmenes de rollup horario se prorratean linealmente dentro de su rango.
+  const counterPieces = prodEvents
+    .map(prodPieceFromEvent)
+    .filter((p): p is ProdPiece => p !== null && !p.isDump && p.units > 0)
+    .sort((a, b) => a.start.getTime() - b.start.getTime())
+  const unitsAt = (t: number): number => {
+    let sum = 0
+    for (const p of counterPieces) {
+      const s = p.start.getTime()
+      if (s > t) break // ordenadas por inicio: las que siguen empiezan aún después
+      const e = p.end.getTime()
+      if (t >= e) sum += p.units
+      else sum += Math.round((p.units * (t - s)) / (e - s))
+    }
+    return sum
+  }
+  for (const item of items) item.unitsSoFar = unitsAt(item.at.getTime())
 
   let running = 0
   let orphanUnits = 0

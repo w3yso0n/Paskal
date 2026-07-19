@@ -50,10 +50,23 @@ export function TimelineList({
   const rows = items
   if (rows.length === 0) return null
 
+  // Riel de producción: columna paralela a la derecha con el acumulado del día AL MOMENTO de
+  // cada suceso — el listado se lee a la izquierda y el contador subiendo a la derecha. Solo
+  // se resalta cuando el valor avanzó respecto a la fila anterior.
+  const hasRail = rows.some((r) => (r.unitsSoFar ?? 0) > 0)
+
   return (
-    <div>
-      <ol className="relative ml-[120px] border-l border-border">
-        {rows.map((item) => {
+    <div className="relative">
+      {hasRail ? (
+        <>
+          <div className="mb-1 text-right text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Producción del día (pzas)
+          </div>
+          <div className="pointer-events-none absolute bottom-10 right-[96px] top-6 w-px bg-border" />
+        </>
+      ) : null}
+      <ol className={cn("relative ml-[120px] border-l border-border", hasRail && "mr-[112px]")}>
+        {rows.map((item, index) => {
           const catalog = CRONO_CATALOG[item.kind]
           const Icon =
             item.kind === "alert" && item.alertKind ? alertIcon(item.alertKind) : catalog.icon
@@ -87,6 +100,20 @@ export function TimelineList({
               >
                 {timeLabel}
               </span>
+              {/* Riel: acumulado del día al momento del suceso, a la derecha de la línea. */}
+              {hasRail && typeof item.unitsSoFar === "number" ? (
+                <span
+                  className={cn(
+                    "absolute -right-[112px] w-[104px] whitespace-nowrap pl-3 text-right text-xs tabular-nums",
+                    compact ? "top-1.5" : "top-3",
+                    (index === 0 ? item.unitsSoFar > 0 : item.unitsSoFar !== rows[index - 1].unitsSoFar)
+                      ? "font-medium text-foreground"
+                      : "text-muted-foreground/60",
+                  )}
+                >
+                  {formatUnits(item.unitsSoFar)}
+                </span>
+              ) : null}
               {/* Icono sobre la línea conectora (más chico y tenue en producción) */}
               <span
                 className={cn(
