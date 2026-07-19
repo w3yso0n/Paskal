@@ -154,7 +154,10 @@ export function TimelineList({
                 ) : null}
                 {item.resolvedBy ? (
                   <Badge className="border-transparent bg-green-100 text-[10px] text-green-700 dark:bg-green-900/40 dark:text-green-300">
-                    resuelta · {item.resolvedBy === "auto" ? "automática" : "por supervisor"}
+                    resuelta ·{" "}
+                    {item.resolvedBy === "auto"
+                      ? "automática"
+                      : `por ${item.resolvedByName ?? "supervisor"}`}
                   </Badge>
                 ) : null}
               </div>

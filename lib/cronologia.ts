@@ -92,8 +92,12 @@ export interface TimelineItem {
   attribution?: TimelineAttribution
   /** Este item (volcado de atribución) resuelve la alerta con este id. */
   resolvesAlertId?: string
+  /** Autoría del volcado manual: usuario de plataforma que atribuyó. */
+  attributedByUser?: string
   /** Esta alerta fue resuelta por una atribución ('auto' | 'manual'). */
   resolvedBy?: "auto" | "manual"
+  /** Con `resolvedBy: manual`: usuario de plataforma que hizo la atribución. */
+  resolvedByName?: string
   sourceEventIds: string[]
 }
 
@@ -335,6 +339,11 @@ function machineCodeFor(ctx: CronoContext, machineId: string | null): string | u
   return machineId ? ctx.machineCodeById.get(machineId) : undefined
 }
 
+/** Usuario de plataforma que ejecutó el movimiento (autoría): nombre, o correo si no hay. */
+function actorLabel(payload: Record<string, unknown>): string | null {
+  return payloadStr(payload, "byUserName") ?? payloadStr(payload, "byUser")
+}
+
 /**
  * Evento suelto (no-PROD) → item narrativo. PROD/ORPHAN_PROD devuelven null: se agrupan en
  * tramos aparte. `event_type` es texto libre en la BD — un tipo desconocido cae al genérico.
@@ -383,11 +392,14 @@ export function normalizeEvent(e: ApiProductionEvent, ctx: CronoContext): Timeli
       const badges: TimelineBadge[] = []
       if (roleLabel) badges.push({ label: roleLabel, tone: "neutral" })
       if (shift) badges.push({ label: `turno ${SHIFT_LABELS[shift]}`, tone: "info" })
+      // Autoría: si el movimiento lo hizo un usuario desde plataforma, decir QUIÉN.
+      const by = actorLabel(payload)
+      const viaText = via ? `Vía ${via}${by ? ` · por ${by}` : ""}` : by ? `Por ${by}` : undefined
       return {
         ...base,
         kind: isIn ? "checkin" : "checkout",
         title: `${isIn ? "Check-in" : "Check-out"}: ${name}`,
-        detail: via ? `Vía ${via}` : undefined,
+        detail: viaText,
         badges: badges.length ? badges : undefined,
       }
     }
@@ -426,10 +438,12 @@ export function normalizeEvent(e: ApiProductionEvent, ctx: CronoContext): Timeli
     case "SKU_CHANGE": {
       const from = payloadStr(payload, "from")
       const to = payloadStr(payload, "to")
+      const by = actorLabel(payload)
       return {
         ...base,
         kind: "sku_change",
         title: `Cambio de SKU: ${from ?? "—"} → ${to ?? "—"}`,
+        detail: by ? `Por ${by} (plataforma)` : undefined,
       }
     }
     case "MAINTENANCE_IN":
@@ -518,6 +532,8 @@ interface ProdPiece {
   attributionMode: string | null
   /** 'orphan' | 'packager_orphan' — de qué tipo de huérfana proviene el volcado. */
   attributedFrom: string | null
+  /** Autoría de la atribución manual: nombre (o correo) del usuario de plataforma. */
+  attributedBy: string | null
 }
 
 function prodPieceFromEvent(e: ApiProductionEvent): ProdPiece | null {
@@ -547,6 +563,7 @@ function prodPieceFromEvent(e: ApiProductionEvent): ProdPiece | null {
     orphanAlertId: payloadStr(payload, "orphanAlertId"),
     attributionMode: payloadStr(payload, "attributionMode"),
     attributedFrom: attr,
+    attributedBy: actorLabel(payload),
   }
 }
 
@@ -669,6 +686,13 @@ export function groupProductionSpans(
           : piece.attributionMode === "manual"
             ? { label: "por supervisor", tone: "info" }
             : { label: "volcado atribuido", tone: "info" }
+      // Autoría: la atribución manual dice QUÉ usuario de plataforma la hizo.
+      const dumpDetail = [
+        piece.sku ? `SKU ${piece.sku}` : null,
+        piece.attributionMode === "manual" && piece.attributedBy
+          ? `Atribuida por ${piece.attributedBy}`
+          : null,
+      ].filter(Boolean)
       items.push({
         id: `tl-span-${piece.eventId}`,
         kind: "orphan_span",
@@ -677,11 +701,12 @@ export function groupProductionSpans(
         machineId: piece.machineId,
         machineCode: machineCodeFor(ctx, piece.machineId),
         title,
-        detail: piece.sku ? `SKU ${piece.sku}` : undefined,
+        detail: dumpDetail.length ? dumpDetail.join(" · ") : undefined,
         badges: [modeBadge],
         units: piece.units,
         countsInTotal: false,
         resolvesAlertId: piece.orphanAlertId ?? undefined,
+        attributedByUser: piece.attributedBy ?? undefined,
         sourceEventIds: [piece.eventId],
       })
       continue
@@ -1030,11 +1055,11 @@ export function buildTimeline(args: {
     maint.some((m) => from < m.to && to > m.from)
 
   // A8: alertas resueltas por una atribución (el volcado liga con su alerta vía orphanAlertId).
-  const resolvedByAttribution = new Map<string, "auto" | "manual">()
+  const resolvedByAttribution = new Map<string, { mode: "auto" | "manual"; by: string | null }>()
   for (const s of spanItems) {
     if (!s.resolvesAlertId) continue
     const mode = s.badges?.[0]?.label === "automática" ? "auto" : "manual"
-    resolvedByAttribution.set(s.resolvesAlertId, mode)
+    resolvedByAttribution.set(s.resolvesAlertId, { mode, by: s.attributedByUser ?? null })
   }
 
   const alertItems = relevantAlerts
@@ -1051,7 +1076,9 @@ export function buildTimeline(args: {
     })
     .map((i) => {
       const resolved = resolvedByAttribution.get(i.sourceEventIds[0])
-      return resolved ? { ...i, resolvedBy: resolved } : i
+      return resolved
+        ? { ...i, resolvedBy: resolved.mode, resolvedByName: resolved.by ?? undefined }
+        : i
     })
 
   // Ráfagas de la misma alerta (misma causa y máquina en minutos): re-taps sin resetear o idle
