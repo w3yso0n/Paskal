@@ -5,6 +5,7 @@ import { Analytics } from '@vercel/analytics/next'
 import { Toaster } from 'sonner'
 import { AuthProvider } from '@/contexts/auth-context'
 import { AuthGuard } from '@/components/auth/auth-guard'
+import { TRANSLATE_DOM_GUARD_SNIPPET } from '@/lib/translate-dom-guard'
 import './globals.css'
 
 const _geist = Geist({ subsets: ["latin"] });
@@ -40,6 +41,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="es">
+      <head>
+        {/* Antes de hidratar: tolera los nodos que mueve el traductor del navegador
+            (si no, "Traducir a inglés" tumba la página). Ver lib/translate-dom-guard.ts */}
+        <script dangerouslySetInnerHTML={{ __html: TRANSLATE_DOM_GUARD_SNIPPET }} />
+      </head>
       <body className={`font-sans antialiased`}>
         <AuthProvider>
           <AuthGuard>
