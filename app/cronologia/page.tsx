@@ -204,8 +204,10 @@ export default function CronologiaPage() {
       personName: selectedEmployee?.fullName,
       ctx,
       window: window_ ? { bandStart: window_.bandStart, bandEnd: window_.bandEnd } : undefined,
+      // EN VIVO: el "ahora" avanza con cada refresco de datos (poll cada ALERTS_POLL_MS).
+      nowMs: dateIso === todayPlantIso() ? Date.now() : null,
     })
-  }, [alerts, ctx, events, mode, selectedEmployee, window_])
+  }, [alerts, ctx, dateIso, events, mode, selectedEmployee, window_])
 
   // Modo operador: color de identidad por máquina (carriles de la banda + badges del listado)
   // para distinguir de un vistazo qué pasó en cada máquina donde estuvo la persona.
@@ -218,9 +220,15 @@ export default function CronologiaPage() {
   const presenceLanes = useMemo(
     () =>
       mode === "machine" && events && window_
-        ? buildMachinePresenceLanes(events, ctx, window_.bandStart, window_.bandEnd)
+        ? buildMachinePresenceLanes(
+            events,
+            ctx,
+            window_.bandStart,
+            window_.bandEnd,
+            dateIso === todayPlantIso() ? Date.now() : undefined,
+          )
         : undefined,
-    [ctx, events, mode, window_],
+    [ctx, dateIso, events, mode, window_],
   )
 
   const partialData = events !== null && events.length >= EVENTS_LIMIT

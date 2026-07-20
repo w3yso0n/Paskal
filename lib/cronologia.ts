@@ -961,8 +961,12 @@ export function buildTimeline(args: {
   gapMinutes?: number
   /** Ventana de la banda; con ella se reconstruye la pista de estatus LED (modo máquina). */
   window?: { bandStart: Date; bandEnd: Date }
+  /** EN VIVO (día de hoy): "ahora" en ms — estatus, sesiones abiertas y presencias se cortan
+   * ahí en vez de pintarse hacia el futuro (tiempo que aún no pasa). */
+  nowMs?: number | null
 }): CronologiaResult {
   const { alerts, mode, personCodes, ctx } = args
+  const capMs = args.nowMs ?? undefined
   // A2: limpiar rebotes de doble-lectura (OFFLINE doble, taps/mantenimiento espurios) para la vista.
   let events = collapseSpuriousEvents(
     [...args.events].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)),
@@ -982,7 +986,7 @@ export function buildTimeline(args: {
       : { start: new Date(0), end: new Date(0) }
     const bandStart = args.window?.bandStart ?? fallback.start
     const bandEnd = args.window?.bandEnd ?? fallback.end
-    const intervals = operatorMachineIntervals(events, personCodes, bandStart, bandEnd)
+    const intervals = operatorMachineIntervals(events, personCodes, bandStart, bandEnd, capMs)
     const inPresence = (mid: string | null, t: number) =>
       mid !== null &&
       intervals.some(
@@ -1284,9 +1288,9 @@ export function buildTimeline(args: {
   const statusSegments = !args.window
     ? []
     : mode === "machine"
-      ? buildStatusSegments(events, spanItems, args.window.bandStart, args.window.bandEnd)
+      ? buildStatusSegments(events, spanItems, args.window.bandStart, args.window.bandEnd, capMs)
       : personCodes
-        ? buildOperatorStatusSegments(allEvents, personCodes, ctx, args.window.bandStart, args.window.bandEnd)
+        ? buildOperatorStatusSegments(allEvents, personCodes, ctx, args.window.bandStart, args.window.bandEnd, capMs)
         : []
 
   return {
@@ -1436,9 +1440,11 @@ export function buildMachinePresenceLanes(
   ctx: CronoContext,
   bandStart: Date,
   bandEnd: Date,
+  /** EN VIVO: las estancias abiertas se cortan en "ahora" — el futuro aún no pasa. */
+  capMs?: number,
 ): PresenceLane[] {
   const startMs = bandStart.getTime()
-  const endMs = bandEnd.getTime()
+  const endMs = Math.min(bandEnd.getTime(), capMs ?? Number.POSITIVE_INFINITY)
   const evs = collapseSpuriousEvents(
     [...events].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt)),
   )
@@ -1528,9 +1534,12 @@ export function buildStatusSegments(
   spanItems: TimelineItem[],
   bandStart: Date,
   bandEnd: Date,
+  /** EN VIVO: el estatus solo se pinta hasta "ahora" — el futuro aún no pasa. */
+  capMs?: number,
 ): StatusSegment[] {
   const startMs = bandStart.getTime()
-  const endMs = bandEnd.getTime()
+  const endMs = Math.min(bandEnd.getTime(), capMs ?? Number.POSITIVE_INFINITY)
+  if (endMs <= startMs) return []
   const evs = [...events].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt))
   const timeOf = (e: ApiProductionEvent) => new Date(e.occurredAt).getTime()
 
@@ -1644,9 +1653,11 @@ function operatorMachineIntervals(
   codes: ReadonlySet<string>,
   bandStart: Date,
   bandEnd: Date,
+  /** EN VIVO: las sesiones abiertas llegan hasta "ahora", no hasta el fin de la banda. */
+  capMs?: number,
 ): { machineId: string; from: number; to: number }[] {
   const startMs = bandStart.getTime()
-  const endMs = bandEnd.getTime()
+  const endMs = Math.min(bandEnd.getTime(), capMs ?? Number.POSITIVE_INFINITY)
   const sorted = allEvents
     .filter((e) => {
       const t = evType(e)
@@ -1694,14 +1705,19 @@ export function buildOperatorStatusSegments(
   ctx: CronoContext,
   bandStart: Date,
   bandEnd: Date,
+  /** EN VIVO: sesiones y estatus solo hasta "ahora". */
+  capMs?: number,
 ): StatusSegment[] {
-  const intervals = operatorMachineIntervals(allEvents, codes, bandStart, bandEnd)
+  const intervals = operatorMachineIntervals(allEvents, codes, bandStart, bandEnd, capMs)
   if (intervals.length === 0) return []
 
   const statusByMachine = new Map<string, StatusSegment[]>()
   for (const mid of new Set(intervals.map((iv) => iv.machineId))) {
     const mEvents = allEvents.filter((e) => e.machineId === mid)
-    statusByMachine.set(mid, buildStatusSegments(mEvents, machineSpanItems(mEvents, ctx), bandStart, bandEnd))
+    statusByMachine.set(
+      mid,
+      buildStatusSegments(mEvents, machineSpanItems(mEvents, ctx), bandStart, bandEnd, capMs),
+    )
   }
 
   const raw: { status: LedStatus; from: number; to: number; machineId: string }[] = []
