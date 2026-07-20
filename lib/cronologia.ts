@@ -815,6 +815,10 @@ function secondsBetween(a: ApiProductionEvent, b: ApiProductionEvent): number {
  * medio) para tratarlos como registro duplicado (p. ej. doble guardado desde plataforma). */
 const DUPLICATE_TAP_SECONDS = 120
 
+/** Ráfaga de taps: check-in/out alternados de la misma persona/máquina con menos de esto entre
+ * cada tap (doble lectura del PN532 + re-taps de la operadora intentando quedar bien). */
+const TAP_BURST_SECONDS = 180
+
 /** ¿El evento demuestra que el DISPOSITIVO está vivo? (para cerrar intervalos OFFLINE y
  * deduplicar OFFLINEs). Los eventos de plataforma no cuentan: los genera el backend. */
 function isDeviceProofEvent(e: ApiProductionEvent): boolean {
@@ -891,6 +895,45 @@ export function collapseSpuriousEvents(events: ApiProductionEvent[]): ApiProduct
       const prev = lastIn.get(key)
       if (prev !== undefined && ms - prev <= DUPLICATE_TAP_SECONDS * 1000) drop.add(e.id)
       else lastIn.set(key, ms)
+    }
+  }
+
+  // Ráfagas de check-in/out de la MISMA persona en la MISMA máquina (3+ taps con <3 min entre
+  // cada uno — doble lectura del lector + re-taps): en la vista queda solo el ESTADO FINAL.
+  // Si la ráfaga termina en el mismo estado en que empezó a transitar (in→…→in) se conserva el
+  // PRIMER tap (la llegada real); si queda neta en nada (in→…→out) se quita completa. Solo
+  // check-in/out: un in/out de visita corta real (2 taps) y el mantenimiento no se tocan.
+  const checkTapsByKey = new Map<string, ApiProductionEvent[]>()
+  for (const e of events) {
+    if (drop.has(e.id)) continue
+    const type = evType(e)
+    if (type !== "CHECK_IN" && type !== "CHECK_OUT") continue
+    const emp = evEmployee(e)
+    if (!emp || !e.machineId) continue
+    const key = `${emp}|${e.machineId}`
+    const list = checkTapsByKey.get(key)
+    if (list) list.push(e)
+    else checkTapsByKey.set(key, [e])
+  }
+  for (const taps of checkTapsByKey.values()) {
+    let start = 0
+    while (start < taps.length) {
+      let end = start
+      while (
+        end + 1 < taps.length &&
+        secondsBetween(taps[end], taps[end + 1]) <= TAP_BURST_SECONDS
+      ) {
+        end++
+      }
+      const chain = taps.slice(start, end + 1)
+      if (chain.length >= 3) {
+        const netChange = evType(chain[0]) === evType(chain[chain.length - 1])
+        for (let i = 0; i < chain.length; i++) {
+          if (netChange && i === 0) continue // conservar la llegada/salida real
+          drop.add(chain[i].id)
+        }
+      }
+      start = end + 1
     }
   }
 
