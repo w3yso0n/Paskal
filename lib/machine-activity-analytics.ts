@@ -40,6 +40,97 @@ export function inactivityEpisodeMinutes(eventTypes: string[]): number {
   return 15
 }
 
+/** Alerta idle del motor actual (tabla `alerts`), para medir paro real. */
+export type IdleAlertForActivity = {
+  id: string
+  machineId: string | null
+  /** Etiqueta de máquina alineada con `ActivityRow.machine_id` (código/nombre). */
+  machineLabel: string
+  createdAt: string
+  closedAt: string | null
+  metadata: Record<string, unknown> | null
+  severity?: string | null
+}
+
+export type IdleAlertEpisode = {
+  startMs: number
+  endMs: number
+  minutes: number
+  /** Ancla de la ventana continua (mismo último product/check-in). */
+  windowKey: string
+}
+
+/**
+ * Duración del paro idle.
+ * Prioridad: max(span lastProd/check-in→cierre, metadata.idleMinutes, vida_alerta+umbral, umbral).
+ * Así no aparece "2 min" en un Tipo 1 (≥15 min) cuando el ancla de metadata quedó corta
+ * (p. ej. reopen o check-in reciente).
+ */
+export function resolveIdleAlertEpisode(
+  alert: Pick<IdleAlertForActivity, "createdAt" | "closedAt" | "metadata" | "machineId">,
+  nowMs: number = Date.now(),
+  opts: { minMinutes?: number } = {},
+): IdleAlertEpisode | null {
+  const md = alert.metadata ?? {}
+  const lastProd =
+    typeof md.lastProductionAt === "string" ? new Date(md.lastProductionAt).getTime() : 0
+  const checkin =
+    typeof md.checkedInAt === "string" ? new Date(md.checkedInAt).getTime() : 0
+  const windowAnchor = Math.max(lastProd, checkin)
+  const createdMs = new Date(alert.createdAt).getTime()
+  const closedMs = alert.closedAt ? new Date(alert.closedAt).getTime() : Number.NaN
+  const endMs = Number.isFinite(closedMs) ? closedMs : nowMs
+  if (!Number.isFinite(endMs)) return null
+
+  const idleMeta = Number(md.idleMinutes)
+  const idleMetaMin =
+    Number.isFinite(idleMeta) && idleMeta > 0 ? Math.round(idleMeta) : 0
+  const minMinutes =
+    opts.minMinutes != null && opts.minMinutes > 0 ? Math.round(opts.minMinutes) : 0
+
+  let startMs = windowAnchor
+  if (!startMs || !Number.isFinite(startMs)) {
+    if (idleMetaMin > 0) {
+      startMs = endMs - idleMetaMin * 60_000
+    } else if (Number.isFinite(createdMs)) {
+      startMs = createdMs - minMinutes * 60_000
+    } else {
+      return null
+    }
+  }
+
+  const spanMin =
+    endMs > startMs ? Math.round((endMs - startMs) / 60_000) : 0
+  const openLifetimeMin =
+    Number.isFinite(createdMs) && endMs > createdMs
+      ? Math.round((endMs - createdMs) / 60_000)
+      : 0
+  // Al crearse la alerta ya se había alcanzado el umbral → vida abierta + umbral ≈ paro total.
+  const fromOpenAndThreshold =
+    openLifetimeMin > 0 && minMinutes > 0 ? openLifetimeMin + minMinutes : 0
+
+  const minutes = Math.max(1, spanMin, idleMetaMin, fromOpenAndThreshold, minMinutes)
+
+  // Si el span del ancla quedó corto, alinear el inicio con la duración reportada.
+  if (spanMin + 1 < minutes) {
+    startMs = endMs - minutes * 60_000
+  }
+
+  return {
+    startMs,
+    endMs,
+    minutes,
+    windowKey: `${alert.machineId ?? "—"}|${windowAnchor || startMs}`,
+  }
+}
+
+function minutesOverlapDay(startMs: number, endMs: number, dayStartMs: number, dayEndMs: number): number {
+  const from = Math.max(startMs, dayStartMs)
+  const to = Math.min(endMs, dayEndMs)
+  if (to <= from) return 0
+  return (to - from) / 60_000
+}
+
 export function formatDurationMinutes(totalMinutes: number): string {
   const m = Math.max(0, Math.round(totalMinutes))
   if (m < 60) return `${m} min`
@@ -122,7 +213,7 @@ const EPISODE_GAP_MS = 90 * 60_000
 
 export function buildMachineActivitySummary(
   rows: ActivityRow[],
-  options: { refDay?: string | null } = {},
+  options: { refDay?: string | null; idleAlerts?: IdleAlertForActivity[]; nowMs?: number } = {},
 ): MachineActivitySummary {
   const empty: MachineActivitySummary = {
     refDay: options.refDay ?? null,
@@ -134,7 +225,10 @@ export function buildMachineActivitySummary(
     episodes: [],
   }
 
-  if (rows.length === 0) return empty
+  const idleAlerts = options.idleAlerts ?? []
+  if (rows.length === 0 && idleAlerts.length === 0) return empty
+
+  const nowMs = options.nowMs ?? Date.now()
 
   let refDay = options.refDay ?? null
   if (!refDay) {
@@ -146,11 +240,19 @@ export function buildMachineActivitySummary(
         if (!refDay || k > refDay) refDay = k
       }
     }
+    for (const a of idleAlerts) {
+      const ep = resolveIdleAlertEpisode(a, nowMs)
+      if (!ep) continue
+      const k = dayKeyFromDate(new Date(ep.endMs))
+      if (!refDay || k > refDay) refDay = k
+    }
   }
   if (!refDay) return empty
 
   const dayStart = new Date(`${refDay}T00:00:00`)
   const dayEnd = new Date(`${refDay}T23:59:59.999`)
+  const dayStartMs = dayStart.getTime()
+  const dayEndMs = dayEnd.getTime()
 
   const dayRows = rows.filter((r) => {
     const d = new Date(r.timestamp)
@@ -171,18 +273,29 @@ export function buildMachineActivitySummary(
     { activeHours: Set<number>; inactiveMinutes: number; productionEvents: number; episodes: number }
   >()
   const hourlyBuckets = new Map<number, { activeMinutes: number; inactiveMinutes: number }>()
+  /** Evita contar 2 veces el mismo episodio (alerta idle + ALERT_* legacy). */
+  const countedWindows = new Set<string>()
+
+  const ensureStats = (machine: string) => {
+    let stats = machineStats.get(machine)
+    if (!stats) {
+      stats = {
+        activeHours: new Set<number>(),
+        inactiveMinutes: 0,
+        productionEvents: 0,
+        episodes: 0,
+      }
+      machineStats.set(machine, stats)
+    }
+    return stats
+  }
 
   for (const [machine, events] of byMachineEvents) {
     const sorted = events
       .slice()
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 
-    const stats = {
-      activeHours: new Set<number>(),
-      inactiveMinutes: 0,
-      productionEvents: 0,
-      episodes: 0,
-    }
+    const stats = ensureStats(machine)
 
     for (const r of sorted) {
       const ts = new Date(r.timestamp)
@@ -216,6 +329,44 @@ export function buildMachineActivitySummary(
         addMinutesToHourBuckets(hourlyBuckets, ts.getTime() - 5 * 60_000, 10, "active")
       }
     }
+  }
+
+  // Fuente actual: alertas idle (duración real). Una alerta escala 15→45 sin duplicar.
+  for (const a of idleAlerts) {
+    const minMinutes =
+      a.severity === "high" || a.severity === "critical" ? 45 : 15
+    const ep = resolveIdleAlertEpisode(a, nowMs, { minMinutes })
+    if (!ep) continue
+    const overlap = minutesOverlapDay(ep.startMs, ep.endMs, dayStartMs, dayEndMs)
+    if (overlap < 0.5) continue
+    const minutes = Math.max(1, Math.round(overlap))
+    const machine = a.machineLabel || "—"
+    if (countedWindows.has(ep.windowKey)) continue
+    countedWindows.add(ep.windowKey)
+    const stats = ensureStats(machine)
+    stats.inactiveMinutes += minutes
+    stats.episodes++
+    const clippedStart = Math.max(ep.startMs, dayStartMs)
+    addMinutesToHourBuckets(hourlyBuckets, clippedStart, minutes, "inactive")
+    episodes.push({
+      machine,
+      machineIdRaw: a.machineId,
+      day: refDay,
+      endedAt: new Date(Math.min(ep.endMs, dayEndMs)).toISOString(),
+      startedAt: new Date(clippedStart).toISOString(),
+      minutes,
+      alertTypes: [
+        a.severity === "high" || a.severity === "critical" ? "Tipo 2" : "Tipo 1",
+      ],
+    })
+  }
+
+  // Legacy: eventos ALERT_15 / ALERT_45 en production_events (solo si no hay alerta idle del episodio).
+  for (const [machine, events] of byMachineEvents) {
+    const sorted = events
+      .slice()
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    const stats = ensureStats(machine)
 
     const inactivityEvents = sorted.filter((r) => isInactivityActivityEvent(r.eventRaw))
     let cluster: ActivityRow[] = []
@@ -227,9 +378,27 @@ export function buildMachineActivitySummary(
       const endMs = new Date(last.timestamp).getTime()
       const types = cluster.map((c) => normalizeActivityEventType(c.eventRaw))
       const minutes = inactivityEpisodeMinutes(types)
+      const startMs = endMs - minutes * 60_000
+      const windowKey = `${last.machineIdRaw ?? machine}|${startMs}`
+      // Si ya contamos una alerta idle cercana (±90 min), no sumar el umbral legacy.
+      let alreadyCounted = countedWindows.has(windowKey)
+      if (!alreadyCounted) {
+        for (const key of countedWindows) {
+          if (!key.startsWith(`${last.machineIdRaw ?? machine}|`)) continue
+          const anchor = Number(key.slice(key.lastIndexOf("|") + 1))
+          if (Number.isFinite(anchor) && Math.abs(anchor - startMs) <= EPISODE_GAP_MS) {
+            alreadyCounted = true
+            break
+          }
+        }
+      }
+      if (alreadyCounted) {
+        cluster = []
+        return
+      }
+      countedWindows.add(windowKey)
       stats.inactiveMinutes += minutes
       stats.episodes++
-      const startMs = endMs - minutes * 60_000
       addMinutesToHourBuckets(hourlyBuckets, startMs, minutes, "inactive")
       episodes.push({
         machine,
@@ -250,8 +419,6 @@ export function buildMachineActivitySummary(
       clusterEnd = ts
     }
     flushCluster()
-
-    machineStats.set(machine, stats)
   }
 
   const hourlyTimeline: HourlyActivityBucket[] = []
@@ -303,6 +470,8 @@ export function buildMachineActivitySummary(
 
 export function buildDailyInactivitySeries(
   rows: ActivityRow[],
+  idleAlerts: IdleAlertForActivity[] = [],
+  nowMs: number = Date.now(),
 ): Array<{ date: string; inactiveMinutes: number; activeHours: number }> {
   const byDay = new Map<string, ActivityRow[]>()
   for (const r of rows) {
@@ -315,10 +484,24 @@ export function buildDailyInactivitySeries(
     byDay.set(key, list)
   }
 
+  for (const a of idleAlerts) {
+    const ep = resolveIdleAlertEpisode(a, nowMs)
+    if (!ep) continue
+    // Incluir días que el episodio toca (inicio y fin).
+    for (const ms of [ep.startMs, ep.endMs]) {
+      const key = dayKeyFromDate(new Date(ms))
+      if (!byDay.has(key)) byDay.set(key, [])
+    }
+  }
+
   return [...byDay.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([date, dayRows]) => {
-      const summary = buildMachineActivitySummary(dayRows, { refDay: date })
+      const summary = buildMachineActivitySummary(dayRows, {
+        refDay: date,
+        idleAlerts,
+        nowMs,
+      })
       return {
         date: date.slice(5),
         inactiveMinutes: summary.totalInactiveMinutes,

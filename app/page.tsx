@@ -396,12 +396,12 @@ export default function HomePage() {
           getProductionEvents(token, {
             from: dayBounds.start.toISOString(),
             to: dayBounds.end.toISOString(),
-            limit: 5000,
+            limit: 50_000,
           }),
           getProductionEvents(token, {
             from: startOfMonthTz.toISOString(),
             to: endOfMonthTz.toISOString(),
-            limit: 5000,
+            limit: 50_000,
           }),
           getGoals(token).catch(() => [] as ApiGoal[]),
           getBonusProductionConfigForMonth(token, bonusMonth).catch(() => null),

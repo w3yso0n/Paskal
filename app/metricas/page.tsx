@@ -158,6 +158,7 @@ import {
   frozenParticipantPrimaryRole,
   frozenParticipantShift,
   productionShiftForEvent,
+  productionUnitsFromEvent,
   type OperatorShiftByCode,
 } from "@/lib/production-goal-events"
 import {
@@ -174,8 +175,9 @@ import {
   buildDailyInactivitySeries,
   buildMachineActivitySummary,
   formatDurationMinutes,
+  resolveIdleAlertEpisode,
+  type IdleAlertForActivity,
 } from "@/lib/machine-activity-analytics"
-import { buildAlertRoleCounts } from "@/lib/alert-role-metrics"
 import {
   buildShiftIncidentsAnalytics,
   INCIDENCIAS_EARLY_LEAVE_ENABLED,
@@ -363,6 +365,14 @@ type OperatorPiecesPerHourRow = {
 function isKnownOperatorName(name: string | null | undefined): name is string {
   const t = name?.trim()
   return Boolean(t && t !== "—" && t !== UNKNOWN_PERSON_LABEL)
+}
+
+/** Primer nombre + apellido paterno (evita nombres completos largos en ejes/tablas). */
+function shortPersonName(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return fullName
+  if (parts.length <= 2) return parts.join(" ")
+  return `${parts[0]} ${parts[parts.length - 2]}`
 }
 
 function plantHourBucketKey(isoOrDate: string | Date): string | null {
@@ -657,7 +667,8 @@ function mapEventsToProductionBaseRows(
     const rawCount = typeof countRaw === "number" ? countRaw : Number(countRaw)
     const packagingCreditPieces =
       isPackagerCredit && Number.isFinite(rawCount) ? Math.max(0, rawCount) : 0
-    const count = isPackagerCredit ? 0 : rawCount
+    // Misma regla que Inicio / metas: productionUnitsFromEvent (excluye huérfanas y dumps).
+    const count = isPackagerCredit ? 0 : productionUnitsFromEvent(e, machineUpbById)
 
     const ts = String(
       payloadString(payload, "TIMESTAMP", "timestamp") ?? e.occurredAt ?? new Date().toISOString(),
@@ -999,19 +1010,28 @@ export default function MetricsPage() {
     const d = new Date()
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
   })
+  const [datePeriodMode, setDatePeriodMode] = useState<"day" | "month" | "custom">("month")
   const [shiftFilter, setShiftFilter] = useState<ShiftFilter>("all")
   const [activityMachineFilter, setActivityMachineFilter] = useState<string>("all")
-
-  // Custom date-range dialog
-  const [customRangeOpen, setCustomRangeOpen] = useState(false)
-  const [tempStart, setTempStart] = useState(filterStartDate)
-  const [tempEnd, setTempEnd] = useState(filterEndDate)
 
   const formatDate = (date: Date) => {
     const yyyy = date.getFullYear()
     const mm = String(date.getMonth() + 1).padStart(2, "0")
     const dd = String(date.getDate()).padStart(2, "0")
     return `${yyyy}-${mm}-${dd}`
+  }
+
+  const formatDisplayDate = (iso: string) => {
+    const [yRaw, mRaw, dRaw] = iso.split("-")
+    const y = Number(yRaw)
+    const m = Number(mRaw)
+    const d = Number(dRaw)
+    if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return iso
+    return new Date(y, m - 1, d).toLocaleDateString("es-MX", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    })
   }
 
   const getMonthDateBounds = (reportMonth: string) => {
@@ -1032,45 +1052,56 @@ export default function MetricsPage() {
     return { start, end: isCurrentMonth ? formatDate(now) : lastDay }
   }
 
-  // Last 6 months + current month as quick-select pills
-  const monthOptions = useMemo(() => {
-    const now = new Date()
-    return Array.from({ length: 6 }, (_, i) => {
-      const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1)
-      const year = d.getFullYear()
-      const month = d.getMonth()
-      const firstDay = `${year}-${String(month + 1).padStart(2, "0")}-01`
-      const lastDayDate = new Date(year, month + 1, 0)
-      const lastDay = formatDate(lastDayDate)
-      // For the current month use today as the end so we don't request future data
-      const isCurrentMonth = year === now.getFullYear() && month === now.getMonth()
-      const effectiveEnd = isCurrentMonth ? formatDate(now) : lastDay
-      const label = d.toLocaleDateString("es-MX", { month: "short", year: "numeric" })
-      return { key: `${year}-${month}`, firstDay, effectiveEnd, label }
-    })
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const todayStr = formatDate(new Date())
+  const currentMonthStr = todayStr.slice(0, 7)
+  const selectedDayValue = filterStartDate
+  const selectedMonthValue = filterStartDate.slice(0, 7)
 
-  const activeMonthKey = useMemo(
-    () =>
-      monthOptions.find(
-        (m) => filterStartDate === m.firstDay && filterEndDate === m.effectiveEnd,
-      )?.key ?? null,
-    [filterStartDate, filterEndDate, monthOptions],
-  )
-  const isCustomRange = activeMonthKey === null
+  const activeRangeLabel = useMemo(() => {
+    if (filterStartDate === filterEndDate) {
+      return formatDisplayDate(filterStartDate)
+    }
+    return `${formatDisplayDate(filterStartDate)} – ${formatDisplayDate(filterEndDate)}`
+  }, [filterStartDate, filterEndDate])
 
-  const applyMonth = (m: (typeof monthOptions)[number]) => {
-    setFilterStartDate(m.firstDay)
-    setFilterEndDate(m.effectiveEnd)
+  const applyDay = (day: string) => {
+    if (!day) return
+    const capped = day > todayStr ? todayStr : day
+    setFilterStartDate(capped)
+    setFilterEndDate(capped)
   }
 
-  const applyCustomRange = () => {
-    if (!tempStart || !tempEnd) return
-    const start = tempStart <= tempEnd ? tempStart : tempEnd
-    const end = tempStart <= tempEnd ? tempEnd : tempStart
+  const applyMonthPeriod = (yearMonth: string) => {
+    if (!yearMonth) return
+    const capped = yearMonth > currentMonthStr ? currentMonthStr : yearMonth
+    const bounds = getMonthDateBounds(capped)
+    setFilterStartDate(bounds.start)
+    setFilterEndDate(bounds.end)
+  }
+
+  const applyCustomStart = (value: string) => {
+    if (!value) return
+    const start = value
+    const end = filterEndDate && filterEndDate < start ? start : filterEndDate
     setFilterStartDate(start)
+    if (end) setFilterEndDate(end)
+  }
+
+  const applyCustomEnd = (value: string) => {
+    if (!value) return
+    const end = value > todayStr ? todayStr : value
+    const start = filterStartDate && filterStartDate > end ? end : filterStartDate
     setFilterEndDate(end)
-    setCustomRangeOpen(false)
+    if (start) setFilterStartDate(start)
+  }
+
+  const switchDatePeriodMode = (mode: "day" | "month" | "custom") => {
+    setDatePeriodMode(mode)
+    if (mode === "day") {
+      applyDay(filterEndDate || todayStr)
+    } else if (mode === "month") {
+      applyMonthPeriod((filterEndDate || todayStr).slice(0, 7))
+    }
   }
 
   const downloadBlob = (filename: string, blob: Blob) => {
@@ -1254,7 +1285,11 @@ export default function MetricsPage() {
               limit: 5000,
             }).catch(() => [] as ApiEmployeeDayRecord[]),
             getMaintenanceSessions(token, { from: fromIso, to: toIso, limit: 5000 }),
-            getAlerts(token).catch(() => [] as ApiAlert[]),
+            getAlerts(token, {
+              from: fromIso,
+              to: toIso,
+              limit: 10_000,
+            }).catch(() => [] as ApiAlert[]),
             getBonusProductionConfigForMonth(token, bonusMonth).catch(() => null),
           ])
         if (generation !== loadGenerationRef.current) return
@@ -1388,6 +1423,50 @@ export default function MetricsPage() {
     const skuAgg = new Map<string, number>()
     const machineAgg = new Map<string, { produced: number; downtime: number }>()
 
+    const codeToName = buildEmployeeCodeToNameMap(employeeRows)
+    const resolvePerson = (raw: string | undefined) => {
+      const code = String(raw ?? "").trim()
+      if (!code || code === "—") return "—"
+      return codeToName.get(code) ?? codeToName.get(code.toLowerCase()) ?? UNKNOWN_PERSON_LABEL
+    }
+    const checkinsByMachine = buildCheckinsByMachineId(machineCheckinsLoaded)
+    const rangeStart = new Date(`${filterStartDate}T00:00:00`).getTime()
+    const rangeEnd = new Date(`${filterEndDate}T23:59:59.999`).getTime()
+
+    /** Paros por operadora desde alertas idle (no eventos ALERT_* legacy). */
+    const downtimeByOperator = new Map<string, number>()
+    for (const a of alertsLoaded) {
+      const isIdle =
+        a.type === "idle" ||
+        (a.title.toLowerCase().includes("paro") && a.title.toLowerCase().includes("inactividad"))
+      if (!isIdle) continue
+      const createdMs = new Date(a.createdAt).getTime()
+      if (!Number.isFinite(createdMs) || createdMs < rangeStart || createdMs > rangeEnd) continue
+
+      let opName: string | null = null
+      const ch = findBestCheckinForMachineAndTime(
+        a.machineId,
+        createdMs,
+        checkinsByMachine,
+      )
+      if (ch?.operatorCode?.trim()) {
+        const fromChk = resolvePerson(ch.operatorCode)
+        if (isKnownOperatorName(fromChk)) opName = fromChk
+      }
+      if (!opName) {
+        const metaOp = typeof a.metadata?.operator === "string" ? a.metadata.operator.trim() : ""
+        if (metaOp.includes(" — ")) {
+          const namePart = metaOp.split(" — ").slice(1).join(" — ").trim()
+          if (isKnownOperatorName(namePart)) opName = namePart
+        } else if (metaOp) {
+          const fromMeta = resolvePerson(metaOp)
+          if (isKnownOperatorName(fromMeta)) opName = fromMeta
+        }
+      }
+      if (!opName) continue
+      downtimeByOperator.set(opName, (downtimeByOperator.get(opName) ?? 0) + 1)
+    }
+
     for (const r of rows14d) {
       const ts = new Date(r.timestamp)
       const dayKey = formatDate(ts)
@@ -1397,10 +1476,12 @@ export default function MetricsPage() {
       if (["Parada"].includes(r.event)) day.downtime += 1
       dailyAgg.set(dayKey, day)
 
-      const op = operatorAgg.get(r.operator) ?? { units: 0, downtime: 0 }
-      if (r.event === "Producción") op.units += r.count
-      if (["Parada"].includes(r.event)) op.downtime += 1
-      operatorAgg.set(r.operator, op)
+      // Solo operadores conocidos: "—" = producción sin operador (huérfana / sin check-in).
+      if (isKnownOperatorName(r.operator) && r.event === "Producción") {
+        const op = operatorAgg.get(r.operator) ?? { units: 0, downtime: 0 }
+        op.units += r.count
+        operatorAgg.set(r.operator, op)
+      }
 
       const machine = machineAgg.get(r.machine_id) ?? { produced: 0, downtime: 0 }
       if (r.event === "Producción") machine.produced += r.count
@@ -1442,22 +1523,38 @@ export default function MetricsPage() {
       }
     }
 
+    // Asegurar filas de operadores con paros aunque no tengan unidades en el ranking.
+    for (const [name, count] of downtimeByOperator) {
+      if (!operatorAgg.has(name)) {
+        operatorAgg.set(name, { units: 0, downtime: count })
+      } else {
+        const op = operatorAgg.get(name)!
+        op.downtime = count
+      }
+    }
+
     const dailySeries = [...dailyAgg.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([date, v]) => ({ date: date.slice(5), produced: v.produced, downtime: v.downtime }))
 
     const topOperators = [...operatorAgg.entries()]
+      .filter(([name]) => isKnownOperatorName(name))
       .map(([name, v]) => ({
         name,
         units: v.units,
-        downtime: v.downtime,
+        downtime: downtimeByOperator.get(name) ?? v.downtime,
       }))
-      .sort((a, b) => b.units - a.units)
+      .sort((a, b) => b.units - a.units || b.downtime - a.downtime)
       .slice(0, 14)
 
     /** Pie de distribución: todos los que tienen unidades > 0 (hasta 20), no solo el top del bar chart. */
     const operatorDistributionPie = [...operatorAgg.entries()]
-      .map(([name, v]) => ({ name, units: v.units, downtime: v.downtime }))
+      .filter(([name]) => isKnownOperatorName(name))
+      .map(([name, v]) => ({
+        name,
+        units: v.units,
+        downtime: downtimeByOperator.get(name) ?? v.downtime,
+      }))
       .filter((x) => x.units > 0)
       .sort((a, b) => b.units - a.units)
       .slice(0, 20)
@@ -1518,7 +1615,15 @@ export default function MetricsPage() {
       personRoleComparison,
       machineScatter,
     }
-  }, [activeTab, scopedProductionRows, employeeRows])
+  }, [
+    activeTab,
+    scopedProductionRows,
+    employeeRows,
+    alertsLoaded,
+    machineCheckinsLoaded,
+    filterStartDate,
+    filterEndDate,
+  ])
 
   const operatorPiecesPerHour = useMemo(() => {
     if (activeTab !== "operadores" && activeTab !== "produccion") return []
@@ -1526,9 +1631,39 @@ export default function MetricsPage() {
   }, [activeTab, scopedProductionRows])
 
   // Último día del rango con producción o paro/inactividad.
+  const idleAlertsForActivity = useMemo((): IdleAlertForActivity[] => {
+    const labelById = new Map<string, string>()
+    for (const m of machinesLoaded) {
+      const label = (m.code ?? m.name ?? "").trim() || m.name || "—"
+      if (m.id) labelById.set(m.id, label)
+    }
+    const start = new Date(`${filterStartDate}T00:00:00`).getTime()
+    const end = new Date(`${filterEndDate}T23:59:59.999`).getTime()
+    const out: IdleAlertForActivity[] = []
+    for (const a of alertsLoaded) {
+      const isIdle = a.type === "idle" || (
+        a.title.toLowerCase().includes("paro") && a.title.toLowerCase().includes("inactividad")
+      )
+      if (!isIdle) continue
+      const ep = resolveIdleAlertEpisode(a)
+      if (!ep) continue
+      // Incluir si el episodio toca el rango del filtro.
+      if (ep.endMs < start || ep.startMs > end) continue
+      out.push({
+        id: a.id,
+        machineId: a.machineId,
+        machineLabel: a.machineId ? (labelById.get(a.machineId) ?? a.machineId) : "—",
+        createdAt: a.createdAt,
+        closedAt: a.closedAt,
+        metadata: a.metadata,
+        severity: a.severity,
+      })
+    }
+    return out
+  }, [alertsLoaded, machinesLoaded, filterStartDate, filterEndDate])
+
   const lastDayWithData = useMemo(() => {
-    // Último día con producción REAL (piezas > 0). Se ignoran eventos sin unidades
-    // como BOOT (reconexión) o Parada, que antes hacían que el KPI mostrara 0.
+    // Último día con producción REAL (piezas > 0) o con paro idle.
     let best: string | null = null
     for (const r of scopedProductionRows) {
       if (r.event !== "Producción") continue
@@ -1538,8 +1673,14 @@ export default function MetricsPage() {
       const dayStr = formatDate(ts)
       if (!best || dayStr > best) best = dayStr
     }
+    for (const a of idleAlertsForActivity) {
+      const ep = resolveIdleAlertEpisode(a)
+      if (!ep) continue
+      const dayStr = formatDate(new Date(ep.endMs))
+      if (!best || dayStr > best) best = dayStr
+    }
     return best
-  }, [scopedProductionRows])
+  }, [scopedProductionRows, idleAlertsForActivity])
 
   const activityRows = useMemo(
     () =>
@@ -1558,6 +1699,11 @@ export default function MetricsPage() {
     [scopedProductionRows],
   )
 
+  const idleAlertsForMachine = useMemo(() => {
+    if (activityMachineFilter === "all") return idleAlertsForActivity
+    return idleAlertsForActivity.filter((a) => a.machineLabel === activityMachineFilter)
+  }, [idleAlertsForActivity, activityMachineFilter])
+
   const machineActivity = useMemo(
     () => {
       if (activeTab !== "produccion") {
@@ -1565,9 +1711,10 @@ export default function MetricsPage() {
       }
       return buildMachineActivitySummary(activityRows, {
         refDay: lastDayWithData ?? filterEndDate,
+        idleAlerts: idleAlertsForActivity,
       })
     },
-    [activeTab, activityRows, lastDayWithData, filterEndDate],
+    [activeTab, activityRows, lastDayWithData, filterEndDate, idleAlertsForActivity],
   )
 
   const activityRowsForMachine = useMemo(() => {
@@ -1582,41 +1729,11 @@ export default function MetricsPage() {
       }
       return buildMachineActivitySummary(activityRowsForMachine, {
         refDay: lastDayWithData ?? filterEndDate,
+        idleAlerts: idleAlertsForMachine,
       })
     },
-    [activeTab, activityRowsForMachine, lastDayWithData, filterEndDate],
+    [activeTab, activityRowsForMachine, lastDayWithData, filterEndDate, idleAlertsForMachine],
   )
-
-  const dominantOperatorByMachine = useMemo(() => {
-    if (activeTab !== "produccion") return new Map<string, string>()
-    const units = new Map<string, Map<string, number>>()
-    for (const r of scopedProductionRows) {
-      if (r.event !== "Producción") continue
-      const op = r.operator?.trim()
-      if (!op || op === "—") continue
-      const inner = units.get(r.machine_id) ?? new Map<string, number>()
-      inner.set(op, (inner.get(op) ?? 0) + (Number(r.count) || 0))
-      units.set(r.machine_id, inner)
-    }
-    const result = new Map<string, string>()
-    for (const [machine, ops] of units) {
-      let best = "—"
-      let bestUnits = -1
-      for (const [name, count] of ops) {
-        if (count > bestUnits) {
-          bestUnits = count
-          best = name
-        }
-      }
-      result.set(machine, best)
-    }
-    return result
-  }, [activeTab, scopedProductionRows])
-
-  const activityScopeLabel =
-    activityMachineFilter === "all"
-      ? `Todas las máquinas (${machineActivity.byMachine.length})`
-      : activityMachineFilter
 
   const activityRefDayLabel = scopedMachineActivity.refDay
     ? new Date(`${scopedMachineActivity.refDay}T12:00:00`).toLocaleDateString("es-MX", {
@@ -1624,39 +1741,31 @@ export default function MetricsPage() {
         month: "short",
         year: "numeric",
       })
-    : null
+    : machineActivity.refDay
+      ? new Date(`${machineActivity.refDay}T12:00:00`).toLocaleDateString("es-MX", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        })
+      : null
 
   useEffect(() => {
-    if (activityMachineFilter === "all") return
-    if (!machineActivity.byMachine.some((m) => m.machine === activityMachineFilter)) {
-      setActivityMachineFilter("all")
+    if (machineActivity.byMachine.length === 0) {
+      if (activityMachineFilter !== "all") setActivityMachineFilter("all")
+      return
+    }
+    const stillValid = machineActivity.byMachine.some((m) => m.machine === activityMachineFilter)
+    if (!stillValid || activityMachineFilter === "all") {
+      setActivityMachineFilter(machineActivity.byMachine[0]!.machine)
     }
   }, [machineActivity.byMachine, activityMachineFilter])
 
   const inactivityDailySeries = useMemo(
     () => {
       if (activeTab !== "produccion") return []
-      return buildDailyInactivitySeries(activityRows)
+      return buildDailyInactivitySeries(activityRows, idleAlertsForActivity)
     },
-    [activeTab, activityRows],
-  )
-
-  const alertRoleCounts = useMemo(
-    () => {
-      if (activeTab !== "produccion") {
-        return { operator: 0, packager: 0, other: 0, total: 0 }
-      }
-      return buildAlertRoleCounts({
-        alerts: alertsLoaded,
-        startDate: filterStartDate,
-        endDate: filterEndDate,
-        productionAlertRows: scopedProductionRows.map((r) => ({
-          eventRaw: r.eventRaw,
-          timestamp: r.timestamp,
-        })),
-      })
-    },
-    [activeTab, alertsLoaded, filterStartDate, filterEndDate, scopedProductionRows],
+    [activeTab, activityRows, idleAlertsForActivity],
   )
 
   const hourlyProductionData = useMemo(() => {
@@ -1695,32 +1804,6 @@ export default function MetricsPage() {
     end.setHours(23, 59, 59, 999)
     const daysInRange = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000))
 
-    /** Operador con más unidades atribuidas en el rango (evita mostrar solo el último evento del bucle). */
-    const operatorUnitsByMachine = new Map<string, Map<string, number>>()
-    for (const r of scopedProductionRows) {
-      if (r.event !== "Producción") continue
-      const op = r.operator?.trim()
-      if (!op || op === "—") continue
-      const mid = r.machine_id
-      const inner = operatorUnitsByMachine.get(mid) ?? new Map<string, number>()
-      inner.set(op, (inner.get(op) ?? 0) + (Number(r.count) || 0))
-      operatorUnitsByMachine.set(mid, inner)
-    }
-
-    const dominantOperator = (machineLabel: string): string => {
-      const sub = operatorUnitsByMachine.get(machineLabel)
-      if (!sub || sub.size === 0) return "—"
-      let bestName = "—"
-      let bestUnits = -1
-      for (const [name, units] of sub.entries()) {
-        if (units > bestUnits) {
-          bestUnits = units
-          bestName = name
-        }
-      }
-      return bestName
-    }
-
     return analytics.machineScatter.slice(0, 10).map((m) => {
       const produced = Number(m.produced) || 0
       const unitsPerDay = Math.round(produced / daysInRange)
@@ -1728,12 +1811,11 @@ export default function MetricsPage() {
       const uptime = Math.max(0, Math.min(100, Math.round(100 - downtimeEvents * 2)))
       return {
         machine: m.machine,
-        operator: dominantOperator(m.machine),
         unitsPerDay,
         uptime,
       }
     })
-  }, [activeTab, analytics.machineScatter, scopedProductionRows, filterStartDate, filterEndDate])
+  }, [activeTab, analytics.machineScatter, filterStartDate, filterEndDate])
 
   const monthlyGoalSummary = useMemo(() => {
     return summarizeMonthlyGoalProgress(goalsRows, goalActualByGoalId, {
@@ -2364,7 +2446,6 @@ export default function MetricsPage() {
   }, [scopedProductionRows])
 
 
-  const todayStr = formatDate(new Date())
   const refDayLabel = lastDayWithData ?? filterEndDate
   const productionDayLabel =
     refDayLabel === todayStr
@@ -2405,134 +2486,162 @@ export default function MetricsPage() {
         </div>
 
         {/* Date Range Filter */}
-        <div className="rounded-xl border border-border bg-card p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            {monthOptions.map((m) => (
-              <Button
-                key={m.key}
-                size="sm"
-                variant={activeMonthKey === m.key ? "default" : "outline"}
-                className="capitalize"
-                onClick={() => applyMonth(m)}
-              >
-                {m.label}
-              </Button>
-            ))}
+        <div className="space-y-3 rounded-xl border border-border bg-card px-5 py-4 sm:px-6 sm:py-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-2">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                Periodo
+              </span>
+              <div className="flex flex-wrap items-center gap-3">
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  value={datePeriodMode}
+                  onValueChange={(v) => {
+                    if (v === "day" || v === "month" || v === "custom") switchDatePeriodMode(v)
+                  }}
+                  className="h-10 w-fit gap-0"
+                  aria-label="Periodo"
+                >
+                  <ToggleGroupItem
+                    value="day"
+                    className="h-10 flex-none rounded-none px-4 whitespace-nowrap first:rounded-l-md last:rounded-r-md"
+                  >
+                    Día
+                  </ToggleGroupItem>
+                  <ToggleGroupItem
+                    value="month"
+                    className="h-10 flex-none rounded-none px-4 whitespace-nowrap first:rounded-l-md last:rounded-r-md"
+                  >
+                    Mes
+                  </ToggleGroupItem>
+                  <ToggleGroupItem
+                    value="custom"
+                    className="h-10 flex-none rounded-none px-4 whitespace-nowrap first:rounded-l-md last:rounded-r-md"
+                  >
+                    Personalizado
+                  </ToggleGroupItem>
+                </ToggleGroup>
 
-            <Button
-              size="sm"
-              variant={isCustomRange ? "default" : "outline"}
-              className="gap-1.5"
-              onClick={() => {
-                setTempStart(filterStartDate)
-                setTempEnd(filterEndDate)
-                setCustomRangeOpen(true)
-              }}
-            >
-              <CalendarDays className="h-4 w-4" />
-              {isCustomRange ? `${filterStartDate} – ${filterEndDate}` : "Rango personalizado"}
-            </Button>
+                {datePeriodMode === "day" && (
+                  <Input
+                    id="metricas-day"
+                    type="date"
+                    aria-label="Día"
+                    value={selectedDayValue}
+                    max={todayStr}
+                    onChange={(e) => applyDay(e.target.value)}
+                    className="h-10 w-44 shrink-0"
+                  />
+                )}
+
+                {datePeriodMode === "month" && (
+                  <Input
+                    id="metricas-month"
+                    type="month"
+                    aria-label="Mes"
+                    value={selectedMonthValue}
+                    max={currentMonthStr}
+                    onChange={(e) => applyMonthPeriod(e.target.value)}
+                    className="h-10 w-44 shrink-0"
+                  />
+                )}
+
+                {datePeriodMode === "custom" && (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="metricas-custom-start" className="shrink-0 text-xs text-muted-foreground">
+                        Desde
+                      </Label>
+                      <Input
+                        id="metricas-custom-start"
+                        type="date"
+                        aria-label="Desde"
+                        value={filterStartDate}
+                        max={filterEndDate || todayStr}
+                        onChange={(e) => applyCustomStart(e.target.value)}
+                        className="h-10 w-44 shrink-0"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="metricas-custom-end" className="shrink-0 text-xs text-muted-foreground">
+                        Hasta
+                      </Label>
+                      <Input
+                        id="metricas-custom-end"
+                        type="date"
+                        aria-label="Hasta"
+                        value={filterEndDate}
+                        min={filterStartDate || undefined}
+                        max={todayStr}
+                        onChange={(e) => applyCustomEnd(e.target.value)}
+                        className="h-10 w-44 shrink-0"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
 
             <Button
               type="button"
               size="sm"
-              variant="ghost"
-              className="gap-1.5 text-muted-foreground"
+              variant="outline"
+              className="h-10 shrink-0 gap-2 self-start sm:self-center"
               onClick={() => void loadMetricsData({ silent: false })}
               disabled={isRefreshing}
               aria-label="Actualizar datos"
               title="Actualizar datos"
             >
               <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
+              Actualizar
             </Button>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-border pt-3">
-            <span className="text-xs font-medium text-muted-foreground">Turno global:</span>
+          <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/40 px-3.5 py-2.5 text-sm text-muted-foreground">
+            <CalendarDays className="h-4 w-4 shrink-0 text-primary" />
+            <span>
+              Mostrando datos del{" "}
+              <span className="font-medium text-foreground">{activeRangeLabel}</span>
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Turno global
+            </span>
             <ToggleGroup
               type="single"
               value={shiftFilter}
               onValueChange={(v) => {
                 if (v === "all" || v === "matutino" || v === "vespertino") setShiftFilter(v)
               }}
-              className="justify-start gap-2"
+              className="h-9 w-fit gap-0"
             >
               <ToggleGroupItem
                 value="all"
                 size="sm"
-                className="rounded-md px-4 shadow-none data-[variant=outline]:border-l"
+                className="h-9 flex-none rounded-none px-4 whitespace-nowrap shadow-none first:rounded-l-md last:rounded-r-md data-[variant=outline]:border-l"
               >
                 Todos
               </ToggleGroupItem>
               <ToggleGroupItem
                 value="matutino"
                 size="sm"
-                className="rounded-md px-4 shadow-none data-[variant=outline]:border-l"
+                className="h-9 flex-none rounded-none px-4 whitespace-nowrap shadow-none first:rounded-l-md last:rounded-r-md data-[variant=outline]:border-l"
               >
                 Matutino
               </ToggleGroupItem>
               <ToggleGroupItem
                 value="vespertino"
                 size="sm"
-                className="rounded-md px-4 shadow-none data-[variant=outline]:border-l"
+                className="h-9 flex-none rounded-none px-4 whitespace-nowrap shadow-none first:rounded-l-md last:rounded-r-md data-[variant=outline]:border-l"
               >
                 Vespertino
               </ToggleGroupItem>
             </ToggleGroup>
           </div>
         </div>
-
-        {/* Custom date-range dialog */}
-        <Dialog open={customRangeOpen} onOpenChange={setCustomRangeOpen}>
-          <DialogContent className="sm:max-w-sm">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <CalendarDays className="h-5 w-5 text-primary" />
-                Elegir rango de fechas
-              </DialogTitle>
-            </DialogHeader>
-
-            <div className="grid gap-4 py-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="custom-start">Desde</Label>
-                <input
-                  id="custom-start"
-                  type="date"
-                  value={tempStart}
-                  max={tempEnd || undefined}
-                  onChange={(e) => setTempStart(e.target.value)}
-                  className={cn(
-                    "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                  )}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="custom-end">Hasta</Label>
-                <input
-                  id="custom-end"
-                  type="date"
-                  value={tempEnd}
-                  min={tempStart || undefined}
-                  onChange={(e) => setTempEnd(e.target.value)}
-                  className={cn(
-                    "h-10 w-full rounded-md border border-input bg-background px-3 text-sm",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-                  )}
-                />
-              </div>
-            </div>
-
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setCustomRangeOpen(false)}>
-                Cancelar
-              </Button>
-              <Button onClick={applyCustomRange} disabled={!tempStart || !tempEnd}>
-                Aplicar
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
 
         {/* Reportes */}
         {canSeeDownloadableReports && (
@@ -2748,7 +2857,18 @@ export default function MetricsPage() {
 
             {/* Production Charts */}
             <div className="rounded-xl border border-border bg-card p-6">
-              <h3 className="font-semibold text-foreground mb-4">Producción por Hora</h3>
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <h3 className="font-semibold text-foreground">Producción por Hora</h3>
+                <Badge variant="secondary" className="font-normal">
+                  {refDayLabel === todayStr
+                    ? "Hoy"
+                    : new Date(`${refDayLabel}T12:00:00`).toLocaleDateString("es-MX", {
+                        day: "numeric",
+                        month: "short",
+                        year: "numeric",
+                      })}
+                </Badge>
+              </div>
               <ChartContainer
                 className="h-[300px] w-full aspect-auto"
                 config={{ production: { label: "Producción", color: "#22c55e" } }}
@@ -2764,28 +2884,26 @@ export default function MetricsPage() {
             </div>
 
             {/* Machines & SKUs */}
-            <div className="grid gap-6 lg:grid-cols-2">
+            <div className="grid gap-6 lg:grid-cols-[2fr_3fr]">
               {/* Machines */}
               <div className="rounded-xl border border-border bg-card p-6">
                 <h3 className="font-semibold text-foreground mb-4">Top Máquinas</h3>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[560px]">
+                  <table className="w-full table-fixed">
                     <thead>
                       <tr className="border-b border-border text-left text-sm text-muted-foreground">
-                        <th className="pb-3 font-medium">Máquina</th>
-                        <th className="pb-3 font-medium">Operador</th>
-                        <th className="pb-3 font-medium text-right">Uds/día</th>
-                        <th className="pb-3 font-medium text-right">Uptime</th>
+                        <th className="w-[46%] pb-3 font-medium">Máquina</th>
+                        <th className="w-[27%] pb-3 font-medium text-right">Uds/día</th>
+                        <th className="w-[27%] pb-3 font-medium text-right">Uptime</th>
                       </tr>
                     </thead>
                     <tbody>
                       {topMachinesData.map((machine) => (
                         <tr key={machine.machine} className="border-b border-border last:border-0">
-                          <td className="py-3 font-medium text-primary">{machine.machine}</td>
-                          <td className="py-3 text-foreground">{machine.operator}</td>
-                          <td className="py-3 text-right font-medium">{machine.unitsPerDay}</td>
-                          <td className="py-3 text-right">
+                          <td className="truncate py-3 pr-4 font-medium text-primary">{machine.machine}</td>
+                          <td className="py-3 text-right font-medium tabular-nums">{machine.unitsPerDay}</td>
+                          <td className="py-3 text-right tabular-nums">
                             <span
                               className={cn(
                                 "font-medium",
@@ -2807,7 +2925,7 @@ export default function MetricsPage() {
               </div>
 
               {/* SKUs — solo gráfica de barras (top 10) */}
-              <div className="rounded-xl border border-border bg-card p-6">
+              <div className="flex flex-col rounded-xl border border-border bg-card p-6">
                 <h3 className="font-semibold text-foreground mb-4">SKUs más producidos</h3>
                 {analytics.skuDistribution.length === 0 ? (
                   <p className="text-sm text-muted-foreground py-12 text-center">
@@ -2815,12 +2933,12 @@ export default function MetricsPage() {
                   </p>
                 ) : (
                   <ChartContainer
-                    className="h-[300px] w-full aspect-auto"
+                    className="min-h-[380px] flex-1 w-full aspect-auto"
                     config={{ units: { label: "Unidades" } }}
                   >
                     <BarChart
                       data={analytics.skuDistribution.slice(0, 10)}
-                      margin={{ left: 8, right: 8 }}
+                      margin={{ left: 8, right: 8, top: 8, bottom: 8 }}
                     >
                       <CartesianGrid vertical={false} />
                       <XAxis dataKey="sku" tick={{ fontSize: 11 }} interval={0} angle={-25} textAnchor="end" height={70} />
@@ -2851,43 +2969,28 @@ export default function MetricsPage() {
                 <div className="grid gap-4 sm:grid-cols-3">
                   <KpiCard
                     title="Tiempo inactivo"
-                    value={formatDurationMinutes(scopedMachineActivity.totalInactiveMinutes)}
+                    value={formatDurationMinutes(machineActivity.totalInactiveMinutes)}
                     subtitle={
                       activityRefDayLabel
-                        ? `${activityScopeLabel} · ${activityRefDayLabel}`
-                        : activityScopeLabel
+                        ? `Todas las máquinas · ${activityRefDayLabel}`
+                        : "Todas las máquinas"
                     }
                     icon={Clock}
                     iconColor="text-amber-600"
                   />
                   <KpiCard
                     title="Horas con producción"
-                    value={String(scopedMachineActivity.totalActiveHours)}
+                    value={String(machineActivity.totalActiveHours)}
                     subtitle={activityRefDayLabel ?? undefined}
                     icon={CheckCircle}
                     iconColor="text-green-600"
                   />
                   <KpiCard
                     title="Tiempo activo"
-                    value={`${scopedMachineActivity.activePct}%`}
-                    subtitle={activityScopeLabel}
+                    value={`${machineActivity.activePct}%`}
+                    subtitle="Todas las máquinas"
                     icon={Clock}
                     iconColor="text-teal-600"
-                  />
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <KpiCard
-                    title="Alertas de operador"
-                    value={String(alertRoleCounts.operator)}
-                    icon={Users}
-                    iconColor="text-blue-600"
-                  />
-                  <KpiCard
-                    title="Alertas de empacador"
-                    value={String(alertRoleCounts.packager)}
-                    icon={Package}
-                    iconColor="text-violet-600"
                   />
                 </div>
 
@@ -2896,20 +2999,20 @@ export default function MetricsPage() {
                     <div>
                       <h3 className="text-sm font-semibold text-foreground">Actividad por hora</h3>
                       <p className="mt-0.5 text-xs text-muted-foreground">
-                        {activityScopeLabel}
+                        {activityMachineFilter !== "all" ? activityMachineFilter : "Selecciona una máquina"}
                         {activityRefDayLabel ? ` · ${activityRefDayLabel}` : ""}
                       </p>
                     </div>
                     <div className="w-full sm:w-56">
                       <Select
-                        value={activityMachineFilter}
+                        value={activityMachineFilter === "all" ? undefined : activityMachineFilter}
                         onValueChange={setActivityMachineFilter}
+                        disabled={machineActivity.byMachine.length === 0}
                       >
                         <SelectTrigger aria-label="Máquina">
-                          <SelectValue placeholder="Máquina" />
+                          <SelectValue placeholder="Selecciona máquina" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="all">Todas las máquinas</SelectItem>
                           {machineActivity.byMachine.map((row) => (
                             <SelectItem key={row.machine} value={row.machine}>
                               {row.machine}
@@ -2919,7 +3022,11 @@ export default function MetricsPage() {
                       </Select>
                     </div>
                   </div>
-                  {scopedMachineActivity.hourlyTimeline.every(
+                  {activityMachineFilter === "all" || machineActivity.byMachine.length === 0 ? (
+                    <p className="py-12 text-center text-sm text-muted-foreground">
+                      Selecciona una máquina para ver la actividad por hora.
+                    </p>
+                  ) : scopedMachineActivity.hourlyTimeline.every(
                     (b) => b.activeMinutes === 0 && b.inactiveMinutes === 0,
                   ) ? (
                     <p className="py-12 text-center text-sm text-muted-foreground">
@@ -3016,7 +3123,6 @@ export default function MetricsPage() {
                         <TableHeader>
                           <TableRow>
                             <TableHead>Máquina</TableHead>
-                            <TableHead>Operador</TableHead>
                             <TableHead className="text-right">Hrs activas</TableHead>
                             <TableHead className="text-right">Inactivo</TableHead>
                             <TableHead className="text-right">Paros</TableHead>
@@ -3025,7 +3131,7 @@ export default function MetricsPage() {
                         <TableBody>
                           {machineActivity.byMachine.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={5} className="text-center text-muted-foreground">
+                              <TableCell colSpan={4} className="text-center text-muted-foreground">
                                 Sin actividad registrada.
                               </TableCell>
                             </TableRow>
@@ -3033,9 +3139,6 @@ export default function MetricsPage() {
                             machineActivity.byMachine.map((row) => (
                               <TableRow key={row.machine}>
                                 <TableCell className="font-medium">{row.machine}</TableCell>
-                                <TableCell>
-                                  {dominantOperatorByMachine.get(row.machine) ?? "—"}
-                                </TableCell>
                                 <TableCell className="text-right tabular-nums">
                                   {row.activeHours}h
                                 </TableCell>
@@ -3054,12 +3157,27 @@ export default function MetricsPage() {
                   </div>
                 </div>
 
-                {scopedMachineActivity.episodes.length > 0 && (
+                {machineActivity.episodes.length > 0 && (
                   <div className="rounded-xl border border-border bg-background p-4">
-                    <h3 className="text-sm font-semibold text-foreground mb-3">
-                      Detalle de paros / inactividad
-                      {activityMachineFilter !== "all" ? ` — ${activityMachineFilter}` : ""}
-                    </h3>
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold text-foreground">
+                        Detalle de paros / inactividad
+                      </h3>
+                      {machineActivity.refDay ? (
+                        <Badge variant="secondary" className="font-normal">
+                          {machineActivity.refDay === todayStr
+                            ? "Hoy"
+                            : new Date(`${machineActivity.refDay}T12:00:00`).toLocaleDateString(
+                                "es-MX",
+                                {
+                                  day: "numeric",
+                                  month: "short",
+                                  year: "numeric",
+                                },
+                              )}
+                        </Badge>
+                      ) : null}
+                    </div>
                     <div className="overflow-x-auto">
                       <Table>
                         <TableHeader>
@@ -3072,7 +3190,7 @@ export default function MetricsPage() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {scopedMachineActivity.episodes.slice(0, 20).map((ep, idx) => (
+                          {machineActivity.episodes.slice(0, 20).map((ep, idx) => (
                             <TableRow key={`${ep.machine}-${ep.endedAt}-${idx}`}>
                               <TableCell className="font-medium">{ep.machine}</TableCell>
                               <TableCell className="whitespace-nowrap text-sm">
@@ -3089,7 +3207,17 @@ export default function MetricsPage() {
                               </TableCell>
                               <TableCell>{formatDurationMinutes(ep.minutes)}</TableCell>
                               <TableCell className="text-xs text-muted-foreground">
-                                {ep.alertTypes.join(", ")}
+                                {ep.alertTypes
+                                  .map((t) => {
+                                    const up = t.trim().toUpperCase()
+                                    if (up === "IDLE_15" || up === "ALERT_15") return "Tipo 1"
+                                    if (up === "IDLE_45" || up === "ALERT_45") return "Tipo 2"
+                                    if (up === "ALERT_NO_CHECKIN") return "Sin check-in"
+                                    if (up === "STOP") return "Parada"
+                                    if (t === "Tipo 1" || t === "Tipo 2") return t
+                                    return t
+                                  })
+                                  .join(", ")}
                               </TableCell>
                             </TableRow>
                           ))}
@@ -3595,21 +3723,28 @@ export default function MetricsPage() {
                   >
                     <BarChart
                       layout="vertical"
-                      data={operatorPiecesPerHour.slice(0, 14)}
+                      data={operatorPiecesPerHour.slice(0, 14).map((r) => ({
+                        ...r,
+                        shortName: shortPersonName(r.name),
+                      }))}
                       margin={{ left: 8, right: 16, top: 8, bottom: 8 }}
                     >
                       <CartesianGrid horizontal={false} />
                       <XAxis type="number" tick={{ fontSize: 12 }} />
                       <YAxis
                         type="category"
-                        dataKey="name"
-                        width={108}
+                        dataKey="shortName"
+                        width={96}
                         tick={{ fontSize: 11 }}
                         interval={0}
                       />
                       <ChartTooltip
                         content={
                           <ChartTooltipContent
+                            labelFormatter={(_label, payload) => {
+                              const row = payload?.[0]?.payload as OperatorPiecesPerHourRow | undefined
+                              return row?.name ?? String(_label ?? "")
+                            }}
                             formatter={(value, _name, item) => {
                               const row = item?.payload as OperatorPiecesPerHourRow | undefined
                               const v = typeof value === "number" ? value : Number(value)
@@ -3652,7 +3787,9 @@ export default function MetricsPage() {
                       <TableBody>
                         {operatorPiecesPerHour.map((row) => (
                           <TableRow key={row.name}>
-                            <TableCell className="font-medium">{row.name}</TableCell>
+                            <TableCell className="font-medium" title={row.name}>
+                              {shortPersonName(row.name)}
+                            </TableCell>
                             <TableCell className="text-right tabular-nums">
                               {row.units.toLocaleString("es-MX", { maximumFractionDigits: 1 })}
                             </TableCell>
@@ -3688,21 +3825,28 @@ export default function MetricsPage() {
                   >
                     <BarChart
                       layout="vertical"
-                      data={analytics.personRoleComparison.slice(0, 14)}
+                      data={analytics.personRoleComparison.slice(0, 14).map((r) => ({
+                        ...r,
+                        shortName: shortPersonName(r.name),
+                      }))}
                       margin={{ left: 8, right: 16, top: 8, bottom: 8 }}
                     >
                       <CartesianGrid horizontal={false} />
                       <XAxis type="number" tick={{ fontSize: 12 }} />
                       <YAxis
                         type="category"
-                        dataKey="name"
-                        width={108}
+                        dataKey="shortName"
+                        width={96}
                         tick={{ fontSize: 11 }}
                         interval={0}
                       />
                       <ChartTooltip
                         content={
                           <ChartTooltipContent
+                            labelFormatter={(_label, payload) => {
+                              const row = payload?.[0]?.payload as { name?: string } | undefined
+                              return row?.name ?? String(_label ?? "")
+                            }}
                             formatter={(value, _name, item) => {
                               const row = item?.payload as {
                                 role?: string
@@ -3744,7 +3888,9 @@ export default function MetricsPage() {
                       <TableBody>
                         {analytics.personRoleComparison.map((row) => (
                           <TableRow key={row.name}>
-                            <TableCell className="font-medium">{row.name}</TableCell>
+                            <TableCell className="font-medium" title={row.name}>
+                              {shortPersonName(row.name)}
+                            </TableCell>
                             <TableCell>
                               <span
                                 className="inline-flex items-center gap-1.5 text-sm"
@@ -3838,7 +3984,9 @@ export default function MetricsPage() {
                     <TableBody>
                       {analytics.topOperators.map((op) => (
                         <TableRow key={op.name}>
-                          <TableCell className="font-medium">{op.name}</TableCell>
+                          <TableCell className="font-medium" title={op.name}>
+                            {shortPersonName(op.name)}
+                          </TableCell>
                           <TableCell className="text-right tabular-nums">{op.units.toLocaleString()}</TableCell>
                           <TableCell className="text-right tabular-nums">{op.downtime}</TableCell>
                         </TableRow>
@@ -3857,7 +4005,6 @@ export default function MetricsPage() {
                       <TableRow>
                         <TableHead>Empacador</TableHead>
                         <TableHead className="text-right">Unidades</TableHead>
-                        <TableHead className="text-right">Lotes</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -3865,7 +4012,6 @@ export default function MetricsPage() {
                         <TableRow key={p.name}>
                           <TableCell className="font-medium">{p.name}</TableCell>
                           <TableCell className="text-right tabular-nums">{p.units.toLocaleString()}</TableCell>
-                          <TableCell className="text-right tabular-nums">{p.jobs.toLocaleString()}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

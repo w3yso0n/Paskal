@@ -147,7 +147,7 @@ export function EmployeeDowntimeTab({ employees }: EmployeeDowntimeTabProps) {
 
         const [events, alerts, checkins, machines, thresholds, notes] = await Promise.all([
           getProductionEvents(token, { from: fromIso, to: toIso, limit: 50_000 }),
-          getAlerts(token).catch(() => []),
+          getAlerts(token, { from: fromIso, to: toIso, limit: 10_000 }).catch(() => []),
           getMachineCheckins(token, { from: fromIso, to: toIso, limit: 20_000 }),
           getMachines(token),
           getBusinessAlertThresholds(token),
@@ -194,7 +194,9 @@ export function EmployeeDowntimeTab({ employees }: EmployeeDowntimeTabProps) {
               </h2>
               <p className="text-sm text-muted-foreground mt-1">
                 Alertas de inactividad (tipo 1 y tipo 2) atribuidas al operador en turno según
-                check-in de máquina. Los umbrales se configuran en{" "}
+                check-in de máquina. El tiempo inactivo es la duración real del paro (desde la
+                última producción/check-in hasta el cierre); si escala de tipo 1 a tipo 2 en la
+                misma ventana, cuenta una sola vez. Los umbrales se configuran en{" "}
                 <Link href="/reglas-negocio" className="text-primary underline-offset-2 hover:underline">
                   Reglas de negocio
                 </Link>
