@@ -575,7 +575,10 @@ export default function ProductionFloorPage() {
         await Promise.all(
           floorMachines.map((m) =>
             updateMachine(token, m.id, {
-              status: "idle",
+              // Sin `status`: el backend lo recalcula (queda amarilla al quedarse sin SKU ni
+              // operador). Se enviaba "idle", que no existe en el modelo de colores del
+              // servidor (green|yellow|blue|red) → el PATCH fallaba con 400 y el reset dejaba
+              // los SKU puestos mostrando "No se pudo cerrar el turno".
               currentSku: null,
               operatorCode: null,
               operator2Code: null,
