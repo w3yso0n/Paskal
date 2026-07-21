@@ -472,10 +472,16 @@ export function normalizeEvent(e: ApiProductionEvent, ctx: CronoContext): Timeli
     case "MAINTENANCE_OUT": {
       const isIn = type === "MAINTENANCE_IN"
       const name = resolveName(ctx, payloadStr(payload, "employee")) ?? "Sin nombre"
+      // Salida por plataforma: un supervisor sacó la máquina de mantenimiento (el técnico no
+      // pasó su tarjeta). Se dice QUIÉN lo hizo, igual que el resto de movimientos manuales.
+      const via = sourceLabel(payload)
+      const by = actorLabel(payload)
+      const detail = [via ? `Vía ${via}` : null, by ? `por ${by}` : null].filter(Boolean)
       return {
         ...base,
         kind: isIn ? "maintenance_in" : "maintenance_out",
         title: `${isIn ? "Entró" : "Salió"} mantenimiento: ${name}`,
+        detail: detail.length ? detail.join(" · ") : undefined,
       }
     }
     default:

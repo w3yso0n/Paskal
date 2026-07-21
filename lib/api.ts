@@ -377,6 +377,21 @@ export interface AttributeOrphanResult {
   assignError?: string | null;
 }
 
+/**
+ * Cierra la sesión de mantenimiento de una máquina desde la plataforma (el técnico se fue sin
+ * volver a pasar su tarjeta). Queda registrado en la cronología con el usuario que lo hizo.
+ */
+export async function endMachineMaintenance(
+  accessToken: string,
+  machineId: string,
+): Promise<ApiMachine> {
+  const res = await fetchWithAuth(`/machine/${machineId}/end-maintenance`, {
+    accessToken,
+    method: "POST",
+  });
+  return parseResponse<ApiMachine>(res);
+}
+
 /** Atribuye la producción huérfana de una máquina a un operador + SKU (acción de alerta). */
 export async function attributeOrphanProduction(
   accessToken: string,

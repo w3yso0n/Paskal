@@ -10,6 +10,7 @@ import {
 import type { Machine } from "@/lib/types"
 import {
   closeAllMachineCheckins,
+  endMachineMaintenance,
   getActiveMachineCheckins,
   getEmployees,
   getMachines,
@@ -400,6 +401,33 @@ export default function ProductionFloorPage() {
     const nPack = machine.packers?.length ?? 0
     setDialogVisiblePackerSlots(Math.max(1, Math.min(MAX_PACKERS_PER_MACHINE, nPack || 1)))
     setIsDialogOpen(true)
+  }
+
+  // Sacar de mantenimiento desde la plataforma: el técnico se fue sin volver a pasar su
+  // tarjeta y la máquina se queda azul (sin producir ni permitir check-in). Queda registrado
+  // en la cronología con el usuario que lo hizo, igual que asignar/quitar personal.
+  const [endingMaintenance, setEndingMaintenance] = useState(false)
+  const handleEndMaintenance = async () => {
+    if (!selectedMachine) return
+    const ok = window.confirm(
+      `¿Sacar a ${selectedMachine.name} de mantenimiento?\n\n` +
+        `Se cerrará la sesión abierta y la máquina volverá a su estado normal. ` +
+        `Queda registrado en la cronología a tu nombre.`,
+    )
+    if (!ok) return
+    setEndingMaintenance(true)
+    try {
+      const token = await getAccessToken()
+      if (!token) return
+      await endMachineMaintenance(token, selectedMachine.id)
+      toast.success(`${selectedMachine.name} salió de mantenimiento`)
+      setIsDialogOpen(false)
+      await loadAll()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo sacar de mantenimiento")
+    } finally {
+      setEndingMaintenance(false)
+    }
   }
 
   const handleSave = () => {
@@ -1841,9 +1869,23 @@ export default function ProductionFloorPage() {
                 </div>
               )}
               {selectedMachine?.status === "maintenance" && (
-                <div className="mt-2 flex items-center gap-2 rounded-md bg-blue-100 px-2 py-1.5 text-xs font-medium text-blue-800">
-                  <Settings2 className="h-4 w-4 shrink-0" />
-                  <span>Sesión de mantenimiento activa — vuelve a su estado al cerrarla.</span>
+                <div className="mt-2 space-y-2 rounded-md bg-blue-100 px-2 py-1.5 text-blue-800">
+                  <div className="flex items-center gap-2 text-xs font-medium">
+                    <Settings2 className="h-4 w-4 shrink-0" />
+                    <span>Sesión de mantenimiento activa — vuelve a su estado al cerrarla.</span>
+                  </div>
+                  {/* Salida por plataforma: para cuando el técnico no pasó su tarjeta al salir. */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 w-full gap-1.5 border-blue-300 bg-white text-xs text-blue-800 hover:bg-blue-50"
+                    onClick={handleEndMaintenance}
+                    disabled={endingMaintenance}
+                  >
+                    <RotateCcw className={cn("h-3.5 w-3.5", endingMaintenance && "animate-spin")} />
+                    {endingMaintenance ? "Sacando…" : "Sacar de mantenimiento"}
+                  </Button>
                 </div>
               )}
               {selectedMachine?.waitingReason === "sin_operadora" && (
