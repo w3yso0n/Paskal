@@ -136,7 +136,6 @@ export function resolveOperatorDailyQuota(input: {
     ""
 
   const { goal, sourceKey } = findDailyGoalForOperator(input.goals, definitions, {
-    operatorCode: input.operatorCode,
     machineId: machine?.id ?? null,
     machineCode: machine?.code ?? machine?.name ?? "",
     machineName: machine?.name ?? "",
@@ -146,7 +145,8 @@ export function resolveOperatorDailyQuota(input: {
     today: input.day,
   })
 
-  const target = goal ? Number(goal.targetValue) : 0
+  if (!goal) return { target: 0, actual: 0, met: false, sourceKey }
+  const target = Number(goal.targetValue)
   if (!Number.isFinite(target) || target <= 0) {
     return { target: 0, actual: 0, met: false, sourceKey }
   }

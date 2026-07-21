@@ -56,6 +56,7 @@ import {
   resolveWindingShiftHeadcount,
   windingHeadcountForShift,
 } from "@/lib/bonus-goals-bridge"
+import { machineDisplayLabel } from "@/lib/machine-label"
 import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
 import { DEFAULT_BONUS_PRODUCTION_CONFIG, normalizeBonusProductionConfig } from "@/lib/bonus-production-config"
 import {
@@ -315,7 +316,7 @@ function buildMachineMaps(machines: ApiMachine[]) {
   const skuById = new Map<string, string>()
   const upbById = new Map<string, number>()
   for (const m of machines) {
-    labelById.set(m.id, (m.code ?? m.name).trim() || m.name)
+    labelById.set(m.id, machineDisplayLabel(m))
     const sku = m.currentSku?.trim()
     if (sku) skuById.set(m.id, sku)
     const upb = m.unitsPerBox
@@ -950,7 +951,7 @@ export default function MetasPage() {
                           <SelectItem value="none">Todas las máquinas</SelectItem>
                           {machines.map((m) => (
                             <SelectItem key={m.id} value={m.id}>
-                              {(m.code ?? m.name).trim() || m.name}
+                              {machineDisplayLabel(m)}
                               {m.currentSku?.trim() ? ` · ${m.currentSku.trim()}` : ""}
                             </SelectItem>
                           ))}

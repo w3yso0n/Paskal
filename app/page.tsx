@@ -18,6 +18,7 @@ import {
   ResponsiveContainer,
 } from "recharts"
 import { TooltipProps } from "recharts"
+import type { NameType, ValueType } from "recharts/types/component/DefaultTooltipContent"
 import { useAuth } from "@/contexts/auth-context"
 import {
   getEmployees,
@@ -222,7 +223,7 @@ function ProductionChartTooltip({
   payload,
   label,
   focusKey,
-}: TooltipProps<number, string> & { focusKey: string | null }) {
+}: TooltipProps<ValueType, NameType> & { focusKey: string | null }) {
   if (!active || !payload?.length) return null
 
   const source = focusKey
