@@ -34,7 +34,6 @@ import {
   createGoal,
   deleteGoal,
   getBonusProductionConfigForMonth,
-  getEmployees,
   getGoals,
   getMachines,
   updateGoal,
@@ -42,7 +41,6 @@ import {
   type ApiGoalMetricKind,
   type ApiGoalPeriod,
   type ApiGoalShift,
-  type ApiEmployee,
   type ApiMachine,
 } from "@/lib/api"
 import {
@@ -53,8 +51,7 @@ import {
   isVirtualBusinessGoalId,
   monthDateBounds,
   resolveBusinessGoalForDisplay,
-  resolveWindingShiftHeadcount,
-  windingHeadcountForShift,
+  resolveWindingLineCount,
 } from "@/lib/bonus-goals-bridge"
 import { machineDisplayLabel } from "@/lib/machine-label"
 import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
@@ -337,7 +334,7 @@ function GoalCard({
   businessLabel,
   machineLabel,
   progressDayLabel,
-  shiftOperatorCount,
+  lineCount,
   statusRef,
 }: {
   goal: ApiGoal
@@ -349,7 +346,8 @@ function GoalCard({
   businessLabel?: string | null
   machineLabel?: string | null
   progressDayLabel?: string | null
-  shiftOperatorCount?: number | null
+  /** Líneas (máquinas del piso) que agregan la meta por máquina a meta del turno. */
+  lineCount?: number | null
   /** Reloj / día de avance (para ritmo esperado). */
   statusRef?: Date
 }) {
@@ -415,9 +413,7 @@ function GoalCard({
               {fromBonusConfig && goal.period === "daily" && progressDayLabel
                 ? progressDayLabel
                 : `Periodo: ${periodLabels[goal.period]}`}
-              {fromBonusConfig && shiftOperatorCount != null
-                ? ` · ${shiftOperatorCount} operadores`
-                : ""}
+              {fromBonusConfig && lineCount != null ? ` · ${lineCount} máquinas` : ""}
               {!fromBonusConfig && machineLabel ? ` · ${machineLabel}` : ""}
             </p>
           </div>
@@ -530,7 +526,6 @@ export default function MetasPage() {
 
   const [goals, setGoals] = useState<ApiGoal[]>([])
   const [machines, setMachines] = useState<ApiMachine[]>([])
-  const [employees, setEmployees] = useState<ApiEmployee[]>([])
   const [dailyProgressDate, setDailyProgressDate] = useState(() => plantTodayYmd())
   const [actualByGoalId, setActualByGoalId] = useState<Record<string, number>>({})
   const [filterPeriod, setFilterPeriod] = useState<ApiGoalPeriod | "all">("all")
@@ -557,10 +552,7 @@ export default function MetasPage() {
 
   const machineMaps = useMemo(() => buildMachineMaps(machines), [machines])
 
-  const shiftHeadcount = useMemo(
-    () => resolveWindingShiftHeadcount(employees),
-    [employees],
-  )
+  const windingLines = useMemo(() => resolveWindingLineCount(machines), [machines])
 
   const dailyProgressDayLabel = useMemo(() => {
     const d = new Date(`${dailyProgressDate}T12:00:00`)
@@ -592,10 +584,10 @@ export default function MetasPage() {
       metasBusinessDefinitions.map((def) => ({
         def,
         goal: resolveBusinessGoalForDisplay(goals, def, bonusMonthBounds, {
-          operatorsPerShift: windingHeadcountForShift(shiftHeadcount, def.shift),
+          lines: windingLines,
         }),
       })),
-    [metasBusinessDefinitions, goals, bonusMonthBounds, shiftHeadcount],
+    [metasBusinessDefinitions, goals, bonusMonthBounds, windingLines],
   )
 
   const customGoals = useMemo(
@@ -636,9 +628,7 @@ export default function MetasPage() {
       displayGoals.map(({ goal, fromBonusConfig, businessLabel }) => {
         const actual = Number(actualByGoalId[goal.id] ?? 0)
         const target = Number(goal.targetValue)
-        const shiftOperatorCount = fromBonusConfig
-          ? windingHeadcountForShift(shiftHeadcount, goal.shift)
-          : null
+        const lineCount = fromBonusConfig ? windingLines : null
         const progressDayLabel =
           fromBonusConfig && goal.period === "daily" ? dailyProgressDayLabel : null
         const statusRef = statusRefForProgressDay(dailyProgressDate)
@@ -654,11 +644,11 @@ export default function MetasPage() {
           fromBonusConfig,
           businessLabel,
           progressDayLabel,
-          shiftOperatorCount,
+          lineCount,
           statusRef,
         }
       }),
-    [displayGoals, actualByGoalId, shiftHeadcount, dailyProgressDayLabel, dailyProgressDate],
+    [displayGoals, actualByGoalId, windingLines, dailyProgressDayLabel, dailyProgressDate],
   )
 
   const filtered = useMemo(() => {
@@ -708,14 +698,12 @@ export default function MetasPage() {
         return
       }
 
-      const [goalsData, machinesData, employeesData] = await Promise.all([
+      const [goalsData, machinesData] = await Promise.all([
         getGoals(token),
         getMachines(token),
-        getEmployees(token),
       ])
       setGoals(goalsData)
       setMachines(machinesData)
-      setEmployees(employeesData)
 
       let cfgNormalized = DEFAULT_BONUS_PRODUCTION_CONFIG
       try {
@@ -726,12 +714,11 @@ export default function MetasPage() {
         setBonusConfig(DEFAULT_BONUS_PRODUCTION_CONFIG)
       }
 
-      const headcount = resolveWindingShiftHeadcount(employeesData)
       const goalsForActual = buildGoalsForProgressTracking(
         goalsData,
         cfgNormalized,
         bonusConfigMonth,
-        { headcount },
+        { lines: resolveWindingLineCount(machinesData) },
       )
 
       if (goalsForActual.length === 0) {
@@ -1237,7 +1224,7 @@ export default function MetasPage() {
                           fromBonusConfig,
                           businessLabel,
                           progressDayLabel,
-                          shiftOperatorCount,
+                          lineCount,
                           statusRef,
                         }) => (
                         <GoalCard
@@ -1251,7 +1238,7 @@ export default function MetasPage() {
                           }
                           businessLabel={businessLabel}
                           progressDayLabel={progressDayLabel}
-                          shiftOperatorCount={shiftOperatorCount}
+                          lineCount={lineCount}
                           statusRef={statusRef}
                           onEdit={fromBonusConfig ? openBonusConfig : openEdit}
                           onDelete={onDelete}

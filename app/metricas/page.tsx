@@ -165,7 +165,7 @@ import {
   computeActualByGoalId,
   summarizeMonthlyGoalProgress,
 } from "@/lib/goal-actual-progress"
-import { buildGoalsForProgressTracking, resolveWindingShiftHeadcount } from "@/lib/bonus-goals-bridge"
+import { buildGoalsForProgressTracking, resolveWindingLineCount } from "@/lib/bonus-goals-bridge"
 import {
   buildMaintenanceAnalytics,
   formatMaintenanceDuration,
@@ -1297,11 +1297,10 @@ export default function MetricsPage() {
         const bonusConfig = bonusCfg
           ? normalizeBonusProductionConfig(bonusCfg.config)
           : DEFAULT_BONUS_PRODUCTION_CONFIG
-        const headcount = resolveWindingShiftHeadcount(employees)
-        const goalsForActual = buildGoalsForProgressTracking(goals, bonusConfig, bonusMonth, {
-          headcount,
-        })
         const floorMachines = filterFloorMachines(apiMachines)
+        const goalsForActual = buildGoalsForProgressTracking(goals, bonusConfig, bonusMonth, {
+          lines: resolveWindingLineCount(floorMachines),
+        })
 
         setEmployeeRows(employees)
         setGoalsRows(goalsForActual)

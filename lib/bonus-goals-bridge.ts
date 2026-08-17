@@ -1,55 +1,43 @@
-import type { ApiGoal, ApiGoalPeriod, ApiGoalShift, CreateGoalPayload } from "@/lib/api"
+import type {
+  ApiGoal,
+  ApiGoalPeriod,
+  ApiGoalShift,
+  ApiMachine,
+  CreateGoalPayload,
+} from "@/lib/api"
 import type { BonusProductionConfigData } from "@/lib/bonus-production-config"
 import {
   bendingDailyMetaFromMonthly,
   monthlyMeta100FromDaily,
 } from "@/lib/bonus-production-config"
+import { filterFloorMachines } from "@/lib/machine-floor"
 
-/** Operadores winding por turno cuando no hay maestro cargado (meta individual × este número = meta del turno). */
-export const DEFAULT_WINDING_OPERATORS_PER_SHIFT = 20
+/** Líneas de winding cuando aún no hay catálogo de máquinas cargado. */
+export const DEFAULT_WINDING_LINES = 20
 
-export type WindingShiftHeadcount = {
-  matutino: number
-  vespertino: number
+type FloorMachineRow = Pick<ApiMachine, "floorRow" | "floorCol">
+
+/**
+ * Líneas que corre la planta en un turno = máquinas colocadas en el piso.
+ *
+ * La meta del turno es CAPACIDAD INSTALADA (meta por máquina × líneas), no plantilla: hay más
+ * operadoras dadas de alta que máquinas (rotación, vacaciones, coberturas como empacadora) y
+ * multiplicar por la plantilla inflaba la meta cada vez que RH daba de alta a alguien, aunque
+ * la planta siguiera corriendo las mismas líneas.
+ */
+export function resolveWindingLineCount(machines?: FloorMachineRow[]): number {
+  if (!machines?.length) return DEFAULT_WINDING_LINES
+  const n = filterFloorMachines(machines).length
+  return n > 0 ? n : DEFAULT_WINDING_LINES
 }
 
-type EmployeeHeadcountRow = {
-  status?: string | null
-  shift?: number | null
-  primaryRole?: string | null
-}
-
-export function resolveWindingShiftHeadcount(
-  employees?: EmployeeHeadcountRow[],
-): WindingShiftHeadcount {
-  const countShift = (shiftNum: 1 | 2): number => {
-    if (!employees?.length) return DEFAULT_WINDING_OPERATORS_PER_SHIFT
-    const n = employees.filter((e) => {
-      if (e.status && e.status !== "active") return false
-      if (e.shift !== shiftNum) return false
-      return e.primaryRole === "operator"
-    }).length
-    return n > 0 ? n : DEFAULT_WINDING_OPERATORS_PER_SHIFT
-  }
-  return { matutino: countShift(1), vespertino: countShift(2) }
-}
-
-export function windingHeadcountForShift(
-  headcount: WindingShiftHeadcount,
-  shift: ApiGoalShift | null | undefined,
-): number {
-  if (shift === "matutino") return headcount.matutino
-  if (shift === "vespertino") return headcount.vespertino
-  return DEFAULT_WINDING_OPERATORS_PER_SHIFT
-}
-
-/** Meta por operador (reglas de negocio) → meta agregada del turno en pantallas de cumplimiento grupal. */
+/** Meta por máquina (reglas de negocio) → meta agregada del turno en pantallas de cumplimiento grupal. */
 export function aggregateWindingMetasGoalTarget(
   def: BonusGoalDefinition,
-  operatorsPerShift: number,
+  lines: number,
 ): number {
   if (!isMetasBusinessGoalSourceKey(def.sourceKey)) return def.targetValue
-  const n = Math.max(1, operatorsPerShift)
+  const n = Math.max(1, lines)
   return Math.round(def.targetValue * n)
 }
 
@@ -289,13 +277,13 @@ export function resolveBusinessGoalForDisplay(
   def: BonusGoalDefinition,
   monthBounds: { startDate: string; endDate: string },
   options?: {
-    /** Meta del turno = meta individual × operadores (solo metas Winding en Metas). */
-    operatorsPerShift?: number
+    /** Meta del turno = meta por máquina × líneas del piso (solo metas Winding en Metas). */
+    lines?: number
   },
 ): ApiGoal {
   const targetValue = aggregateWindingMetasGoalTarget(
     def,
-    options?.operatorsPerShift ?? DEFAULT_WINDING_OPERATORS_PER_SHIFT,
+    options?.lines ?? DEFAULT_WINDING_LINES,
   )
   const synced = dbGoals.find((g) => goalMatchesBonusDefinition(g, def, monthBounds))
   if (synced) {
@@ -330,16 +318,14 @@ export function buildGoalsForProgressTracking(
   dbGoals: ApiGoal[],
   config: BonusProductionConfigData,
   effectiveMonth: string,
-  options?: { headcount?: WindingShiftHeadcount },
+  options?: { lines?: number },
 ): ApiGoal[] {
   const allDefinitions = bonusConfigToGoalDefinitions(config)
   const metasBusinessDefinitions = bonusConfigToMetasBusinessGoalDefinitions(config)
   const bounds = monthDateBounds(effectiveMonth)
-  const headcount = options?.headcount ?? resolveWindingShiftHeadcount()
+  const lines = options?.lines ?? DEFAULT_WINDING_LINES
   const business = metasBusinessDefinitions.map((def) =>
-    resolveBusinessGoalForDisplay(dbGoals, def, bounds, {
-      operatorsPerShift: windingHeadcountForShift(headcount, def.shift),
-    }),
+    resolveBusinessGoalForDisplay(dbGoals, def, bounds, { lines }),
   )
   const custom = dbGoals.filter((g) => !isBusinessManagedGoal(g, allDefinitions, bounds))
   return [...business, ...custom]
