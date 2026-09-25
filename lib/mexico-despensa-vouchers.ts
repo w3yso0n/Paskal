@@ -1,5 +1,6 @@
 import type { ApiEmployee } from "@/lib/api"
 import { completedYearsOfService } from "@/lib/mexico-vacation-law"
+import { demoMoney } from "@/lib/demo-mode"
 
 /**
  * Monto mensual de vales de despensa (MXN) según antigüedad.
@@ -113,5 +114,5 @@ export function formatDespensaMxn(amount: number): string {
     style: "currency",
     currency: "MXN",
     maximumFractionDigits: 0,
-  }).format(amount)
+  }).format(demoMoney(amount))
 }

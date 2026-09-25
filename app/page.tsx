@@ -20,6 +20,7 @@ import {
 import { TooltipProps } from "recharts"
 import type { NameType, ValueType } from "recharts/types/component/DefaultTooltipContent"
 import { useAuth } from "@/contexts/auth-context"
+import { DEMO_USER_NAME, useDemoMode } from "@/lib/demo-mode"
 import {
   getEmployees,
   getMachines,
@@ -330,6 +331,7 @@ function extractOperatorCode(payload: Record<string, unknown>): string {
 
 export default function HomePage() {
   const { getAccessToken, user } = useAuth()
+  const { active: demoActive } = useDemoMode()
   const [loading, setLoading] = useState(true)
   const [operatorProductionData, setOperatorProductionData] = useState<Record<string, string | number>[]>([])
   const [machines, setMachines] = useState<ApiMachine[]>([])
@@ -721,7 +723,7 @@ export default function HomePage() {
         {/* Welcome Header */}
         <div>
           <h1 className="text-2xl font-bold text-foreground">
-            ¡Bienvenido, {user?.fullName?.trim() || "Paskal"}!
+            ¡Bienvenido, {demoActive ? DEMO_USER_NAME : user?.fullName?.trim() || "Paskal"}!
           </h1>
           <p className="text-muted-foreground">
             Vista general de producción y estado de máquinas

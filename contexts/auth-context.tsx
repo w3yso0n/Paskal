@@ -14,6 +14,7 @@ import {
   type AuthTokens,
 } from "@/lib/api"
 import { getFirebaseAuth } from "@/lib/firebase"
+import { clearDemoMode, setDemoEligible } from "@/lib/demo-mode"
 import { toast } from "sonner"
 
 function getLoginErrorMessage(error: unknown): string {
@@ -149,6 +150,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   })
 
   const setUser = useCallback((user: RequestUser | null) => {
+    // Modo demo solo para el equipo Droven; otro rol nunca hereda el flag de este navegador.
+    setDemoEligible(user?.role === "droven")
+    if (user && user.role !== "droven") clearDemoMode()
     setState((s) => ({ ...s, user, loading: false, error: null }))
   }, [])
 
@@ -198,6 +202,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { refresh } = loadStoredTokens()
     if (refresh) await logoutApi(refresh)
     clearStoredTokens()
+    clearDemoMode()
     try {
       await signOut(getFirebaseAuth())
     } catch {

@@ -1,20 +1,27 @@
 import type { ApiEmployee } from "@/lib/api"
+import { demoMoney } from "@/lib/demo-mode"
 
 /** Monto fijo mensual de apoyo de transporte para personal local (MXN). */
 export const LOCAL_TRANSPORT_SUPPORT_MONTHLY_MXN = 800
 
-export const LOCAL_TRANSPORT_POLICY_SUMMARY = [
-  "Apoyo fijo para colaboradores que viven cerca de la planta (locales).",
-  `Monto: ${formatTransportMxn(LOCAL_TRANSPORT_SUPPORT_MONTHLY_MXN)} por mes por persona seleccionada.`,
-  "Marca o desmarca a quienes aplican; el cambio se guarda de inmediato.",
-]
+/** Función (no constante) para que el monto se formatee al renderizar (modo demo). */
+export function localTransportPolicySummary(): string[] {
+  return [
+    "Apoyo fijo para colaboradores que viven cerca de la planta (locales).",
+    `Monto: ${formatTransportMxn(LOCAL_TRANSPORT_SUPPORT_MONTHLY_MXN)} por mes por persona seleccionada.`,
+    "Marca o desmarca a quienes aplican; el cambio se guarda de inmediato.",
+  ]
+}
 
 export function formatTransportMxn(amount: number): string {
+  // Los montos son múltiplos del apoyo fijo: en modo demo se escala la unidad para que
+  // "total = monto × personas" siga cuadrando.
+  const shown = (amount / LOCAL_TRANSPORT_SUPPORT_MONTHLY_MXN) * demoMoney(LOCAL_TRANSPORT_SUPPORT_MONTHLY_MXN)
   return new Intl.NumberFormat("es-MX", {
     style: "currency",
     currency: "MXN",
     maximumFractionDigits: 0,
-  }).format(amount)
+  }).format(shown)
 }
 
 export type LocalTransportSummary = {

@@ -12,7 +12,7 @@ import { updateEmployee, type ApiEmployee } from "@/lib/api"
 import { EMPLOYEE_PRODUCTION_ROLE_LABELS } from "@/lib/employee-production-role"
 import {
   formatTransportMxn,
-  LOCAL_TRANSPORT_POLICY_SUMMARY,
+  localTransportPolicySummary,
   LOCAL_TRANSPORT_SUPPORT_MONTHLY_MXN,
   summarizeLocalTransportSupport,
 } from "@/lib/local-transport-support"
@@ -76,7 +76,7 @@ export function EmployeeTransportTab({
             <div className="space-y-2">
               <h2 className="text-lg font-semibold text-foreground">Apoyo de transporte (locales)</h2>
               <ul className="list-disc space-y-1.5 pl-5 text-sm text-muted-foreground">
-                {LOCAL_TRANSPORT_POLICY_SUMMARY.map((line) => (
+                {localTransportPolicySummary().map((line) => (
                   <li key={line}>{line}</li>
                 ))}
               </ul>

@@ -8,6 +8,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
+import { DEMO_USER_EMAIL, useDemoMode } from "@/lib/demo-mode"
 
 import {
   Sidebar,
@@ -17,6 +18,7 @@ import {
   accountConfigItem,
 } from "./sidebar"
 import { Header } from "./header"
+import { DemoLeakCheck } from "./demo-leak-check"
 import {
   hasModuleAccess,
   showAdminSection,
@@ -68,6 +70,7 @@ function MobileSectionLabel({ label }: { label: string }) {
 export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps) {
   const pathname = usePathname()
   const { user } = useAuth()
+  const { active: demoActive } = useDemoMode()
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false)
   const hasAdmin = showAdminSection(user)
@@ -163,7 +166,7 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
           </nav>
 
           <div className="mt-auto border-t border-border p-4">
-            <p className="truncate text-sm text-muted-foreground">{user?.email ?? "Usuario"}</p>
+            <p className="truncate text-sm text-muted-foreground">{demoActive ? DEMO_USER_EMAIL : (user?.email ?? "Usuario")}</p>
           </div>
         </SheetContent>
       </Sheet>
@@ -175,6 +178,7 @@ export function DashboardLayout({ children, breadcrumbs }: DashboardLayoutProps)
         )}
       >
         <Header breadcrumbs={breadcrumbs} onOpenMobileMenu={() => setMobileMenuOpen(true)} />
+        {demoActive && <DemoLeakCheck />}
         <main className="p-4 sm:p-6">
           <div className="min-w-0">{children}</div>
         </main>

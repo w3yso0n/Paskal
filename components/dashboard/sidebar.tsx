@@ -24,6 +24,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/contexts/auth-context"
+import { DEMO_USER_EMAIL, useDemoMode } from "@/lib/demo-mode"
 import {
   hasModuleAccess,
   showAdminSection,
@@ -150,6 +151,7 @@ interface SidebarProps {
 export function Sidebar({ collapsed = false, onCollapsedChange, className }: SidebarProps) {
   const pathname = usePathname()
   const { user } = useAuth()
+  const { active: demoActive } = useDemoMode()
   const visibleProductionItems = productionItems.filter((item) =>
     isMenuItemVisible(user, item),
   )
@@ -253,7 +255,7 @@ export function Sidebar({ collapsed = false, onCollapsedChange, className }: Sid
           </div>
           {!collapsed && (
             <span className="truncate text-sm text-sidebar-foreground/80">
-              {user?.email ?? "Usuario"}
+              {demoActive ? DEMO_USER_EMAIL : (user?.email ?? "Usuario")}
             </span>
           )}
         </div>

@@ -7,6 +7,13 @@ import type {
   BusinessHolidayScope,
   ProductionIncidentType,
 } from "@/lib/business-rules"
+import {
+  anonymizeResponse,
+  buildDemoRegistry,
+  deanonymizePath,
+  type DemoRegistry,
+} from "@/lib/demo-anonymizer"
+import { getDemoSeed, isDemoModeActive } from "@/lib/demo-mode"
 
 const getBaseUrl = () =>
   typeof window !== "undefined"
@@ -244,12 +251,86 @@ export async function changeMyPassword(
   return parseResponse<{ success: true }>(res);
 }
 
+// --- Modo demo (ver lib/demo-mode.ts y lib/demo-anonymizer.ts) ---
+
+/** POST de solo lectura permitidos en modo demo. */
+const DEMO_READONLY_POSTS = new Set(["/data/query"]);
+
+let demoRegistryPromise: Promise<DemoRegistry> | null = null;
+
+function ensureDemoRegistry(accessToken: string): Promise<DemoRegistry> {
+  if (!demoRegistryPromise) {
+    const base = apiBaseUrl || "";
+    const headers = { Authorization: `Bearer ${accessToken}` };
+    const load = async <T,>(path: string): Promise<T[]> => {
+      const res = await fetch(`${base}${path}`, { headers });
+      return res.ok ? ((await res.json()) as T[]) : [];
+    };
+    demoRegistryPromise = Promise.all([
+      load<ApiEmployee>("/employee"),
+      load<ApiUser>("/users"),
+    ])
+      .then(([employees, users]) => buildDemoRegistry(employees, users, getDemoSeed()))
+      .catch((e) => {
+        demoRegistryPromise = null;
+        throw e;
+      });
+  }
+  return demoRegistryPromise;
+}
+
+/** Registro ya construido (para el leak-check); `null` si aún no se cargó. */
+export function peekDemoRegistry(): Promise<DemoRegistry> | null {
+  return demoRegistryPromise;
+}
+
+async function fetchDemo(
+  base: string,
+  path: string,
+  init: RequestInit,
+  accessToken: string,
+): Promise<Response> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const pathOnly = path.split("?")[0];
+  if (method !== "GET" && !DEMO_READONLY_POSTS.has(pathOnly)) {
+    const err: ApiError = {
+      message: "Modo demo activo: los cambios están deshabilitados.",
+      statusCode: 423,
+    };
+    throw err;
+  }
+  const reg = await ensureDemoRegistry(accessToken);
+  const res = await fetch(`${base}${deanonymizePath(path, reg)}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      ...init.headers,
+    },
+  });
+  if (!res.ok) return res;
+  const text = await res.text();
+  const headers = { "Content-Type": "application/json" };
+  let body: unknown;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    return new Response(text, { status: res.status, headers });
+  }
+  if (body === null) return new Response(text, { status: res.status, headers });
+  return new Response(JSON.stringify(anonymizeResponse(body, reg)), {
+    status: res.status,
+    headers,
+  });
+}
+
 async function fetchWithAuth(
   path: string,
   options: RequestInit & { accessToken: string }
 ): Promise<Response> {
   const base = apiBaseUrl || "";
   const { accessToken, ...init } = options;
+  if (isDemoModeActive()) return fetchDemo(base, path, init, accessToken);
   return fetch(`${base}${path}`, {
     ...init,
     headers: {

@@ -2,7 +2,7 @@
 
 import { useCallback } from "react"
 import Link from "next/link"
-import { ChevronDown, Menu, LogOut, Settings } from "lucide-react"
+import { ChevronDown, Eye, EyeOff, Menu, LogOut, Settings } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button"
 import { useAuth } from "@/contexts/auth-context"
 import { hasModuleAccess, hasPermission } from "@/lib/permissions"
 import { useAlertsNotifications } from "@/hooks/use-alerts-notifications"
+import { DEMO_USER_EMAIL, useDemoMode } from "@/lib/demo-mode"
 
 interface HeaderProps {
   breadcrumbs?: { label: string; href?: string }[]
@@ -24,6 +25,7 @@ export function Header({ breadcrumbs, onOpenMobileMenu }: HeaderProps) {
   const { user, logout } = useAuth()
   const canAccessAlerts = hasModuleAccess(user, "alertas")
   const canDismissAlerts = hasPermission(user, "alerts.dismiss")
+  const demo = useDemoMode()
   const {
     alerts,
     loading,
@@ -86,6 +88,18 @@ export function Header({ breadcrumbs, onOpenMobileMenu }: HeaderProps) {
         )}
       </div>
       <div className="flex items-center gap-3">
+        {user?.role === "droven" && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={demo.toggle}
+            aria-label={demo.active ? "Mostrar datos reales" : "Modo demo: ocultar datos privados"}
+            title={demo.active ? "Mostrar datos reales" : "Modo demo: ocultar datos privados"}
+            className={demo.active ? "text-primary" : "text-muted-foreground"}
+          >
+            {demo.active ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+          </Button>
+        )}
         {canAccessAlerts && (
           <AlertsDropdown
             alerts={alerts}
@@ -99,7 +113,7 @@ export function Header({ breadcrumbs, onOpenMobileMenu }: HeaderProps) {
         )}
         <DropdownMenu>
           <DropdownMenuTrigger className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
-            {user?.email ?? "Usuario"}
+            {demo.active ? DEMO_USER_EMAIL : (user?.email ?? "Usuario")}
             <ChevronDown className="h-4 w-4" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">

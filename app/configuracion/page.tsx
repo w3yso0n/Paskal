@@ -7,12 +7,14 @@ import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/contexts/auth-context"
+import { DEMO_USER_EMAIL, useDemoMode } from "@/lib/demo-mode"
 import { changeMyPassword, getApiErrorMessage } from "@/lib/api"
 import { toast } from "sonner"
 import { Loader2, Lock } from "lucide-react"
 
 export default function ConfiguracionPage() {
   const { getAccessToken, user } = useAuth()
+  const { active: demoActive } = useDemoMode()
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     currentPassword: "",
@@ -68,7 +70,7 @@ export default function ConfiguracionPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">Configuración</h1>
           <p className="text-muted-foreground">
-            Administra la seguridad de tu cuenta{user?.email ? ` (${user.email})` : ""}.
+            Administra la seguridad de tu cuenta{user?.email ? ` (${demoActive ? DEMO_USER_EMAIL : user.email})` : ""}.
           </p>
         </div>
 

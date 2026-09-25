@@ -2781,7 +2781,7 @@ export default function MetricsPage() {
                       id="supervisorName"
                       value={supervisorName}
                       onChange={(e) => setSupervisorName(e.target.value)}
-                      placeholder="Ej. Ulises Moran"
+                      placeholder="Ej. Nombre del supervisor"
                     />
                   </div>
 
